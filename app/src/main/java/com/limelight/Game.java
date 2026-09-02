@@ -3841,6 +3841,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             holder.getSurface().setFrameRate(desiredFrameRate,
                     Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
         }
+
+        // Disable producer throttling on the underlying surface for reduced latency
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+            holder.getSurface().setProducerThrottlingEnabled(false);
+        }
     }
 
     @Override
