@@ -54,6 +54,7 @@ public class MediaCodecHelper {
     private static boolean isLowEndSnapdragon = false;
     private static boolean isAdreno620 = false;
     private static boolean initialized = false;
+    private static boolean isAmlogicS905X5Class = false;
 
     static {
         directSubmitPrefixes = new LinkedList<>();
@@ -447,7 +448,32 @@ public class MediaCodecHelper {
             }
         }
 
+        isAmlogicS905X5Class = isAmlogicS905X5ClassSoc(glRenderer);
+        if (isAmlogicS905X5Class) {
+            LimeLog.info("Detected Amlogic S905X5-class SoC: HEVC will not use KEY_LOW_LATENCY");
+        }
+
         initialized = true;
+    }
+
+    // Amlogic S905X5/S905X5M (Mali-G310) HEVC decoders advertise FEATURE_LowLatency, but with
+    // KEY_LOW_LATENCY set they decode every frame and present only a few per second
+    // (moonlight-android#1504). vdec-lowlatency plus vendor.low-latency.enable plays smoothly.
+    // ro.soc.model carries a vendor prefix (Xiaomi TV Box S 3rd Gen: "AMLS905X5M"). The Mali-G310
+    // check covers firmware that leaves it empty; it only takes effect together with an Amlogic
+    // decoder name.
+    private static boolean isAmlogicS905X5ClassSoc(String glRenderer) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                Build.SOC_MODEL.toUpperCase(Locale.US).contains("S905X5")) {
+            return true;
+        }
+        return glRenderer != null && glRenderer.contains("Mali-G310");
+    }
+
+    private static boolean mustAvoidAndroidRLowLatency(MediaCodecInfo decoderInfo, String mimeType) {
+        return isAmlogicS905X5Class &&
+                MediaFormat.MIMETYPE_VIDEO_HEVC.equalsIgnoreCase(mimeType) &&
+                isDecoderInList(amlogicDecoderPrefixes, decoderInfo.getName());
     }
 
     private static boolean isDecoderInList(List<String> decoderList, String decoderName) {
@@ -545,7 +571,11 @@ public class MediaCodecHelper {
             safeSet(videoFormat, "vendor.nvidia.disable-output-reorder", 1);
             setNewOption = true;
         }
-        if (tryNumber < 1) {
+        if (tryNumber < 1 && mustAvoidAndroidRLowLatency(decoderInfo, videoFormat.getString(MediaFormat.KEY_MIME))) {
+            // Fall through to vdec-lowlatency and the Amlogic vendor extension below.
+            LimeLog.info("Skipping KEY_LOW_LATENCY for Amlogic S905X5-class HEVC decoder");
+        }
+        else if (tryNumber < 1) {
             // Official Android 11+ low latency option (KEY_LOW_LATENCY).
             videoFormat.setInteger("low-latency", 1);
             setNewOption = true;
