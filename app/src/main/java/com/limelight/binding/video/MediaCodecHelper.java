@@ -48,13 +48,14 @@ public class MediaCodecHelper {
     private static final List<String> amlogicDecoderPrefixes;
     private static final List<String> knownVendorLowLatencyOptions;
 
+    private static final String AMLOGIC_C2_HEVC_DECODER_PREFIX = "c2.amlogic.hevc";
+
     public static final boolean SHOULD_BYPASS_SOFTWARE_BLOCK =
             Build.HARDWARE.equals("ranchu") || Build.HARDWARE.equals("cheets") || Build.BRAND.equals("Android-x86");
 
     private static boolean isLowEndSnapdragon = false;
     private static boolean isAdreno620 = false;
     private static boolean initialized = false;
-    private static boolean isAmlogicS905X5Class = false;
 
     static {
         directSubmitPrefixes = new LinkedList<>();
@@ -448,32 +449,17 @@ public class MediaCodecHelper {
             }
         }
 
-        isAmlogicS905X5Class = isAmlogicS905X5ClassSoc(glRenderer);
-        if (isAmlogicS905X5Class) {
-            LimeLog.info("Detected Amlogic S905X5-class SoC: HEVC will not use KEY_LOW_LATENCY");
-        }
-
         initialized = true;
     }
 
-    // Amlogic S905X5/S905X5M (Mali-G310) HEVC decoders advertise FEATURE_LowLatency, but with
-    // KEY_LOW_LATENCY set they decode every frame and present only a few per second
-    // (moonlight-android#1504). vdec-lowlatency plus vendor.low-latency.enable plays smoothly.
-    // ro.soc.model carries a vendor prefix (Xiaomi TV Box S 3rd Gen: "AMLS905X5M"). The Mali-G310
-    // check covers firmware that leaves it empty; it only takes effect together with an Amlogic
-    // decoder name.
-    private static boolean isAmlogicS905X5ClassSoc(String glRenderer) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                Build.SOC_MODEL.toUpperCase(Locale.US).contains("S905X5")) {
-            return true;
-        }
-        return glRenderer != null && glRenderer.contains("Mali-G310");
-    }
-
-    private static boolean mustAvoidAndroidRLowLatency(MediaCodecInfo decoderInfo, String mimeType) {
-        return isAmlogicS905X5Class &&
-                MediaFormat.MIMETYPE_VIDEO_HEVC.equalsIgnoreCase(mimeType) &&
-                isDecoderInList(amlogicDecoderPrefixes, decoderInfo.getName());
+    // Amlogic Codec2 HEVC decoders (c2.amlogic.hevc.decoder, seen on S905X5/S905X5M and S905Y4)
+    // advertise FEATURE_LowLatency, but with KEY_LOW_LATENCY set they decode every frame and
+    // present only a few per second (moonlight-android#1504, #1584). vdec-lowlatency plus
+    // vendor.low-latency.enable plays smoothly. HEVC RFI also triggers decoder error storms on
+    // them, see decoderSupportsRefFrameInvalidationHevc().
+    private static boolean isAmlogicC2HevcDecoder(String decoderName) {
+        return decoderName.regionMatches(true, 0, AMLOGIC_C2_HEVC_DECODER_PREFIX, 0,
+                AMLOGIC_C2_HEVC_DECODER_PREFIX.length());
     }
 
     private static boolean isDecoderInList(List<String> decoderList, String decoderName) {
@@ -571,9 +557,9 @@ public class MediaCodecHelper {
             safeSet(videoFormat, "vendor.nvidia.disable-output-reorder", 1);
             setNewOption = true;
         }
-        if (tryNumber < 1 && mustAvoidAndroidRLowLatency(decoderInfo, videoFormat.getString(MediaFormat.KEY_MIME))) {
+        if (tryNumber < 1 && isAmlogicC2HevcDecoder(decoderInfo.getName())) {
             // Fall through to vdec-lowlatency and the Amlogic vendor extension below.
-            LimeLog.info("Skipping KEY_LOW_LATENCY for Amlogic S905X5-class HEVC decoder");
+            LimeLog.info("Skipping KEY_LOW_LATENCY for Amlogic C2 HEVC decoder");
         }
         else if (tryNumber < 1) {
             // Official Android 11+ low latency option (KEY_LOW_LATENCY).
@@ -816,6 +802,14 @@ public class MediaCodecHelper {
         // for some decoders due to the number of references frames being > 1. Old Amlogic
         // decoders are known to have this problem.
         //
+        // The Amlogic C2 HEVC decoder has a worse problem: with RFI on, it hits bursts of about
+        // a second of errored frames every few minutes. It also advertises FEATURE_LowLatency,
+        // so it must be excluded before the heuristic below.
+        if (isAmlogicC2HevcDecoder(decoderInfo.getName())) {
+            LimeLog.info("Disabling HEVC RFI for Amlogic C2 HEVC decoder");
+            return false;
+        }
+
         // If the decoder supports FEATURE_LowLatency or any vendor low latency option,
         // we will use that as an indication that it can handle HEVC RFI without excessively
         // buffering frames.
