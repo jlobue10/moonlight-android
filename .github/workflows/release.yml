@@ -8,7 +8,8 @@ name: Build and release APKs
 # KEY_ALIAS and KEY_PASSWORD, the APKs are signed with that keystore so later
 # releases install as updates. Without them a throwaway key is generated for the
 # run, which means every release has a different signature and must be installed
-# after uninstalling the previous build. See docs/RELEASING.md.
+# after uninstalling the previous build; a release (as opposed to a build-only run) is
+# refused in that state unless allow_throwaway_key is set. See docs/RELEASING.md.
 
 on:
   push:
@@ -20,6 +21,11 @@ on:
         required: false
         default: ''
         type: string
+      allow_throwaway_key:
+        description: "Publish the release even though no keystore secrets are configured (throwaway signature: users must uninstall to update)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -99,6 +105,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ALLOW_THROWAWAY_KEY: ${{ inputs.allow_throwaway_key }}
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/${BUILD_TOOLS_VERSION}"
@@ -109,6 +116,10 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
             SIGNING_NOTE="Signed with the project's release key."
           else
+            if [ -n "${RELEASE_TAG:-}" ] && [ "${ALLOW_THROWAWAY_KEY:-false}" != "true" ]; then
+              echo "::error::Refusing to publish ${RELEASE_TAG} without the KEYSTORE_BASE64/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD secrets: the APKs would carry a throwaway signature that no later release can update. Run tools/release-signing/setup-signing-secrets.sh (see docs/RELEASING.md), or re-run with allow_throwaway_key enabled."
+              exit 1
+            fi
             echo "::warning::No KEYSTORE_BASE64 secret: signing with a throwaway key generated for this run. The resulting APKs cannot be installed over a build signed with a different key; uninstall the previous build first."
             KEYSTORE_PASSWORD="throwaway-$RANDOM$RANDOM"
             KEY_ALIAS="throwaway"

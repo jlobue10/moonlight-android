@@ -23,26 +23,32 @@ pushing the tag, for environments that cannot push tags.
 
 ## Signing
 
-Without any configuration the workflow signs with a **throwaway key** generated for the run.
-Those APKs install fine, but every release carries a different signature, so Android refuses
-to install one over another: uninstall the previous build first (pairing data is lost).
+Releases must be signed with one persistent key, otherwise Android refuses to install a new
+build over the previous one (and Obtainium updates fail). The workflow reads that key from
+four repository secrets; without them it only signs with a **throwaway key** generated for the
+run, which is fine for build-only runs but a release is refused unless the
+`allow_throwaway_key` input is set (every such release forces users to uninstall first,
+losing their pairing data).
 
-To get updatable releases, create a keystore once and store it as repository secrets:
+Set the secrets once, from a machine with a JDK (`keytool`) and the GitHub CLI (`gh auth login`):
 
-    keytool -genkeypair -v -keystore release.jks -alias release -keyalg RSA -keysize 2048 \
-        -validity 36500 -dname "CN=<your name>"
-    base64 -w0 release.jks     # -> KEYSTORE_BASE64
+    tools/release-signing/setup-signing-secrets.sh            # Linux/macOS/Git Bash
+    tools/release-signing/setup-signing-secrets.ps1           # Windows PowerShell
 
-Secrets (Settings → Secrets and variables → Actions):
+The script creates `release.jks` in the current directory (or reuses one you point it at),
+asks for a password, and stores these secrets (Settings → Secrets and variables → Actions):
 
 | Secret              | Value                                   |
 |---------------------|-----------------------------------------|
-| `KEYSTORE_BASE64`   | the base64 output above                 |
-| `KEYSTORE_PASSWORD` | the keystore password you chose         |
-| `KEY_ALIAS`         | `release` (or the alias you used)       |
-| `KEY_PASSWORD`      | the key password (same as the keystore unless you set one) |
+| `KEYSTORE_BASE64`   | the keystore file, base64-encoded       |
+| `KEYSTORE_PASSWORD` | the keystore password                   |
+| `KEY_ALIAS`         | `release` (or the alias you chose)      |
+| `KEY_PASSWORD`      | the key password (same as the keystore) |
 
-Keep `release.jks` somewhere safe; losing it means users must uninstall to update.
+The same four values can be pasted by hand (`base64 -w0 release.jks` for the first one).
+**Keep `release.jks` and its password somewhere safe and never commit them**: losing the key
+means every user must uninstall to update. The first release signed with the persistent key
+still has to be installed after uninstalling the throwaway-signed builds that preceded it.
 
 ## Obtainium
 
