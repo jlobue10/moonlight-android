@@ -107,6 +107,18 @@ stop that arrives while the presenter is still waiting for Full Space.
   the entity rejects RGBA GL buffers (then render TOP_BOTTOM or a mono trick); canvas visible + mono
   black → the EGL producer is the problem; canvas black → the entity itself (placement/size/mode).
 
+### Seen on the headset (fork.10 A/B)
+
+- Side-by-side: black. Mono: black. **Canvas test pattern: no separate floating screen at all** (the
+  game ran in the flat window as designed). So the entity is never visible with *any* producer, while
+  the GL frames are provably fine; the earlier "floating screen, black" was most likely the black app
+  window itself. This is a placement/visibility problem, not a buffer one.
+- The only thing done to the entity after creation was moving it to the system's *recommended pose*
+  (twice, immediately). fork.11 stops applying that pose, logs its value, and logs where the quad sits
+  (2 m straight ahead of the activity space origin). If the quad is still not visible, try *Hide the
+  app window in stereo mode* (an opaque panel in front of the quad would hide it), then the
+  `screen placed at` / `recommended pose` log lines tell where it went.
+
 ## Known gaps and what to verify on the headset
 
 1. **Does the entity appear and in stereo?** Start a 3D render mode; the app should jump to Full
