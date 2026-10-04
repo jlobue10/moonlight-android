@@ -20,6 +20,7 @@ original conversation. Everything below is either in this repository, in
 | Galaxy XR feedback round 1: settings screen had no way out (toolbar + Done + unified back path), PR **#16** | merged (22fc8713) | done |
 | True stereo on Android XR: SceneCore `SurfaceEntity` SIDE_BY_SIDE in Full Space fed by an EGL thread, renderer decoupled from GLSurfaceView (`RenderHost`), minSdk 24; `docs/XR_STEREO.md`, PR **#17** | merged (5739be88) | done |
 | **v20.3.0-fork.4 released** (versionCode 61, run 37226881349, signed; arm64 APK 68.7 MB, up from 40 MB because of the XR libraries) | GitHub Releases | published |
+| Galaxy XR feedback round 2: app list had no way back (toolbar), PR **#18**; 3D mode would not connect (stereo path could wait forever → 6 s watchdog, EGL failure report, flat fallback + toast), PR **#19**; 2026 Steam Controller over BLE (in-app GATT driver, LI_CTYPE_STEAM, dual touchpads, IMU, battery; `docs/STEAM_CONTROLLER.md`), PR **#20** | open, all CI green, trial-merge clean | see §2 |
 
 ## 2. Where it stopped, and the next steps
 
@@ -29,9 +30,14 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.4** (PRs #16 + #17, bump 1cec828c) is the current release; no PR is open. fork.3 was
-   confirmed working on the Galaxy XR; fork.4 (settings toolbar, XR stereo) is CI-only: run the
-   on-device checks in `docs/XR_STEREO.md` first, then `docs/3D_DEPTH_MODELS.md`. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.4** (PRs #16 + #17, bump 1cec828c) is the current release and runs on the Galaxy XR.
+   Open from the second feedback round, all CI-only: **#18** app-list toolbar, **#19** stereo start-up
+   fallback (if 3D still fails to connect after it, the toast names the cause and the stream runs flat;
+   turning *Stereo screen on Android XR* off reproduces fork.3), **#20** Steam Controller BLE driver
+   (first hardware check: does the controller appear in the stream and does its keyboard/mouse
+   emulation stop). After merging: bump to fork.5, dispatch the release. Also still unverified on the
+   headset: the fork.4 stereo path itself (`docs/XR_STEREO.md`) and the depth models
+   (`docs/3D_DEPTH_MODELS.md`). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
@@ -81,8 +87,8 @@ Verify against `docs/audit/2026-10-04/MOONLIGHT_FORK_AUDIT.md` (§2–§4 ids) b
   bitstream; the decoder now uses the negotiated size as-is). The 10-bit mask (`0xAA00`) and the
   rendered-frame counter on both render paths were already correct.
 - **Common-c follow-ups** (common-c is synced, the Android side may not be): set `MODIFIER_EXTENDED`
-  from the scancode path, `LiSendControllerTouchEvent2` JNI for dual-touchpad pads, `LI_CTYPE_STEAM`
-  in `ControllerHandler`, `LiGetRTPVideoStats()` for the overlay. Artemis PR #590 (capability-gated
+  from the scancode path, `LiGetRTPVideoStats()` for the overlay. Done in PR #20:
+  `LiSendControllerTouchEvent2` JNI and `LI_CTYPE_STEAM` (for the BLE Steam Controller driver). Artemis PR #590 (capability-gated
   low latency with tests) was not taken.
 - **Host side:** Apollo v0.4.8 is unpatched for CVE-2026-32253; see the ecosystem report.
 - `jlobue10/moonlight-common-c`: consider making `artemis-sync-upstream-2026-10` (what the
