@@ -576,6 +576,18 @@ public class ComputerManagerService extends Service {
                 return null;
             }
 
+            if (http.wasLastServerInfoFromInsecureFallback() && details.serverCert != null) {
+                // The host's certificate no longer matches the one pinned at pairing time, so this
+                // response came over plain HTTP from a host we could not authenticate - anything on
+                // the network could have answered. Keep the PC reachable so the user can re-pair,
+                // but never treat it as paired and don't let the response rewrite the saved
+                // identity of the PC (name, addresses, MAC, permissions, server commands); see
+                // ComputerDetails.update().
+                LimeLog.warning("Certificate mismatch polling "+address+" for "+details.name+"; serverinfo response is untrusted");
+                newDetails.pairState = PairingManager.PairState.NOT_PAIRED;
+                newDetails.fromInsecureFallback = true;
+            }
+
             return newDetails;
         } catch (XmlPullParserException e) {
             e.printStackTrace();

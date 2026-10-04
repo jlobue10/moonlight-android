@@ -89,6 +89,10 @@ public class ComputerDetails {
     // Server commands
     public List<String> serverCommands;
 
+    // Set when these details were polled over plain HTTP after the host's certificate failed to
+    // match the pinned one (see ComputerManagerService.tryPollIp()). Transient, never persisted.
+    public boolean fromInsecureFallback;
+
     public ComputerDetails() {
         // Use defaults
         state = State.UNKNOWN;
@@ -121,6 +125,21 @@ public class ComputerDetails {
     }
 
     public void update(ComputerDetails details) {
+        this.fromInsecureFallback = details.fromInsecureFallback;
+        if (details.fromInsecureFallback) {
+            // These details could not be authenticated (certificate mismatch, HTTP fallback), so
+            // only take the reachability and pairing state from them: pairState was forced to
+            // NOT_PAIRED by the poller, and activeAddress is one of our own saved addresses rather
+            // than something the host sent. Name, addresses, MAC, permissions, server commands,
+            // ports and the rest stay as they were until a trusted poll succeeds.
+            this.state = details.state;
+            this.pairState = details.pairState;
+            if (details.activeAddress != null) {
+                this.activeAddress = details.activeAddress;
+            }
+            return;
+        }
+
         this.state = details.state;
         this.name = details.name;
         this.uuid = details.uuid;

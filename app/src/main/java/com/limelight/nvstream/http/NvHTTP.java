@@ -78,6 +78,10 @@ public class NvHTTP {
     private HttpUrl baseUrlHttp;
 
     private int httpsPort;
+
+    // True when the last getServerInfo() had to fall back to plain HTTP because the host's
+    // certificate did not match the pinned one, i.e. the response could not be authenticated.
+    private boolean lastServerInfoFromInsecureFallback;
     
     private OkHttpClient httpClientLongConnectTimeout;
     private OkHttpClient httpClientLongConnectNoReadTimeout;
@@ -351,8 +355,14 @@ public class NvHTTP {
         }
     }
     
+    public boolean wasLastServerInfoFromInsecureFallback() {
+        return lastServerInfoFromInsecureFallback;
+    }
+
     public String getServerInfo(boolean likelyOnline) throws IOException, XmlPullParserException {
         String resp;
+
+        lastServerInfoFromInsecureFallback = false;
 
         // If we believe the PC is online, give it a little extra time to respond
         OkHttpClient client = likelyOnline ? httpClientLongConnectTimeout : httpClientShortConnectTimeout;
@@ -365,12 +375,14 @@ public class NvHTTP {
 
         // When we have a pinned cert, use HTTPS to fetch serverinfo and fall back on cert mismatch
         if (serverCert != null) {
+            boolean certMismatch = false;
             try {
                 try {
                     resp = openHttpConnectionToString(client, getHttpsUrl(likelyOnline), "serverinfo");
                 } catch (SSLHandshakeException e) {
                     // Detect if we failed due to a server cert mismatch
                     if (e.getCause() instanceof CertificateException) {
+                        certMismatch = true;
                         // Jump to the GfeHttpResponseException exception handler to retry
                         // over HTTP which will allow us to pair again to update the cert
                         throw new HostHttpResponseException(401, "Server certificate mismatch");
@@ -387,7 +399,12 @@ public class NvHTTP {
             catch (HostHttpResponseException e) {
                 if (e.getErrorCode() == 401) {
                     // Cert validation error - fall back to HTTP
-                    return openHttpConnectionToString(client, baseUrlHttp, "serverinfo");
+                    resp = openHttpConnectionToString(client, baseUrlHttp, "serverinfo");
+
+                    // After a certificate mismatch this response was not authenticated by the
+                    // pinned certificate, so tell callers not to trust its contents.
+                    lastServerInfoFromInsecureFallback = certMismatch;
+                    return resp;
                 }
 
                 // If it's not a cert validation error, throw it
