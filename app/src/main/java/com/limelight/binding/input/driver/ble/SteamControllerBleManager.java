@@ -36,14 +36,26 @@ public final class SteamControllerBleManager {
     private final Context context;
     private final UsbDriverListener listener;
     private final boolean motionEnabled;
+    private final boolean splitPads;
+    private final int gripsMode;
     private final Map<String, SteamControllerBle> drivers = new HashMap<>();
     private int nextDeviceId = BASE_DEVICE_ID;
     private BroadcastReceiver aclReceiver;
 
-    public SteamControllerBleManager(Context context, UsbDriverListener listener, boolean motionEnabled) {
+    public SteamControllerBleManager(Context context, UsbDriverListener listener, boolean motionEnabled,
+                                     boolean splitPads, int gripsMode) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.motionEnabled = motionEnabled;
+        this.splitPads = splitPads;
+        this.gripsMode = gripsMode;
+    }
+
+    /** Maps the steam_controller_grips preference value to a SteamControllerBle.GRIPS_* constant. */
+    public static int gripsModeFromPref(String value) {
+        if ("ds4".equals(value)) return SteamControllerBle.GRIPS_DS4;
+        if ("off".equals(value)) return SteamControllerBle.GRIPS_OFF;
+        return SteamControllerBle.GRIPS_PADDLES;
     }
 
     /** The runtime permission this feature needs on the current Android version. */
@@ -129,7 +141,7 @@ public final class SteamControllerBleManager {
         if (drivers.containsKey(address)) {
             return;
         }
-        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled);
+        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode);
         drivers.put(address, driver);
         if (!driver.start()) {
             drivers.remove(address);
