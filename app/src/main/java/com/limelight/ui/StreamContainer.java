@@ -358,6 +358,14 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
             mStereoRenderer.onSurfaceDestroyed();
         }
 
+        if (xrStereo) {
+            // In stereo mode this View is only the flat app window; the stream renders into the
+            // SurfaceEntity. Android XR may recreate the window's surface (panel resize, Full Space
+            // layout), and Game.surfaceDestroyed() would end the stream for that. Ignore it.
+            LimeLog.info("XR stereo: app window surface destroyed; stream continues on the SurfaceEntity");
+            return;
+        }
+
         game.surfaceDestroyed(holder);
     }
 

@@ -539,11 +539,13 @@ public class SteamControllerBle extends AbstractController {
         // Triggers: 0..32767 (SDL maps value*2-32768 onto the full axis)
         leftTrigger = clamp01(s16(p, 5) / 32767f);
         rightTrigger = clamp01(s16(p, 7) / 32767f);
-        // Sticks: signed, up is positive (same convention as the XInput drivers here)
+        // Sticks: signed. The controller reports Y up-positive while ControllerHandler expects the
+        // Android/Linux down-positive convention (it negates on the way out), so flip Y here.
+        // Confirmed on hardware: without the flip both sticks were vertically inverted.
         leftStickX = s16(p, 9) / 32767f;
-        leftStickY = s16(p, 11) / 32767f;
+        leftStickY = -s16(p, 11) / 32767f;
         rightStickX = s16(p, 13) / 32767f;
-        rightStickY = s16(p, 15) / 32767f;
+        rightStickY = -s16(p, 15) / 32767f;
         reportInput();
 
         // Touchpads: normalised 0..1 with (0,0) top-left, as SDL does; pressure 0..1
