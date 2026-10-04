@@ -13,6 +13,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 
@@ -41,9 +42,11 @@ public class EvdevCaptureProvider extends InputCaptureProvider {
             byte deltaVScroll = 0;
             byte deltaHScroll = 0;
 
-            // Bind a local listening socket for evdevreader to connect to
+            // Bind a local listening socket on the loopback interface only for evdevreader
+            // to connect to. Binding all interfaces would let any host on the network connect
+            // first and inject input events into the stream.
             try {
-                servSock = new ServerSocket(0, 1);
+                servSock = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
             } catch (IOException e) {
                 e.printStackTrace();
                 return;
@@ -91,6 +94,11 @@ public class EvdevCaptureProvider extends InputCaptureProvider {
             LimeLog.info("Waiting for EvdevReader connection to port "+servSock.getLocalPort());
             try {
                 evdevSock = servSock.accept();
+                if (evdevSock.getInetAddress() == null || !evdevSock.getInetAddress().isLoopbackAddress()) {
+                    LimeLog.warning("Rejecting EvdevReader connection from "+evdevSock.getInetAddress());
+                    evdevSock.close();
+                    return;
+                }
                 evdevIn = evdevSock.getInputStream();
                 evdevOut = evdevSock.getOutputStream();
             } catch (IOException e) {

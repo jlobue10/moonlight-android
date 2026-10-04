@@ -328,6 +328,11 @@ int main(int argc, char* argv[]) {
 
     __android_log_print(ANDROID_LOG_INFO, "EvdevReader", "Entered main()");
 
+    if (argc < 2) {
+        __android_log_print(ANDROID_LOG_ERROR, "EvdevReader", "Missing port number argument");
+        return -1;
+    }
+
     port = atoi(argv[1]);
     __android_log_print(ANDROID_LOG_INFO, "EvdevReader", "Requested port number: %d", port);
 
