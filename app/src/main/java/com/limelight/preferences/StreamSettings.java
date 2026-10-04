@@ -12,6 +12,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.os.Handler;
 import android.os.Vibrator;
 
@@ -52,6 +54,8 @@ import com.limelight.PcView;
 import com.limelight.R;
 import com.limelight.binding.input.virtual_controller.keyboard.KeyBoardControllerConfigurationLoader;
 import com.limelight.binding.video.MediaCodecHelper;
+import com.limelight.utils.DepthModel;
+import com.limelight.utils.DepthModelDownloader;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.FileUriUtils;
 import com.limelight.utils.PerformanceDataTracker;
@@ -173,6 +177,58 @@ public class StreamSettings extends AppCompatActivity {
 
         protected SharedPreferences getPrefs() {
             return getPreferenceManager().getSharedPreferences();
+        }
+
+        private void promptDepthModelDownload(ListPreference pref, DepthModel model) {
+            Activity activity = getActivity();
+            if (activity == null) {
+                return;
+            }
+            int index = pref.findIndexOfValue(model.prefValue);
+            String name = index >= 0 ? pref.getEntries()[index].toString() : model.fileName;
+            new AlertDialog.Builder(activity)
+                    .setTitle(R.string.depth_model_download_title)
+                    .setMessage(getString(R.string.depth_model_download_message, name, model.sizeLabel()))
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(android.R.string.ok, (dialog, which) -> startDepthModelDownload(pref, model, name))
+                    .show();
+        }
+
+        private void startDepthModelDownload(ListPreference pref, DepthModel model, String name) {
+            Activity activity = getActivity();
+            if (activity == null) {
+                return;
+            }
+            DepthModelDownloader downloader = new DepthModelDownloader(activity);
+            ProgressDialog progress = new ProgressDialog(activity);
+            progress.setTitle(R.string.depth_model_download_title);
+            progress.setMessage(getString(R.string.depth_model_downloading, name));
+            progress.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+            progress.setMax(100);
+            progress.setCancelable(true);
+            progress.setOnCancelListener(dialog -> downloader.cancel());
+            progress.show();
+            downloader.download(model, new DepthModelDownloader.Listener() {
+                @Override
+                public void onProgress(long bytesRead, long totalBytes) {
+                    if (totalBytes > 0) {
+                        progress.setProgress((int) (bytesRead * 100 / totalBytes));
+                    }
+                }
+
+                @Override
+                public void onSuccess(DepthModel downloaded) {
+                    progress.dismiss();
+                    pref.setValue(downloaded.prefValue);
+                    Toast.makeText(activity, R.string.depth_model_download_done, Toast.LENGTH_SHORT).show();
+                }
+
+                @Override
+                public void onFailure(DepthModel failed, String reason) {
+                    progress.dismiss();
+                    Toast.makeText(activity, getString(R.string.depth_model_download_failed, reason), Toast.LENGTH_LONG).show();
+                }
+            });
         }
 
         private void setValue(String preferenceKey, String value) {
@@ -334,6 +390,17 @@ public class StreamSettings extends AppCompatActivity {
 
         public void initializePreferences() {
             addPreferencesFromResource(R.xml.preferences);
+
+            // Downloadable depth models: the preference only changes once the file is on disk and
+            // verified, so the renderer never has to fall back behind the user's back.
+            findPreference(DepthModel.PREF_KEY).setOnPreferenceChangeListener((preference, newValue) -> {
+                DepthModel model = DepthModel.fromPrefValue((String) newValue);
+                if (model.isAvailable(preference.getContext())) {
+                    return true;
+                }
+                promptDepthModelDownload((ListPreference) preference, model);
+                return false;
+            });
             PreferenceScreen screen = getPreferenceScreen();
 
             AppCompatActivity activity = (AppCompatActivity) requireActivity();

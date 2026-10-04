@@ -1,5 +1,7 @@
 package com.limelight.preferences;
 
+import com.limelight.utils.DepthModel;
+
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -249,6 +251,8 @@ public class PreferenceConfiguration {
     public ScaleMode videoScaleMode;
     public String language;
     public int renderMode;
+    public String depthModel;              // DepthModel.prefValue
+    public boolean depthGuidedUpsampling;
     public boolean smallIconMode, multiController, usbDriver, flipFaceButtons;
     public boolean onscreenController;
     public boolean hideOSCWhenHasGamepad;
@@ -388,6 +392,7 @@ public class PreferenceConfiguration {
     private static final String NUMBER_ZOOM_SCALE = "number_zoom_scale";
 
     private static final String PARALLAX_DEPTH = "parallax_depth";
+    private static final String CHECKBOX_DEPTH_GUIDED_UPSAMPLING = "checkbox_depth_guided_upsampling";
 
     private static final String CONVERGENCE_RATIO = "convergence_ratio";
     private static final String BALANCE_SHIFT = "balance_shift";
@@ -897,6 +902,8 @@ private static int getFramePacingValue(Context context) {
         String renderMode = prefs.getString("render_mode_list", "0");
         int renderModeInt = Integer.parseInt(renderMode);
         config.renderMode = renderModeInt;
+        config.depthModel = prefs.getString(DepthModel.PREF_KEY, DepthModel.DEFAULT.prefValue);
+        config.depthGuidedUpsampling = prefs.getBoolean(CHECKBOX_DEPTH_GUIDED_UPSAMPLING, true);
 
         // Read mouse mode and set touch settings accordingly
         String mouseMode = prefs.getString("mouse_mode_list", "0");

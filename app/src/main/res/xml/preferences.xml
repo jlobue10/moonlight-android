@@ -165,6 +165,20 @@
             android:summary="@string/summary_render_mode"
             android:title="@string/title_render_mode"
             app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="midas"
+            android:entries="@array/depth_model_names"
+            android:entryValues="@array/depth_model_values"
+            android:key="depth_model_list"
+            android:summary="@string/summary_depth_model"
+            android:title="@string/title_depth_model"
+            app:iconSpaceReserved="false" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="checkbox_depth_guided_upsampling"
+            android:summary="@string/summary_depth_guided_upsampling"
+            android:title="@string/title_depth_guided_upsampling"
+            app:iconSpaceReserved="false" />
         <com.limelight.preferences.SeekBarPreference
             android:key="parallax_depth"
             android:dialogMessage=""
