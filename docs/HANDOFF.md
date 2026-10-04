@@ -20,7 +20,8 @@ original conversation. Everything below is either in this repository, in
 | Galaxy XR feedback round 1: settings screen had no way out (toolbar + Done + unified back path), PR **#16** | merged (22fc8713) | done |
 | True stereo on Android XR: SceneCore `SurfaceEntity` SIDE_BY_SIDE in Full Space fed by an EGL thread, renderer decoupled from GLSurfaceView (`RenderHost`), minSdk 24; `docs/XR_STEREO.md`, PR **#17** | merged (5739be88) | done |
 | **v20.3.0-fork.4 released** (versionCode 61, run 37226881349, signed; arm64 APK 68.7 MB, up from 40 MB because of the XR libraries) | GitHub Releases | published |
-| Galaxy XR feedback round 2: app list had no way back (toolbar), PR **#18**; 3D mode would not connect (stereo path could wait forever → 6 s watchdog, EGL failure report, flat fallback + toast), PR **#19**; 2026 Steam Controller over BLE (in-app GATT driver, LI_CTYPE_STEAM, dual touchpads, IMU, battery; `docs/STEAM_CONTROLLER.md`), PR **#20** | open, all CI green, trial-merge clean | see §2 |
+| Galaxy XR feedback round 2: app list had no way back (toolbar), PR **#18**; 3D mode would not connect (stereo path could wait forever → 6 s watchdog, EGL failure report, flat fallback + toast), PR **#19**; 2026 Steam Controller over BLE (in-app GATT driver, LI_CTYPE_STEAM, dual touchpads, IMU, battery; `docs/STEAM_CONTROLLER.md`), PR **#20** | merged (90c18b6a, 49384870, de4f1a4f) | done |
+| **v20.3.0-fork.5 released** (versionCode 62, run 37231766963, signed) | GitHub Releases | published |
 
 ## 2. Where it stopped, and the next steps
 
@@ -30,14 +31,11 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.4** (PRs #16 + #17, bump 1cec828c) is the current release and runs on the Galaxy XR.
-   Open from the second feedback round, all CI-only: **#18** app-list toolbar, **#19** stereo start-up
-   fallback (if 3D still fails to connect after it, the toast names the cause and the stream runs flat;
-   turning *Stereo screen on Android XR* off reproduces fork.3), **#20** Steam Controller BLE driver
-   (first hardware check: does the controller appear in the stream and does its keyboard/mouse
-   emulation stop). After merging: bump to fork.5, dispatch the release. Also still unverified on the
-   headset: the fork.4 stereo path itself (`docs/XR_STEREO.md`) and the depth models
-   (`docs/3D_DEPTH_MODELS.md`). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.5** (PRs #18–#20, bump 40cd9ce9) is the current release; no PR is open. fork.4 was
+   confirmed running on the Galaxy XR; everything since is CI-only. Headset checks, in order: does a
+   3D render mode connect now (if it falls back, the toast names the cause; `docs/XR_STEREO.md`), does
+   the 2026 Steam Controller appear in the stream and stop acting as keyboard/mouse
+   (`docs/STEAM_CONTROLLER.md`), then the depth models (`docs/3D_DEPTH_MODELS.md`). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
