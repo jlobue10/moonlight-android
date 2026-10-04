@@ -118,6 +118,7 @@ public class SteamControllerBle extends AbstractController {
     private boolean announced;
     private volatile boolean stopped;
     private int reconnectAttempts;
+    private boolean everConnected;
     private boolean leftPadTouched, rightPadTouched;
     private short lastLowFreq = -1, lastHighFreq = -1;
 
@@ -150,6 +151,11 @@ public class SteamControllerBle extends AbstractController {
 
     public String getAddress() {
         return device.getAddress();
+    }
+
+    /** True while a GATT connection attempt or link exists. */
+    public boolean isLinkUp() {
+        return gatt != null;
     }
 
     // ----- lifecycle -----
@@ -213,6 +219,7 @@ public class SteamControllerBle extends AbstractController {
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 LimeLog.info("Steam Controller BLE: connected, negotiating");
                 reconnectAttempts = 0;
+                everConnected = true;
                 mtuRequested = true;
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
                 if (!g.requestMtu(DESIRED_MTU)) {
@@ -387,6 +394,13 @@ public class SteamControllerBle extends AbstractController {
         }
         if (g == gatt) {
             gatt = null;
+        }
+        if (!stopped && !everConnected) {
+            // A bonded controller that is switched off or out of range: connectGatt() times out with
+            // status 133 after ~30 s. Do not loop on it; the manager restarts us when the system sees
+            // it connect (ACL_CONNECTED).
+            LimeLog.info("Steam Controller BLE: " + device.getAddress() + " not reachable; waiting for it to connect");
+            return;
         }
         if (!stopped && reconnectAttempts++ < MAX_RECONNECT_ATTEMPTS) {
             LimeLog.info("Steam Controller BLE: reconnecting in " + RECONNECT_DELAY_MS + " ms (attempt " + reconnectAttempts + ")");

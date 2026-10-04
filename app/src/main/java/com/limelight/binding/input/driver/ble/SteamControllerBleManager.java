@@ -138,7 +138,11 @@ public final class SteamControllerBleManager {
 
     private void startDriver(BluetoothDevice device) {
         String address = device.getAddress();
-        if (drivers.containsKey(address)) {
+        SteamControllerBle existing = drivers.get(address);
+        if (existing != null) {
+            if (!existing.isLinkUp()) {
+                existing.start();   // it came (back) into range: the system just connected to it
+            }
             return;
         }
         SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode);
