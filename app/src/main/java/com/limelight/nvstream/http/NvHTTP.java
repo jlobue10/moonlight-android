@@ -187,7 +187,6 @@ public class NvHTTP {
                 .readTimeout(READ_TIMEOUT, TimeUnit.MILLISECONDS)
                 .connectTimeout(LONG_CONNECTION_TIMEOUT, TimeUnit.MILLISECONDS)
                 .proxy(Proxy.NO_PROXY)
-                .fastFallback(false)
                 .build();
 
         httpClientShortConnectTimeout = httpClientLongConnectTimeout.newBuilder()
