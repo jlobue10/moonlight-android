@@ -26,6 +26,8 @@ original conversation. Everything below is either in this repository, in
 | **v20.3.0-fork.6 released** (versionCode 63, run 37235504026, signed) | GitHub Releases | published |
 | Device logcat (fork.6) found the **root cause of every 3D failure since fork.4**: FATAL `AbstractMethodError com.android.extensions.xr.function.Consumer.accept` — R8 desugared the Jetpack XR platform callbacks without bridge methods because the platform lib was invisible. Fix: `compileOnly 'com.android.extensions.xr:extensions-xr:1.4.0'` (PR **#25**); plus Steam Controller stick Y + app-window surface loss ignored in stereo mode (PR **#24**) | merged (01110ee7, 9a18dff9) | done |
 | **v20.3.0-fork.7 released** (versionCode 64, run 37238146560, signed) | GitHub Releases | published |
+| fork.7 logcat: stereo path runs (SurfaceEntity + EGL + depth model OK) then FATAL `IllegalStateException: Cannot get pose in Activity Space with a non-AndroidXrEntity parent` from our spatial-mode listener (`setPose(..., Space.ACTIVITY)`, fires on registration). Fix: `Space.PARENT` + try/catch, PR **#26** | merged (3be953f3) | done |
+| **v20.3.0-fork.8 released** (versionCode 65, run 37240107700, signed) | GitHub Releases | published |
 
 ## 2. Where it stopped, and the next steps
 
@@ -35,12 +37,11 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.7** (PRs #24–#25, bump f0b6758f) is the current release; no PR is open. It carries the
-   fix for the process crash that was behind all 3D failures since fork.4 (see the table), so the stereo
-   path has never actually run on the headset before fork.7. Next headset checks: 3D mode comes up in
-   Full Space with the stereo screen; sticks no longer inverted; trackpads as Steam's left/right pad;
-   gyro. If anything fails: *Settings → Misc → Share stream log* — and read the **logcat.txt FATAL
-   lines first**, LimeLog never sees a process crash. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.8** (PR #26, bump 281e42af) is the current release; no PR is open. It is the first
+   build in which the stereo path has no known crash: fork.7's logcat showed the SurfaceEntity, EGL
+   thread and depth model all working before the pose-listener crash. Next headset checks: 3D mode shows
+   one stereo screen in Full Space; sticks right way up; trackpads as Steam's left/right pad; gyro. If
+   anything fails: *Settings → Misc → Share stream log*, read logcat.txt FATAL lines first. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
