@@ -1028,6 +1028,12 @@
         app:initialExpandedChildrenCount="1"
         app:iconSpaceReserved="false">
 
+        <Preference
+            android:key="share_stream_log"
+            android:summary="@string/summary_share_stream_log"
+            android:title="@string/title_share_stream_log"
+            app:iconSpaceReserved="false" />
+
         <com.limelight.preferences.LanguagePreference
             android:defaultValue="default"
             android:entries="@array/language_names"

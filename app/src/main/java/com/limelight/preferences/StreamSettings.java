@@ -64,12 +64,14 @@ import com.limelight.utils.DepthModelDownloader;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.FileUriUtils;
 import com.limelight.utils.PerformanceDataTracker;
+import com.limelight.utils.StreamLog;
 import com.limelight.utils.UiHelper;
 import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
@@ -268,6 +270,34 @@ public class StreamSettings extends AppCompatActivity {
                     Toast.makeText(activity, getString(R.string.depth_model_download_failed, reason), Toast.LENGTH_LONG).show();
                 }
             });
+        }
+
+        /** Shares files/logs/stream.log (LimeLog of the last stream) plus a logcat dump of this process. */
+        private void shareStreamLog() {
+            Activity activity = getActivity();
+            if (activity == null) {
+                return;
+            }
+            ArrayList<Uri> uris = new ArrayList<>();
+            String authority = BuildConfig.APPLICATION_ID + ".fileprovider";
+            File log = StreamLog.file(activity);
+            if (log.isFile() && log.length() > 0) {
+                uris.add(FileProvider.getUriForFile(activity, authority, log));
+            }
+            File logcat = StreamLog.dumpLogcat(activity);
+            if (logcat != null) {
+                uris.add(FileProvider.getUriForFile(activity, authority, logcat));
+            }
+            if (uris.isEmpty()) {
+                Toast.makeText(activity, R.string.toast_no_stream_log, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Intent intent = new Intent(Intent.ACTION_SEND_MULTIPLE);
+            intent.setType("text/plain");
+            intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+            intent.putExtra(Intent.EXTRA_SUBJECT, "Moonlight stream log");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(intent, getString(R.string.title_share_stream_log)));
         }
 
         private void setValue(String preferenceKey, String value) {
@@ -858,6 +888,14 @@ public class StreamSettings extends AppCompatActivity {
                     return true;
                 }
             });
+
+            Preference shareLogPref = findPreference("share_stream_log");
+            if (shareLogPref != null) {
+                shareLogPref.setOnPreferenceClickListener(preference -> {
+                    shareStreamLog();
+                    return true;
+                });
+            }
 
             Preference _pref;
             _pref = findPreference("import_keyboard_file");

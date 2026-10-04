@@ -22,4 +22,12 @@ public class LimeLog {
     public static void setFileHandler(String fileName) throws IOException {
         LOGGER.addHandler(new FileHandler(fileName));
     }
+
+    public static void addHandler(java.util.logging.Handler handler) {
+        LOGGER.addHandler(handler);
+    }
+
+    public static void removeHandler(java.util.logging.Handler handler) {
+        LOGGER.removeHandler(handler);
+    }
 }
