@@ -406,7 +406,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
         onExternelDisplay = currentDisplay.getDisplayId() != Display.DEFAULT_DISPLAY;
 
-        boolean shouldInvertDecoderResolution = false;
+        boolean swapResolutionForPortrait = false;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 && onExternelDisplay
@@ -439,10 +439,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             }
 
             boolean portraitMode = currentOrientation == Configuration.ORIENTATION_PORTRAIT;
-            shouldInvertDecoderResolution = portraitMode && prefConfig.autoInvertVideoResolution;
+            swapResolutionForPortrait = portraitMode && prefConfig.autoInvertVideoResolution;
 
-            displayWidth = shouldInvertDecoderResolution ? prefConfig.height : prefConfig.width;
-            displayHeight = shouldInvertDecoderResolution ? prefConfig.width : prefConfig.height;
+            displayWidth = swapResolutionForPortrait ? prefConfig.height : prefConfig.width;
+            displayHeight = swapResolutionForPortrait ? prefConfig.width : prefConfig.height;
 
             // Enter landscape unless we're on a square screen
             setPreferredOrientationForActivity();
@@ -676,7 +676,6 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 tombstonePrefs.getInt("CrashCount", 0),
                 connMgr.isActiveNetworkMetered(),
                 willStreamHdr,
-                shouldInvertDecoderResolution,
                 glPrefs.glRenderer,
                 this);
 
