@@ -20,9 +20,10 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
 
 1. **PRs #11, #9 and #10 are merged** into `moonlight-noir` (merge commits 83d95dea, e7c0ad8b,
    baa62bbb). The build-only validation run of #11's branch was green
-   (https://github.com/jlobue10/moonlight-android/actions/runs/37211903167); a build-only run of
-   the merged `moonlight-noir` (baa62bbb) was dispatched right after merging — confirm it is green
-   in the Actions tab before releasing.
+   (https://github.com/jlobue10/moonlight-android/actions/runs/37211903167), and so was the
+   build-only run of the merged `moonlight-noir` (baa62bbb):
+   https://github.com/jlobue10/moonlight-android/actions/runs/37212297465. The default branch is
+   therefore release-ready; nothing is pending on the code side.
 2. **Signing secrets (needs the repository owner's machine):** run
    `tools/release-signing/setup-signing-secrets.sh` (or the `.ps1`) with a JDK and a logged-in `gh`.
    It creates `release.jks` locally and stores `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
