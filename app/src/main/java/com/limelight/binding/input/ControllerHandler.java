@@ -3006,6 +3006,27 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     @Override
+    public void reportControllerTouch(int controllerId, byte touchpadIndex, byte eventType, int pointerId,
+                                      float x, float y, float pressure) {
+        GenericControllerContext context = usbDeviceContexts.get(controllerId);
+        if (context == null) {
+            return;
+        }
+
+        conn.sendControllerTouchEvent2((byte)context.controllerNumber, eventType, touchpadIndex, pointerId, x, y, pressure);
+    }
+
+    @Override
+    public void reportControllerBattery(int controllerId, byte batteryState, byte batteryPercentage) {
+        GenericControllerContext context = usbDeviceContexts.get(controllerId);
+        if (context == null) {
+            return;
+        }
+
+        conn.sendControllerBatteryEvent((byte)context.controllerNumber, batteryState, batteryPercentage);
+    }
+
+    @Override
     public void deviceRemoved(AbstractController controller) {
         UsbDeviceContext context = usbDeviceContexts.get(controller.getControllerId());
         if (context != null) {
@@ -3483,8 +3504,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             byte type = device.getType();
             short capabilities = device.getCapabilities();
 
-            // Report sensors if the input device has them or we're using built-in sensors for a built-in controller
-            if (type != MoonBridge.LI_CTYPE_PS && type != MoonBridge.LI_CTYPE_NINTENDO && sensorManager != null) {
+            // Report sensors if the input device has them or we're using built-in sensors for a built-in controller.
+            // Steam Controllers bring their own IMU through the driver, so they keep their type and capabilities.
+            if (type != MoonBridge.LI_CTYPE_PS && type != MoonBridge.LI_CTYPE_NINTENDO
+                    && type != MoonBridge.LI_CTYPE_STEAM && sensorManager != null) {
                 if (sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null) {
                     capabilities |= MoonBridge.LI_CCAP_GYRO;
                 }

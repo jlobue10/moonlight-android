@@ -93,6 +93,16 @@ Java_com_limelight_nvstream_jni_MoonBridge_sendControllerTouchEvent(JNIEnv *env,
 }
 
 JNIEXPORT jint JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_sendControllerTouchEvent2(JNIEnv *env, jclass clazz,
+                                                                     jbyte controllerNumber,
+                                                                     jbyte eventType,
+                                                                     jbyte touchpadIndex,
+                                                                     jint pointerId, jfloat x,
+                                                                     jfloat y, jfloat pressure) {
+    return LiSendControllerTouchEvent2(controllerNumber, eventType, touchpadIndex, pointerId, x, y, pressure);
+}
+
+JNIEXPORT jint JNICALL
 Java_com_limelight_nvstream_jni_MoonBridge_sendControllerMotionEvent(JNIEnv *env, jclass clazz,
                                                                      jbyte controllerNumber,
                                                                      jbyte motionType, jfloat x,

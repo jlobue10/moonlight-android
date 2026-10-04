@@ -18,6 +18,7 @@ import com.limelight.binding.input.capture.InputCaptureProvider;
 import com.limelight.binding.input.touch.AbsoluteTouchContext;
 import com.limelight.binding.input.touch.RelativeTouchContext;
 import com.limelight.binding.input.driver.UsbDriverService;
+import com.limelight.binding.input.driver.ble.SteamControllerBleManager;
 import com.limelight.binding.input.evdev.EvdevListener;
 import com.limelight.binding.input.touch.TouchContext;
 import com.limelight.binding.input.touch.TrackpadContext;
@@ -237,6 +238,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private WifiManager.WifiLock lowLatencyWifiLock;
 
     private boolean connectedToUsbDriverService = false;
+    private SteamControllerBleManager steamControllerBle;
+    private static final int REQUEST_STEAM_CONTROLLER_BLUETOOTH = 0x5C;
     private ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
@@ -1704,6 +1707,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
         if (prefConfig.enableFullExDisplay) handleDisplayRemoved();
 
+        if (steamControllerBle != null) {
+            steamControllerBle.stop();
+            steamControllerBle = null;
+        }
         if (controllerHandler != null) {
             controllerHandler.destroy();
         }
@@ -1737,6 +1744,38 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Destroy the capture provider
         inputCaptureProvider.destroy();
         streamContainer.onDestroy();
+    }
+
+    /**
+     * The 2026 Steam Controller is not a gamepad to Android; our driver talks to it over GATT, which
+     * needs BLUETOOTH_CONNECT on Android 12+. Ask once per stream start when it is missing.
+     */
+    private void startSteamControllerDriver() {
+        if (controllerHandler == null) {
+            return;
+        }
+        if (!SteamControllerBleManager.hasPermission(this)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                requestPermissions(new String[]{SteamControllerBleManager.requiredPermission()}, REQUEST_STEAM_CONTROLLER_BLUETOOTH);
+            }
+            return;
+        }
+        if (steamControllerBle == null) {
+            steamControllerBle = new SteamControllerBleManager(this, controllerHandler, prefConfig.steamControllerMotion);
+            steamControllerBle.start();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_STEAM_CONTROLLER_BLUETOOTH) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startSteamControllerDriver();
+            } else {
+                Toast.makeText(this, R.string.toast_steam_controller_permission, Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     @Override
@@ -3736,6 +3775,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             // Start the USB driver
             bindService(new Intent(this, UsbDriverService.class),
                     usbDriverServiceConnection, Service.BIND_AUTO_CREATE);
+        }
+
+        if (prefConfig.steamControllerBle) {
+            startSteamControllerDriver();
         }
 
         // Report this shortcut being used (off the main thread to prevent ANRs)

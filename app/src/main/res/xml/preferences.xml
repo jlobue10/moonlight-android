@@ -293,6 +293,19 @@
             android:title="@string/title_checkbox_xb1_driver"
             app:iconSpaceReserved="false" />
         <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="checkbox_steam_controller_ble"
+            android:summary="@string/summary_checkbox_steam_controller_ble"
+            android:title="@string/title_checkbox_steam_controller_ble"
+            app:iconSpaceReserved="false" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:dependency="checkbox_steam_controller_ble"
+            android:key="checkbox_steam_controller_motion"
+            android:summary="@string/summary_checkbox_steam_controller_motion"
+            android:title="@string/title_checkbox_steam_controller_motion"
+            app:iconSpaceReserved="false" />
+        <CheckBoxPreference
             android:defaultValue="false"
             android:dependency="checkbox_usb_driver"
             android:key="checkbox_usb_bind_all"
