@@ -22,6 +22,7 @@ original conversation. Everything below is either in this repository, in
 | **v20.3.0-fork.4 released** (versionCode 61, run 37226881349, signed; arm64 APK 68.7 MB, up from 40 MB because of the XR libraries) | GitHub Releases | published |
 | Galaxy XR feedback round 2: app list had no way back (toolbar), PR **#18**; 3D mode would not connect (stereo path could wait forever → 6 s watchdog, EGL failure report, flat fallback + toast), PR **#19**; 2026 Steam Controller over BLE (in-app GATT driver, LI_CTYPE_STEAM, dual touchpads, IMU, battery; `docs/STEAM_CONTROLLER.md`), PR **#20** | merged (90c18b6a, 49384870, de4f1a4f) | done |
 | **v20.3.0-fork.5 released** (versionCode 62, run 37231766963, signed) | GitHub Releases | published |
+| Galaxy XR feedback round 3 (fork.5 on device: Steam Controller works as a PS4 pad incl. Steam button; 3D still exits to the app list with no dialog): **#21** launch the stream in Full Space from the app list + ignore the stop during the space transition (the silent exit is `Game.onStop()` → finish, caused by the mid-stream Full Space request); **#22** trackpads as DualShock halves (distinct fingers) + grip-button mode; **#23** per-stream log file + "Share stream log" in Misc settings | open, CI green | see §2 |
 
 ## 2. Where it stopped, and the next steps
 
@@ -31,11 +32,12 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.5** (PRs #18–#20, bump 40cd9ce9) is the current release; no PR is open. fork.4 was
-   confirmed running on the Galaxy XR; everything since is CI-only. Headset checks, in order: does a
-   3D render mode connect now (if it falls back, the toast names the cause; `docs/XR_STEREO.md`), does
-   the 2026 Steam Controller appear in the stream and stop acting as keyboard/mouse
-   (`docs/STEAM_CONTROLLER.md`), then the depth models (`docs/3D_DEPTH_MODELS.md`). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.5** (PRs #18–#20, bump 40cd9ce9) is the current release and runs on the Galaxy XR
+   (Steam Controller recognised as a PS4 pad, Steam button works, navigation fixed). Open: **#21**
+   (3D: launch into Full Space; the previous failure was the activity being stopped during the
+   space transition), **#22** (Steam Controller DualShock mapping), **#23** (log sharing). After
+   merging: bump to fork.6, dispatch the release. First thing to ask the user for after fork.6 if 3D
+   still fails: *Settings → Misc → Share stream log* (stream.log + logcat.txt). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
