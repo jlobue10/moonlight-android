@@ -395,6 +395,13 @@ public class ComputerManagerService extends Service {
         return new MdnsDiscoveryListener() {
             @Override
             public void notifyComputerAdded(MdnsComputer computer) {
+                // The SRV port comes from an unauthenticated advertisement, and AddressTuple
+                // throws on an invalid port, which would kill the discovery thread
+                if (computer.getPort() <= 0 || computer.getPort() > 65535) {
+                    LimeLog.warning("Ignoring mDNS advertisement with invalid port: "+computer.getPort());
+                    return;
+                }
+
                 ComputerDetails details = new ComputerDetails();
 
                 // Populate the computer template with mDNS info
@@ -574,6 +581,12 @@ public class ComputerManagerService extends Service {
             e.printStackTrace();
             return null;
         } catch (IOException e) {
+            return null;
+        } catch (RuntimeException e) {
+            // A malformed response from any host on the network must not take the whole
+            // process down with the polling thread. Log it loudly so real bugs stay visible.
+            LimeLog.severe("Polling "+address+" failed with an unexpected error: "+e.toString());
+            e.printStackTrace();
             return null;
         }
     }

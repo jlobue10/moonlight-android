@@ -321,12 +321,24 @@ public class NvHTTP {
         return getXmlArray(new StringReader(str), tagname, throwIfMissing);
     }
     
-    private static void verifyResponseStatus(XmlPullParser xpp) throws HostHttpResponseException {
+    private static void verifyResponseStatus(XmlPullParser xpp) throws HostHttpResponseException, XmlPullParserException {
+        // The attribute is host-controlled, so a missing or non-numeric value must become a
+        // checked exception the callers already handle rather than an NPE/NumberFormatException.
+        String statusCodeStr = xpp.getAttributeValue(XmlPullParser.NO_NAMESPACE, "status_code");
+        if (statusCodeStr == null) {
+            throw new XmlPullParserException("Missing status_code in host response");
+        }
+
         // We use Long.parseLong() because in rare cases GFE can send back a status code of
         // 0xFFFFFFFF, which will cause Integer.parseInt() to throw a NumberFormatException due
         // to exceeding Integer.MAX_VALUE. We'll get the desired error code of -1 by just casting
         // the resulting long into an int.
-        int statusCode = (int)Long.parseLong(xpp.getAttributeValue(XmlPullParser.NO_NAMESPACE, "status_code"));
+        int statusCode;
+        try {
+            statusCode = (int)Long.parseLong(statusCodeStr);
+        } catch (NumberFormatException e) {
+            throw new XmlPullParserException("Invalid status_code in host response: "+statusCodeStr);
+        }
         if (statusCode != 200) {
             String statusMsg = xpp.getAttributeValue(XmlPullParser.NO_NAMESPACE, "status_message");
             if (statusCode == -1 && "Invalid".equals(statusMsg)) {
@@ -611,7 +623,11 @@ public class NvHTTP {
         // ServerCodecModeSupport wasn't present on old GFE versions
         String str = getXmlString(serverInfo, "ServerCodecModeSupport", false);
         if (str != null) {
-            return Long.parseLong(str);
+            try {
+                return Long.parseLong(str);
+            } catch (NumberFormatException e) {
+                throw new XmlPullParserException("Malformed ServerCodecModeSupport field in host response: "+str);
+            }
         } else {
             return 0;
         }
@@ -642,7 +658,13 @@ public class NvHTTP {
         // has the semantics that its name would indicate. To contain the effects of this change as much
         // as possible, we'll force the current game to zero if the server isn't in a streaming session.
         if (getXmlString(serverInfo, "state", true).endsWith("_SERVER_BUSY")) {
-            return Integer.parseInt(getXmlString(serverInfo, "currentgame", true));
+            String currentGame = getXmlString(serverInfo, "currentgame", true);
+            try {
+                return Integer.parseInt(currentGame);
+            } catch (NumberFormatException e) {
+                // Garbage from the host is reported like a missing mandatory field
+                throw new XmlPullParserException("Malformed currentgame field in host response: "+currentGame);
+            }
         }
         else {
             return 0;
@@ -651,11 +673,21 @@ public class NvHTTP {
 
     public int getHttpsPort(String serverInfo) {
         try {
-            return Integer.parseInt(getXmlString(serverInfo, "HttpsPort", true));
+            int port = Integer.parseInt(getXmlString(serverInfo, "HttpsPort", true));
+            if (port <= 0 || port > 65535) {
+                // HttpUrl.Builder.port() throws on an out-of-range port
+                LimeLog.warning("Ignoring out-of-range HttpsPort from host: "+port);
+                return DEFAULT_HTTPS_PORT;
+            }
+            return port;
         } catch (XmlPullParserException e) {
             e.printStackTrace();
             return DEFAULT_HTTPS_PORT;
         } catch (IOException e) {
+            e.printStackTrace();
+            return DEFAULT_HTTPS_PORT;
+        } catch (NumberFormatException e) {
+            // Non-numeric port from the host
             e.printStackTrace();
             return DEFAULT_HTTPS_PORT;
         }
@@ -665,11 +697,21 @@ public class NvHTTP {
         // This is an extension which is not present in GFE. It is present for Sunshine to be able
         // to support dynamic HTTP WAN ports without requiring the user to manually enter the port.
         try {
-            return Integer.parseInt(getXmlString(serverInfo, "ExternalPort", true));
+            int port = Integer.parseInt(getXmlString(serverInfo, "ExternalPort", true));
+            if (port <= 0 || port > 65535) {
+                // AddressTuple throws on an out-of-range port
+                LimeLog.warning("Ignoring out-of-range ExternalPort from host: "+port);
+                return baseUrlHttp.port();
+            }
+            return port;
         } catch (XmlPullParserException e) {
             // Expected on non-Sunshine servers
             return baseUrlHttp.port();
         } catch (IOException e) {
+            e.printStackTrace();
+            return baseUrlHttp.port();
+        } catch (NumberFormatException e) {
+            // Non-numeric port from the host
             e.printStackTrace();
             return baseUrlHttp.port();
         }
@@ -822,15 +864,20 @@ public class NvHTTP {
     public int[] getServerAppVersionQuad(String serverInfo) throws XmlPullParserException, IOException {
         String serverVersion = getServerVersion(serverInfo);
         if (serverVersion == null) {
-            throw new IllegalArgumentException("Missing server version field");
+            throw new XmlPullParserException("Missing server version field");
         }
         String[] serverVersionSplit = serverVersion.split("\\.");
         if (serverVersionSplit.length != 4) {
-            throw new IllegalArgumentException("Malformed server version field: "+serverVersion);
+            throw new XmlPullParserException("Malformed server version field: "+serverVersion);
         }
         int[] ret = new int[serverVersionSplit.length];
         for (int i = 0; i < ret.length; i++) {
-            ret[i] = Integer.parseInt(serverVersionSplit[i]);
+            try {
+                ret[i] = Integer.parseInt(serverVersionSplit[i]);
+            } catch (NumberFormatException e) {
+                // Checked so that the pairing and connection code paths report it instead of crashing
+                throw new XmlPullParserException("Malformed server version field: "+serverVersion);
+            }
         }
         return ret;
     }
