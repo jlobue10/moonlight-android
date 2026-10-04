@@ -30,7 +30,7 @@ Exit codes: **0** every pass compiled (`RESULT: PASS`); **1** javac reported
 errors (full javac output is printed, `RESULT: FAIL`); **2** bad arguments or not
 an app worktree; **3** setup incomplete (run `setup.sh`) or a tool is missing.
 
-Requirements: JDK 11+ (`javac`, `java`, `jar`), `python3`, and for `setup.sh`
+Requirements: JDK 21+ (`javac`, `java`, `jar`; the android-all 17 jar is built for class file version 65, so an older javac rejects every Android class with "bad class file"), `python3`, and for `setup.sh`
 also `git`, `curl`, `unzip` and Gradle (`gradle` on PATH, else the repo's
 `./gradlew`, or `--gradle <path>`).
 

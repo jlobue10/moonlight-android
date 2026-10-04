@@ -73,7 +73,6 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private byte optimalSlicesPerFrame;
     private boolean refFrameInvalidationActive;
     private int initialWidth, initialHeight;
-    private boolean invertResolution;
     private int videoFormat;
     private Surface renderTarget;
     private volatile boolean stopping;
@@ -337,7 +336,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     public MediaCodecDecoderRenderer(Activity activity, PreferenceConfiguration prefs,
                                      CrashListener crashListener, int consecutiveCrashCount,
-                                     boolean meteredData, boolean requestedHdr, boolean invertResolution,
+                                     boolean meteredData, boolean requestedHdr,
                                      String glRenderer, PerfOverlayListener perfListener) {
         //dumpDecoders();
 
@@ -348,7 +347,6 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         this.consecutiveCrashCount = consecutiveCrashCount;
         this.glRenderer = glRenderer;
         this.perfListener = perfListener;
-        this.invertResolution = invertResolution;
 
         this.activeWindowVideoStats = new VideoStats();
         this.lastWindowVideoStats = new VideoStats();
@@ -768,8 +766,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     @Override
     public int setup(int format, int width, int height, int redrawRate) {
         this.targetFps = (redrawRate > 0 ? redrawRate : 60);
-        this.initialWidth = invertResolution ? height : width;
-        this.initialHeight = invertResolution ? width : height;
+        // width/height are the negotiated stream dimensions: Game already swaps them for a
+        // portrait stream, so they must not be swapped again here or the MediaFormat (and
+        // KEY_MAX_WIDTH/HEIGHT) would describe a landscape frame for a portrait bitstream.
+        this.initialWidth = width;
+        this.initialHeight = height;
         this.videoFormat = format;
         this.refreshRate = redrawRate;
 
@@ -1518,9 +1519,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                     sb.append(" / ");
                     sb.append(context.getString(R.string.perf_overlay_lite_dectime,decodeTimeMs));
                     sb.append("\t");
-                    sb.append(context.getString(R.string.perf_overlay_lite_packet_loss) + ": ");
+                    sb.append(context.getString(R.string.perf_overlay_lite_frame_loss) + ": ");
                     sb.append(context.getString(R.string.perf_overlay_lite_netdrops,(float)lastTwo.framesLost / lastTwo.totalFrames * 100));
-                    sb.append("\t FPS：");
+                    sb.append("\t ").append(context.getString(R.string.perf_overlay_lite_host_fps)).append(": ");
                     sb.append(context.getString(R.string.perf_overlay_lite_fps, fps.totalFps));
                     if(Stereo3DRenderer.isActive) {
                         sb.append(" ");

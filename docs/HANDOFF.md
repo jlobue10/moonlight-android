@@ -13,6 +13,7 @@ original conversation. Everything below is either in this repository, in
 | javac-only compile-check harness (no Android SDK needed), PR #8 | `tools/compilecheck/` | done |
 | Release **v20.3.0-fork.1** (commit 9cb7cc48), four ABI APKs, signed with a **throwaway key** | GitHub Releases | published |
 | Follow-up PRs: **#11** build chain (AGP 9.4.0, Gradle 9.7.1, compileSdk 37, OkHttp 5.5), **#9** warp-mode bitrate, **#10** release signing + bump to 20.3.0-fork.2 | merged into `moonlight-noir` | done, see §2 |
+| Audit Q9 cleanups (dead "Tight Vsync" option removed, lite perf overlay relabelled, portrait resolution no longer swapped back in the decoder) | PR from `fix/audit-q9-cleanups` | see §2 |
 
 ## 2. Where it stopped, and the next steps
 
@@ -24,7 +25,8 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    build-only run of the merged `moonlight-noir` (baa62bbb):
    https://github.com/jlobue10/moonlight-android/actions/runs/37212297465. The default branch is
    therefore release-ready; nothing is pending on the code side.
-2. **Signing secrets (needs the repository owner's machine):** run
+2. **Signing secrets (needs the repository owner's machine, still not configured as of 2026-10-04
+   evening; `gh secret list` is empty):** run
    `tools/release-signing/setup-signing-secrets.sh` (or the `.ps1`) with a JDK and a logged-in `gh`.
    It creates `release.jks` locally and stores `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
    `KEY_PASSWORD` as repository secrets. A Claude Code cloud session cannot do this: its GitHub proxy
@@ -74,9 +76,13 @@ Verify against `docs/audit/2026-10-04/MOONLIGHT_FORK_AUDIT.md` (§2–§4 ids) b
 
 - **Q8** SBS-3D path: `precision mediump` in `ShaderUtils`, synchronous `glReadPixels`, unbounded
   wait for the depth model — not touched.
-- **Q9** low items: perf overlay labels ("Packet loss" is frame loss, "FPS" is host send rate), the
-  portrait auto-invert resolution swap, the dead "Tight Vsync (Experimental)" option (still in
-  `strings.xml`/preferences), optional `PCM_FLOAT` audio.
+- **Q9** low items still open: custom resolution/bitrate inputs are barely validated, HDR10 needs the
+  exact `*Main10HDR10` profile constants (same as upstream), optional `PCM_FLOAT` audio. Done in
+  `fix/audit-q9-cleanups`: lite overlay labels ("Frame loss", "Host FPS"), the dead "Tight Vsync
+  (Experimental)" option, and the portrait auto-invert double swap (`Game` swaps width/height for the
+  host, the decoder swapped them back, so the MediaFormat described a landscape frame for a portrait
+  bitstream; the decoder now uses the negotiated size as-is). The 10-bit mask (`0xAA00`) and the
+  rendered-frame counter on both render paths were already correct.
 - **Common-c follow-ups** (common-c is synced, the Android side may not be): set `MODIFIER_EXTENDED`
   from the scancode path, `LiSendControllerTouchEvent2` JNI for dual-touchpad pads, `LI_CTYPE_STEAM`
   in `ControllerHandler`, `LiGetRTPVideoStats()` for the overlay. Artemis PR #590 (capability-gated
@@ -111,7 +117,9 @@ Verify against `docs/audit/2026-10-04/MOONLIGHT_FORK_AUDIT.md` (§2–§4 ids) b
   `gh api repos/jlobue10/moonlight-android/actions/runs/<id>` (works through the proxy), read
   failures with the MCP `get_job_logs` tool (the raw log download URLs on Azure blob storage are
   blocked).
-- **javac compile check (fast, local, no SDK):** `tools/compilecheck/setup.sh` once (in a cloud
+- **javac compile check (fast, local, no SDK):** needs **JDK 21+** (the android-all 17 jar is class
+  file version 65; on the garage box a user-local Temurin lives in `~/.local/share/jdk21`, the system
+  Java is an 8 JRE without javac). `tools/compilecheck/setup.sh` once (in a cloud
   session add `--no-google --no-jitpack`; Google Maven and JitPack are blocked there, and the
   script falls back to an AOSP prebuilts mirror and building two deps from source), then
   `tools/compilecheck/compilecheck.sh <worktree>`. It uses Robolectric's `android-all` 17 jar
