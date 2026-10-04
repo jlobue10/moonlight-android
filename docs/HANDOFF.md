@@ -12,36 +12,35 @@ original conversation. Everything below is either in this repository, in
 | Audit fixes as PRs #1–#7 (security hardening, upstream v12.2 Java ports, render loop / frame pacing, picture quality, build chain, native stack incl. a moonlight-common-c sync hosted in `jlobue10/moonlight-common-c`, release workflow) | merged into `moonlight-noir` | done |
 | javac-only compile-check harness (no Android SDK needed), PR #8 | `tools/compilecheck/` | done |
 | Release **v20.3.0-fork.1** (commit 9cb7cc48), four ABI APKs, signed with a **throwaway key** | GitHub Releases | published |
-| Follow-up PRs: **#11** build chain (AGP 9.4.0, Gradle 9.7.1, compileSdk 37, OkHttp 5.5), **#9** warp-mode bitrate, **#10** release signing + bump to 20.3.0-fork.2 | open PRs | see §2 |
+| Follow-up PRs: **#11** build chain (AGP 9.4.0, Gradle 9.7.1, compileSdk 37, OkHttp 5.5), **#9** warp-mode bitrate, **#10** release signing + bump to 20.3.0-fork.2 | merged into `moonlight-noir` | done, see §2 |
 
 ## 2. Where it stopped, and the next steps
 
 Check the live state first (`gh pr list`, the Actions tab); this section is a snapshot.
 
-1. **PR #11** (branch `port/agp9-compilesdk37`): the build-only validation run
-   (`workflow_dispatch` of *Build and release APKs* with an empty `release_tag`) built and signed all
-   four APKs with the new toolchain; the first attempt failed only at the artifact upload because the
-   branch name contains `/` (fixed in 5bff3ab7, re-run in progress at the time of writing).
-   Merge once a run on the branch head is green.
-2. **PR #9** (`fix/warp-bitrate`) and **PR #10** (`ci/release-signing`): merge after #11. All three
-   were test-merged together (octopus merge from `moonlight-noir`): no conflicts, javac check clean.
-3. After merging: dispatch a **build-only** run on `moonlight-noir` (empty `release_tag`) and confirm it
-   is green.
-4. **Signing secrets (needs the repository owner's machine):** run
+1. **PRs #11, #9 and #10 are merged** into `moonlight-noir` (merge commits 83d95dea, e7c0ad8b,
+   baa62bbb). The build-only validation run of #11's branch was green
+   (https://github.com/jlobue10/moonlight-android/actions/runs/37211903167); a build-only run of
+   the merged `moonlight-noir` (baa62bbb) was dispatched right after merging — confirm it is green
+   in the Actions tab before releasing.
+2. **Signing secrets (needs the repository owner's machine):** run
    `tools/release-signing/setup-signing-secrets.sh` (or the `.ps1`) with a JDK and a logged-in `gh`.
    It creates `release.jks` locally and stores `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
    `KEY_PASSWORD` as repository secrets. A Claude Code cloud session cannot do this: its GitHub proxy
    denies the Actions secrets API ("Access to this GitHub Actions path is not permitted").
-5. **Release v20.3.0-fork.2:** dispatch the workflow on `moonlight-noir` with
+3. **Release v20.3.0-fork.2:** dispatch *Build and release APKs* on `moonlight-noir` with
    `release_tag = v20.3.0-fork.2` (the tag must equal `v` + `versionName` in `app/build.gradle`,
-   which PR #10 sets to `20.3.0-fork.2` / versionCode 59). With the secrets in place the APKs are
-   signed with the persistent key; without them the workflow now refuses to publish unless
+   which is `20.3.0-fork.2` / versionCode 59 since PR #10). With the secrets in place the APKs are
+   signed with the persistent key; without them the workflow refuses to publish unless
    `allow_throwaway_key` is set. Tag pushes from a cloud session are rejected by the git proxy
    (HTTP 403), which is why the `release_tag` input exists.
-6. Install on the Galaxy XR via Obtainium: source `https://github.com/jlobue10/moonlight-android`,
+4. Install on the Galaxy XR via Obtainium: source `https://github.com/jlobue10/moonlight-android`,
    APK filter `arm64-v8a`. The package id is still Artemis's `com.limelight.noir`, and fork.1 was
    throwaway-signed, so both the official Artemis build and fork.1 must be uninstalled before
    fork.2; from fork.2 on, releases install as updates.
+5. Device testing on the Galaxy XR has not happened yet for anything in this series: the render
+   loop / frame pacing change (PR #1), AV1-in-Auto (PR #4), the warp bitrate change (PR #9) and the
+   AGP 9 build (PR #11) are all CI-verified only.
 
 ## 3. Decisions taken (and why), so they are not re-litigated
 
