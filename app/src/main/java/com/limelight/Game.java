@@ -407,7 +407,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             displayHeight = currentMode.getPhysicalHeight();
             prefConfig.width = displayWidth;
             prefConfig.height = displayHeight;
-            prefConfig.fps = currentMode.getRefreshRate();
+            // TVs commonly report rates such as 60.000004 or 59.940063 Hz. A non-integer rate is
+            // sent to the host in millihertz (see StreamConfiguration.getRefreshRate()), which only
+            // Apollo understands, so snap near-integer rates to the integer here.
+            prefConfig.fps = snapNearIntegerRefreshRate(currentMode.getRefreshRate());
             prefConfig.videoScaleMode = PreferenceConfiguration.ScaleMode.STRETCH;
             prefConfig.enableFloatingButton = false;
             prefConfig.showOverlayZoomToggleButton = false;
@@ -600,33 +603,29 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Check if the user has enabled HDR
         boolean willStreamHdr = false;
         if (prefConfig.enableHdr) {
-            if (onExternelDisplay) {
-                // Enforce HDR on unsupported hardware can still enable 10bit streaming for better quality
-                willStreamHdr = true;
-            } else {
-                // Start our HDR checklist
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    Display.HdrCapabilities hdrCaps = currentDisplay.getHdrCapabilities();
+            // Start our HDR checklist. currentDisplay is the display the stream is rendered on,
+            // so an external display is checked for HDR10 support just like the built-in one.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                Display.HdrCapabilities hdrCaps = currentDisplay.getHdrCapabilities();
 
-                    // We must now ensure our display is compatible with HDR10
-                    if (hdrCaps != null) {
-                        // getHdrCapabilities() returns null on Lenovo Lenovo Mirage Solo (vega), Android 8.0
-                        for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
-                            if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
-                                willStreamHdr = true;
-                                break;
-                            }
+                // We must now ensure our display is compatible with HDR10
+                if (hdrCaps != null) {
+                    // getHdrCapabilities() returns null on Lenovo Lenovo Mirage Solo (vega), Android 8.0
+                    for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
+                        if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
+                            willStreamHdr = true;
+                            break;
                         }
                     }
+                }
 
-                    if (!willStreamHdr) {
-                        // Nope, no HDR for us :(
-                        Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
-                    }
+                if (!willStreamHdr) {
+                    // Nope, no HDR for us :(
+                    Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
                 }
-                else {
-                    Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
-                }
+            }
+            else {
+                Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
             }
         }
 
@@ -1358,6 +1357,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         inputCaptureProvider.onWindowFocusChanged(hasFocus);
     }
 
+    // Round a measured display refresh rate to the nearest integer when it is within 0.05 Hz of
+    // one (60.000004 -> 60), leaving genuinely fractional rates such as 59.94 untouched.
+    private static float snapNearIntegerRefreshRate(float refreshRate) {
+        float rounded = Math.round(refreshRate);
+        return Math.abs(refreshRate - rounded) < 0.05f ? rounded : refreshRate;
+    }
+
     private boolean isRefreshRateEqualMatch(float refreshRate) {
         return refreshRate >= prefConfig.fps &&
                 refreshRate <= prefConfig.fps + 3;
@@ -1430,7 +1436,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 // On non-4K streams, we force the resolution to never change unless it's above
                 // 60 FPS, which may require a resolution reduction due to HDMI bandwidth limitations,
                 // or it's a native resolution stream.
-                if (prefConfig.width < 3840 && prefConfig.fps <= 60 && !isNativeResolutionStream) {
+                // Also preserve the current resolution if it already exactly matches the stream.
+                if (prefConfig.fps <= 60 &&
+                        ((prefConfig.width < 3840 && !isNativeResolutionStream) ||
+                        (currentDisplay.getMode().getPhysicalWidth() == prefConfig.width &&
+                                currentDisplay.getMode().getPhysicalHeight() == prefConfig.height))) {
                     if (currentDisplay.getMode().getPhysicalWidth() != candidate.getPhysicalWidth() ||
                             currentDisplay.getMode().getPhysicalHeight() != candidate.getPhysicalHeight()) {
                         continue;

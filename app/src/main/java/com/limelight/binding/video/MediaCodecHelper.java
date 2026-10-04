@@ -48,6 +48,8 @@ public class MediaCodecHelper {
     private static final List<String> amlogicDecoderPrefixes;
     private static final List<String> knownVendorLowLatencyOptions;
 
+    private static final String AMLOGIC_C2_HEVC_DECODER_PREFIX = "c2.amlogic.hevc";
+
     public static final boolean SHOULD_BYPASS_SOFTWARE_BLOCK =
             Build.HARDWARE.equals("ranchu") || Build.HARDWARE.equals("cheets") || Build.BRAND.equals("Android-x86");
 
@@ -401,12 +403,6 @@ public class MediaCodecHelper {
                 refFrameInvalidationHevcPrefixes.add("omx.qcom");
                 refFrameInvalidationAvcPrefixes.add("c2.qti");
                 refFrameInvalidationHevcPrefixes.add("c2.qti");
-
-                refFrameInvalidationAvcPrefixes.add("c2.mtk"); //derflacco
-                refFrameInvalidationHevcPrefixes.add("c2.mtk"); //derflacco
-                refFrameInvalidationAvcPrefixes.add("omx.mtk"); //derflacco
-                refFrameInvalidationHevcPrefixes.add("omx.mtk"); //derflacco
-                refFrameInvalidationHevcPrefixes.add("c2.qcom"); //derflacco
             }
 
             // Qualcomm's early HEVC decoders break hard on our HEVC stream. The best check to
@@ -448,6 +444,16 @@ public class MediaCodecHelper {
         }
 
         initialized = true;
+    }
+
+    // Amlogic Codec2 HEVC decoders (c2.amlogic.hevc.decoder, seen on S905X5/S905X5M and S905Y4)
+    // advertise FEATURE_LowLatency, but with KEY_LOW_LATENCY set they decode every frame and
+    // present only a few per second (moonlight-android#1504, #1584). vdec-lowlatency plus
+    // vendor.low-latency.enable plays smoothly. HEVC RFI also triggers decoder error storms on
+    // them, see decoderSupportsRefFrameInvalidationHevc().
+    private static boolean isAmlogicC2HevcDecoder(String decoderName) {
+        return decoderName.regionMatches(true, 0, AMLOGIC_C2_HEVC_DECODER_PREFIX, 0,
+                AMLOGIC_C2_HEVC_DECODER_PREFIX.length());
     }
 
     private static boolean isDecoderInList(List<String> decoderList, String decoderName) {
@@ -545,7 +551,11 @@ public class MediaCodecHelper {
             safeSet(videoFormat, "vendor.nvidia.disable-output-reorder", 1);
             setNewOption = true;
         }
-        if (tryNumber < 1) {
+        if (tryNumber < 1 && isAmlogicC2HevcDecoder(decoderInfo.getName())) {
+            // Fall through to vdec-lowlatency and the Amlogic vendor extension below.
+            LimeLog.info("Skipping KEY_LOW_LATENCY for Amlogic C2 HEVC decoder");
+        }
+        else if (tryNumber < 1) {
             // Official Android 11+ low latency option (KEY_LOW_LATENCY).
             videoFormat.setInteger("low-latency", 1);
             setNewOption = true;
@@ -766,7 +776,9 @@ public class MediaCodecHelper {
         }
     }
 
-    public static boolean decoderSupportsRefFrameInvalidationAvc(String decoderName, int videoHeight) {
+    public static boolean decoderSupportsRefFrameInvalidationAvc(MediaCodecInfo decoderInfo, int videoHeight) {
+        String decoderName = decoderInfo.getName();
+
         // Reference frame invalidation is broken on low-end Snapdragon SoCs at 1080p.
         if (videoHeight > 720 && isLowEndSnapdragon) {
             return false;
@@ -778,6 +790,16 @@ public class MediaCodecHelper {
             return false;
         }
 
+        // MediaTek decoders are deliberately not on the AVC RFI list: the OMX-era ones either
+        // hang or need a maxNumReferenceFrames setting that adds a lot of latency (see the
+        // PowerVR comment in initialize()). Only trust a MediaTek decoder that advertises
+        // FEATURE_LowLatency, which is the same gate HEVC RFI uses.
+        if (isDecoderInList(mtkDecoderPrefixes, decoderName) &&
+                decoderSupportsAndroidRLowLatency(decoderInfo, "video/avc")) {
+            LimeLog.info("Enabling AVC RFI on MediaTek decoder based on FEATURE_LowLatency support");
+            return true;
+        }
+
         return isDecoderInList(refFrameInvalidationAvcPrefixes, decoderName);
     }
 
@@ -786,6 +808,14 @@ public class MediaCodecHelper {
         // for some decoders due to the number of references frames being > 1. Old Amlogic
         // decoders are known to have this problem.
         //
+        // The Amlogic C2 HEVC decoder has a worse problem: with RFI on, it hits bursts of about
+        // a second of errored frames every few minutes. It also advertises FEATURE_LowLatency,
+        // so it must be excluded before the heuristic below.
+        if (isAmlogicC2HevcDecoder(decoderInfo.getName())) {
+            LimeLog.info("Disabling HEVC RFI for Amlogic C2 HEVC decoder");
+            return false;
+        }
+
         // If the decoder supports FEATURE_LowLatency or any vendor low latency option,
         // we will use that as an indication that it can handle HEVC RFI without excessively
         // buffering frames.
@@ -872,6 +902,33 @@ public class MediaCodecHelper {
 
         // TODO: Test some AV1 decoders
         return true;
+    }
+
+    public static boolean isDecoderEligibleForAv1Auto(MediaCodecInfo decoderInfo) {
+        // Only consulted in auto mode, after isDecoderWhitelistedForAv1() has already ruled out
+        // software decoders. Hardware AV1 decoders vary a lot in quality, so we only prefer AV1
+        // over HEVC when there's a reason to believe the decoder is fast and modern enough for
+        // low latency streaming.
+
+        // If the decoder supports FEATURE_LowLatency, we will assume it is fast and modern enough
+        // to be preferable for streaming over HEVC decoders (the same heuristic HEVC uses vs H.264).
+        if (decoderSupportsAndroidRLowLatency(decoderInfo, "video/av01")) {
+            LimeLog.info("Allowing AV1 in auto mode based on FEATURE_LowLatency support");
+            return true;
+        }
+
+        // Android 13's media performance class requirements include a hardware AV1 decoder, so
+        // we trust the hardware AV1 decoder on any device that meets performance class 13+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            LimeLog.info("Media performance class: " + Build.VERSION.MEDIA_PERFORMANCE_CLASS);
+            if (Build.VERSION.MEDIA_PERFORMANCE_CLASS >= Build.VERSION_CODES.TIRAMISU) {
+                LimeLog.info("Allowing AV1 in auto mode based on media performance class");
+                return true;
+            }
+        }
+
+        LimeLog.info("Not allowing AV1 in auto mode for decoder: " + decoderInfo.getName());
+        return false;
     }
 
     @SuppressWarnings("deprecation")

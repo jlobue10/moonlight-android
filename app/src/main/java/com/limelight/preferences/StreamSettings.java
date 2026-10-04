@@ -637,8 +637,12 @@ public class StreamSettings extends AppCompatActivity {
                 category.removePreference(findPreference("checkbox_enable_hdr"));
             }
             else {
-                Display.HdrCapabilities hdrCaps = display.getHdrCapabilities();
-                Log.d("HDR CAP", display + "");
+                // Check the display the stream will actually be rendered on. In external display
+                // mode that is the secondary display (see ServerHelper.getActiveDisplay()), not
+                // the built-in panel.
+                Display hdrDisplay = getActiveDisplay(activity, prevPrefConfig);
+                Display.HdrCapabilities hdrCaps = hdrDisplay.getHdrCapabilities();
+                Log.d("HDR CAP", hdrDisplay + "");
                 // We must now ensure our display is compatible with HDR10
                 boolean foundHdr10 = false;
                 if (hdrCaps != null) {
@@ -910,10 +914,22 @@ public class StreamSettings extends AppCompatActivity {
                             return false;
                         }
 
-                        // Save the value and reload settings
-                        editAndReload(PreferenceConfiguration.CUSTOM_RESOLUTION_PREF_STRING, value);
+                        // Keep the resolution in a sane range and round odd dimensions down to even.
+                        // moonlight-common-c already rounds the stream itself to even dimensions, but
+                        // the layout kept the odd value, so the video was no longer scaled 1:1.
+                        width = Math.min(Math.max(width, 320), 8192) & ~1;
+                        height = Math.min(Math.max(height, 320), 8192) & ~1;
+                        String normalized = width + "x" + height;
+                        if (!normalized.equals(value)) {
+                            Toast.makeText(getActivity(), "Custom resolution adjusted to " + normalized, Toast.LENGTH_SHORT).show();
+                        }
 
-                        return true;
+                        // Save the (normalized) value and reload settings
+                        editAndReload(PreferenceConfiguration.CUSTOM_RESOLUTION_PREF_STRING, normalized);
+
+                        // If the value was adjusted, don't let the preference persist the raw text over
+                        // the normalized one that was just saved.
+                        return normalized.equals(value);
                     } catch (NumberFormatException e) {
                         Toast.makeText(getActivity(), getString(R.string.pref_error_occurred), Toast.LENGTH_SHORT).show();
                         return false;
