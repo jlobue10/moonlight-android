@@ -14,6 +14,12 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create and publish a release for (e.g. v20.3.0-fork.1). Leave empty to only build artifacts."
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -21,6 +27,9 @@ permissions:
 env:
   BUILD_TOOLS_VERSION: "36.0.0"
   NDK_VERSION: "29.0.14206865"
+  # The tag being released: the pushed tag, or the release_tag input of a manual run
+  # (which creates the tag at the built commit when the release is published).
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
 
 jobs:
   build:
@@ -56,12 +65,12 @@ jobs:
             "cmake;3.22.1"
           "$SDKMANAGER" --list_installed | grep -E 'platforms;|build-tools;|ndk;' || true
 
-      - name: Verify the tag matches the version in app/build.gradle
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Verify the release tag matches the version in app/build.gradle
+        if: env.RELEASE_TAG != ''
         run: |
           set -euo pipefail
           VERSION_NAME=$(sed -nE 's/^\s*versionName\s+"([^"]+)".*/\1/p' app/build.gradle | head -1)
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${RELEASE_TAG}"
           echo "versionName=$VERSION_NAME tag=$TAG"
           if [ "v$VERSION_NAME" != "$TAG" ]; then
             echo "::error::Tag $TAG does not match versionName $VERSION_NAME in app/build.gradle"
@@ -116,7 +125,7 @@ jobs:
       - name: Upload APKs as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apks-${{ github.ref_name }}
+          name: apks-${{ env.RELEASE_TAG || github.ref_name }}
           path: |
             dist/*.apk
             dist/SHA256SUMS.txt
@@ -124,11 +133,11 @@ jobs:
           if-no-files-found: error
 
       - name: Write release notes
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         run: |
           set -euo pipefail
           {
-            echo "Release build of \`${GITHUB_REF_NAME}\` (commit ${GITHUB_SHA})."
+            echo "Release build of \`${RELEASE_TAG}\` (commit ${GITHUB_SHA})."
             echo
             echo "Install the APK matching your device's CPU architecture (most phones, tablets and headsets: **arm64-v8a**). For Obtainium, add this repository as a GitHub source and pick the arm64-v8a APK."
             echo
@@ -141,10 +150,12 @@ jobs:
           } > dist/RELEASE_NOTES.md
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ env.RELEASE_TAG }}
           body_path: dist/RELEASE_NOTES.md
           generate_release_notes: true
           files: |

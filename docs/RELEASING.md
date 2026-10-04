@@ -17,7 +17,9 @@ x86, x86_64), signs the APKs, and publishes them as a GitHub release when a tag 
    *Releases* with the APKs and a `SHA256SUMS.txt` attached.
 
 `workflow_dispatch` (the *Run workflow* button) builds and signs the same APKs and uploads
-them as workflow artifacts without creating a release — useful for test builds.
+them as workflow artifacts. If its `release_tag` input is set (e.g. `v20.3.0-fork.1`), the run
+also creates that tag at the built commit and publishes the release — the same result as
+pushing the tag, for environments that cannot push tags.
 
 ## Signing
 
