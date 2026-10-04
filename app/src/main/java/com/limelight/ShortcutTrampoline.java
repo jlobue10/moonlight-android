@@ -3,6 +3,7 @@ package com.limelight;
 import static com.limelight.utils.ServerHelper.getSecondaryDisplay;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Service;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -45,10 +46,15 @@ import java.util.Objects;
 import java.util.UUID;
 
 public class ShortcutTrampoline extends AppCompatActivity {
+    // Set by AddComputerManually when it forwards an art://launch deep link to us
+    public static final String EXTRA_FROM_DEEP_LINK = "com.limelight.FROM_DEEP_LINK";
+
     private PreferenceConfiguration prefConfig;
     private String uuidString;
     private NvApp app;
     private ArrayList<Intent> intentStack = new ArrayList<>();
+    private boolean fromDeepLink;
+    private AlertDialog launchConfirmDialog;
 
     private int wakeHostTries = 10;
     private ComputerDetails computer;
@@ -146,19 +152,17 @@ public class ShortcutTrampoline extends AppCompatActivity {
                                             // Launch game if provided app ID, otherwise launch app view
                                             if (app != null) {
                                                 if (details.runningGameId == 0 || details.runningGameId == app.getAppId() || Objects.equals(details.runningGameUUID, app.getAppUUID())) {
+                                                    // Create the start intent immediately, so we can safely unbind the managerBinder
+                                                    // below before we return.
                                                     intentStack.add(ServerHelper.createStartIntent(ShortcutTrampoline.this, app, details, managerBinder, prefConfig.useVirtualDisplay));
 
-                                                    // Close this activity
-                                                    finish();
-
-                                                    // Now start the activities
-                                                    startActivities(intentStack.toArray(new Intent[]{}));
+                                                    confirmLaunch(details, app, ShortcutTrampoline.this::launchIntentStack);
                                                 } else {
                                                     // Create the start intent immediately, so we can safely unbind the managerBinder
                                                     // below before we return.
                                                     final Intent startIntent = ServerHelper.createStartIntent(ShortcutTrampoline.this, app, details, managerBinder, prefConfig.useVirtualDisplay);
 
-                                                    UiHelper.displayQuitConfirmationDialog(ShortcutTrampoline.this, new Runnable() {
+                                                    confirmLaunch(details, app, () -> UiHelper.displayQuitConfirmationDialog(ShortcutTrampoline.this, new Runnable() {
                                                         @Override
                                                         public void run() {
                                                             intentStack.add(startIntent);
@@ -175,12 +179,9 @@ public class ShortcutTrampoline extends AppCompatActivity {
                                                             // Close this activity
                                                             finish();
                                                         }
-                                                    });
+                                                    }));
                                                 }
                                             } else {
-                                                // Close this activity
-                                                finish();
-
                                                 // Add the PC view at the back (and clear the task)
                                                 Intent i;
                                                 i = new Intent(ShortcutTrampoline.this, PcView.class);
@@ -197,10 +198,13 @@ public class ShortcutTrampoline extends AppCompatActivity {
                                                 if (details.runningGameId != 0) {
                                                     intentStack.add(ServerHelper.createStartIntent(ShortcutTrampoline.this,
                                                             new NvApp(null, null, details.runningGameId, false), details, managerBinder, prefConfig.useVirtualDisplay));
-                                                }
 
-                                                // Now start the activities
-                                                startActivities(intentStack.toArray(new Intent[]{}));
+                                                    // Resuming the running app starts a stream, so it needs the same confirmation
+                                                    confirmLaunch(details, null, ShortcutTrampoline.this::launchIntentStack);
+                                                } else {
+                                                    // Only the app list is opened, no stream is started
+                                                    launchIntentStack();
+                                                }
                                             }
                                             
                                         }
@@ -238,6 +242,49 @@ public class ShortcutTrampoline extends AppCompatActivity {
             managerBinder = null;
         }
     };
+
+    private void launchIntentStack() {
+        // Close this activity
+        finish();
+
+        // Now start the activities
+        startActivities(intentStack.toArray(new Intent[]{}));
+    }
+
+    // Deep links (art://launch?...) and .art files can be handed to us by any app or web page,
+    // so a stream must not start from them until the user has explicitly agreed to it. Pinned
+    // launcher shortcuts and TV channel launches (extras only) are user-initiated and start
+    // immediately as before.
+    private void confirmLaunch(final ComputerDetails details, final NvApp targetApp, final Runnable onConfirmed) {
+        if (!fromDeepLink) {
+            onConfirmed.run();
+            return;
+        }
+
+        String appDescription = getResources().getString(R.string.scut_launch_confirm_running_app);
+        if (targetApp != null) {
+            if (targetApp.getAppName() != null && !targetApp.getAppName().isEmpty()) {
+                appDescription = targetApp.getAppName();
+            } else if (targetApp.getAppUUID() != null && !targetApp.getAppUUID().isEmpty()) {
+                appDescription = targetApp.getAppUUID();
+            } else {
+                appDescription = "#" + targetApp.getAppId();
+            }
+        }
+
+        if (launchConfirmDialog != null) {
+            launchConfirmDialog.dismiss();
+        }
+
+        // Plain text on purpose: the app name comes straight from the link or file
+        launchConfirmDialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.scut_launch_confirm_title)
+                .setMessage(getResources().getString(R.string.scut_launch_confirm_message, appDescription, details.name))
+                .setPositiveButton(R.string.proceed, (dialog, which) -> onConfirmed.run())
+                .setNegativeButton(R.string.cancel, (dialog, which) -> finish())
+                .setOnCancelListener(dialog -> finish())
+                .show();
+    }
 
     protected boolean validateHostInput(String hostUUID, String hostName) {
         // Validate PC UUID/Name
@@ -363,6 +410,10 @@ public class ShortcutTrampoline extends AppCompatActivity {
         Intent intent = getIntent();
         String action = intent.getAction();
         Uri dataUri = intent.getData();
+
+        // Anything carrying a data URI (.art file or other VIEW intent) or forwarded from an
+        // art:// deep link did not come from a launcher shortcut, so it needs confirmation
+        fromDeepLink = dataUri != null || intent.getBooleanExtra(EXTRA_FROM_DEEP_LINK, false);
 
         String hostUUID = null;
         String hostName = null;
@@ -515,6 +566,11 @@ public class ShortcutTrampoline extends AppCompatActivity {
         if (blockingLoadSpinner != null) {
             blockingLoadSpinner.dismiss();
             blockingLoadSpinner = null;
+        }
+
+        if (launchConfirmDialog != null) {
+            launchConfirmDialog.dismiss();
+            launchConfirmDialog = null;
         }
 
         Dialog.closeDialogs();

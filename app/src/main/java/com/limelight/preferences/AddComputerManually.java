@@ -207,8 +207,13 @@ public class AddComputerManually extends AppCompatActivity {
                     if (pin != null && passphrase != null) {
                         Intent intent = new Intent(AddComputerManually.this, PcView.class);
                         intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
+                        // uri.getPort() is -1 when the link has no port, which AddressTuple rejects
+                        int pairingPort = uri.getPort();
+                        if (pairingPort == -1) {
+                            pairingPort = NvHTTP.DEFAULT_HTTP_PORT;
+                        }
                         intent.putExtra("hostname", uri.getHost());
-                        intent.putExtra("port", uri.getPort());
+                        intent.putExtra("port", pairingPort);
                         intent.putExtra("pin", pin);
                         intent.putExtra("passphrase", passphrase);
 
@@ -304,6 +309,8 @@ public class AddComputerManually extends AppCompatActivity {
                     intent.putExtra(Game.EXTRA_APP_UUID, appUUID);
                     intent.putExtra(Game.EXTRA_APP_NAME, appName);
                     intent.putExtra(Game.EXTRA_APP_ID, appID);
+                    // Tell the trampoline this came from a link so it asks before streaming
+                    intent.putExtra(ShortcutTrampoline.EXTRA_FROM_DEEP_LINK, true);
 
                     finish();
 

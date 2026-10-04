@@ -72,12 +72,19 @@ public class NvHTTP {
     public static final int LONG_CONNECTION_TIMEOUT = 5000;
     public static final int READ_TIMEOUT = 7000;
 
+    // Upper bound on a clipboard payload fetched from the host
+    private static final int MAX_CLIPBOARD_BYTES = 64 * 1024;
+
     // Print URL and content to logcat on debug builds
     private static boolean verbose = BuildConfig.DEBUG;
 
     private HttpUrl baseUrlHttp;
 
     private int httpsPort;
+
+    // True when the last getServerInfo() had to fall back to plain HTTP because the host's
+    // certificate did not match the pinned one, i.e. the response could not be authenticated.
+    private boolean lastServerInfoFromInsecureFallback;
     
     private OkHttpClient httpClientLongConnectTimeout;
     private OkHttpClient httpClientLongConnectNoReadTimeout;
@@ -321,12 +328,24 @@ public class NvHTTP {
         return getXmlArray(new StringReader(str), tagname, throwIfMissing);
     }
     
-    private static void verifyResponseStatus(XmlPullParser xpp) throws HostHttpResponseException {
+    private static void verifyResponseStatus(XmlPullParser xpp) throws HostHttpResponseException, XmlPullParserException {
+        // The attribute is host-controlled, so a missing or non-numeric value must become a
+        // checked exception the callers already handle rather than an NPE/NumberFormatException.
+        String statusCodeStr = xpp.getAttributeValue(XmlPullParser.NO_NAMESPACE, "status_code");
+        if (statusCodeStr == null) {
+            throw new XmlPullParserException("Missing status_code in host response");
+        }
+
         // We use Long.parseLong() because in rare cases GFE can send back a status code of
         // 0xFFFFFFFF, which will cause Integer.parseInt() to throw a NumberFormatException due
         // to exceeding Integer.MAX_VALUE. We'll get the desired error code of -1 by just casting
         // the resulting long into an int.
-        int statusCode = (int)Long.parseLong(xpp.getAttributeValue(XmlPullParser.NO_NAMESPACE, "status_code"));
+        int statusCode;
+        try {
+            statusCode = (int)Long.parseLong(statusCodeStr);
+        } catch (NumberFormatException e) {
+            throw new XmlPullParserException("Invalid status_code in host response: "+statusCodeStr);
+        }
         if (statusCode != 200) {
             String statusMsg = xpp.getAttributeValue(XmlPullParser.NO_NAMESPACE, "status_message");
             if (statusCode == -1 && "Invalid".equals(statusMsg)) {
@@ -339,8 +358,14 @@ public class NvHTTP {
         }
     }
     
+    public boolean wasLastServerInfoFromInsecureFallback() {
+        return lastServerInfoFromInsecureFallback;
+    }
+
     public String getServerInfo(boolean likelyOnline) throws IOException, XmlPullParserException {
         String resp;
+
+        lastServerInfoFromInsecureFallback = false;
 
         // If we believe the PC is online, give it a little extra time to respond
         OkHttpClient client = likelyOnline ? httpClientLongConnectTimeout : httpClientShortConnectTimeout;
@@ -353,12 +378,14 @@ public class NvHTTP {
 
         // When we have a pinned cert, use HTTPS to fetch serverinfo and fall back on cert mismatch
         if (serverCert != null) {
+            boolean certMismatch = false;
             try {
                 try {
                     resp = openHttpConnectionToString(client, getHttpsUrl(likelyOnline), "serverinfo");
                 } catch (SSLHandshakeException e) {
                     // Detect if we failed due to a server cert mismatch
                     if (e.getCause() instanceof CertificateException) {
+                        certMismatch = true;
                         // Jump to the GfeHttpResponseException exception handler to retry
                         // over HTTP which will allow us to pair again to update the cert
                         throw new HostHttpResponseException(401, "Server certificate mismatch");
@@ -375,7 +402,12 @@ public class NvHTTP {
             catch (HostHttpResponseException e) {
                 if (e.getErrorCode() == 401) {
                     // Cert validation error - fall back to HTTP
-                    return openHttpConnectionToString(client, baseUrlHttp, "serverinfo");
+                    resp = openHttpConnectionToString(client, baseUrlHttp, "serverinfo");
+
+                    // After a certificate mismatch this response was not authenticated by the
+                    // pinned certificate, so tell callers not to trust its contents.
+                    lastServerInfoFromInsecureFallback = certMismatch;
+                    return resp;
                 }
 
                 // If it's not a cert validation error, throw it
@@ -611,7 +643,11 @@ public class NvHTTP {
         // ServerCodecModeSupport wasn't present on old GFE versions
         String str = getXmlString(serverInfo, "ServerCodecModeSupport", false);
         if (str != null) {
-            return Long.parseLong(str);
+            try {
+                return Long.parseLong(str);
+            } catch (NumberFormatException e) {
+                throw new XmlPullParserException("Malformed ServerCodecModeSupport field in host response: "+str);
+            }
         } else {
             return 0;
         }
@@ -642,7 +678,13 @@ public class NvHTTP {
         // has the semantics that its name would indicate. To contain the effects of this change as much
         // as possible, we'll force the current game to zero if the server isn't in a streaming session.
         if (getXmlString(serverInfo, "state", true).endsWith("_SERVER_BUSY")) {
-            return Integer.parseInt(getXmlString(serverInfo, "currentgame", true));
+            String currentGame = getXmlString(serverInfo, "currentgame", true);
+            try {
+                return Integer.parseInt(currentGame);
+            } catch (NumberFormatException e) {
+                // Garbage from the host is reported like a missing mandatory field
+                throw new XmlPullParserException("Malformed currentgame field in host response: "+currentGame);
+            }
         }
         else {
             return 0;
@@ -651,11 +693,21 @@ public class NvHTTP {
 
     public int getHttpsPort(String serverInfo) {
         try {
-            return Integer.parseInt(getXmlString(serverInfo, "HttpsPort", true));
+            int port = Integer.parseInt(getXmlString(serverInfo, "HttpsPort", true));
+            if (port <= 0 || port > 65535) {
+                // HttpUrl.Builder.port() throws on an out-of-range port
+                LimeLog.warning("Ignoring out-of-range HttpsPort from host: "+port);
+                return DEFAULT_HTTPS_PORT;
+            }
+            return port;
         } catch (XmlPullParserException e) {
             e.printStackTrace();
             return DEFAULT_HTTPS_PORT;
         } catch (IOException e) {
+            e.printStackTrace();
+            return DEFAULT_HTTPS_PORT;
+        } catch (NumberFormatException e) {
+            // Non-numeric port from the host
             e.printStackTrace();
             return DEFAULT_HTTPS_PORT;
         }
@@ -665,11 +717,21 @@ public class NvHTTP {
         // This is an extension which is not present in GFE. It is present for Sunshine to be able
         // to support dynamic HTTP WAN ports without requiring the user to manually enter the port.
         try {
-            return Integer.parseInt(getXmlString(serverInfo, "ExternalPort", true));
+            int port = Integer.parseInt(getXmlString(serverInfo, "ExternalPort", true));
+            if (port <= 0 || port > 65535) {
+                // AddressTuple throws on an out-of-range port
+                LimeLog.warning("Ignoring out-of-range ExternalPort from host: "+port);
+                return baseUrlHttp.port();
+            }
+            return port;
         } catch (XmlPullParserException e) {
             // Expected on non-Sunshine servers
             return baseUrlHttp.port();
         } catch (IOException e) {
+            e.printStackTrace();
+            return baseUrlHttp.port();
+        } catch (NumberFormatException e) {
+            // Non-numeric port from the host
             e.printStackTrace();
             return baseUrlHttp.port();
         }
@@ -822,15 +884,20 @@ public class NvHTTP {
     public int[] getServerAppVersionQuad(String serverInfo) throws XmlPullParserException, IOException {
         String serverVersion = getServerVersion(serverInfo);
         if (serverVersion == null) {
-            throw new IllegalArgumentException("Missing server version field");
+            throw new XmlPullParserException("Missing server version field");
         }
         String[] serverVersionSplit = serverVersion.split("\\.");
         if (serverVersionSplit.length != 4) {
-            throw new IllegalArgumentException("Malformed server version field: "+serverVersion);
+            throw new XmlPullParserException("Malformed server version field: "+serverVersion);
         }
         int[] ret = new int[serverVersionSplit.length];
         for (int i = 0; i < ret.length; i++) {
-            ret[i] = Integer.parseInt(serverVersionSplit[i]);
+            try {
+                ret[i] = Integer.parseInt(serverVersionSplit[i]);
+            } catch (NumberFormatException e) {
+                // Checked so that the pairing and connection code paths report it instead of crashing
+                throw new XmlPullParserException("Malformed server version field: "+serverVersion);
+            }
         }
         return ret;
     }
@@ -922,7 +989,14 @@ public class NvHTTP {
     public String getClipboard() throws IOException {
         // Add type for future-proof
         // Might return arbitrary type from host if not set
-        return openHttpConnectionToString(httpClientLongConnectTimeout, getHttpsUrl(true), "actions/clipboard", "type=text");
+        try (ResponseBody body = openHttpConnection(httpClientLongConnectTimeout, getHttpsUrl(true), "actions/clipboard", "type=text", null)) {
+            // The host decides how much it sends back, so bound it instead of buffering an
+            // arbitrarily large response in memory with ResponseBody.string()
+            if (body.source().request(MAX_CLIPBOARD_BYTES + 1)) {
+                throw new IOException("Clipboard content too large");
+            }
+            return body.source().readUtf8();
+        }
     }
 
     // We currently only support plain text

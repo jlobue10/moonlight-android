@@ -6,6 +6,9 @@
     <string name="scut_pc_not_found">PC not found</string>
     <string name="scut_invalid_uuid">Provided PC is not valid</string>
     <string name="scut_invalid_app_id">Provided App is not valid</string>
+    <string name="scut_launch_confirm_title">Start streaming?</string>
+    <string name="scut_launch_confirm_message">This request was opened from a link or file outside the app.\n\nStart streaming %1$s on %2$s?</string>
+    <string name="scut_launch_confirm_running_app">the running app</string>
 
     <string name="menu_button">Menu</string>
     <string name="quick_menu_title">Quick Menu</string>
