@@ -21,11 +21,14 @@ import org.opencv.core.MatOfFloat;
 import org.opencv.core.MatOfInt;
 import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
+import org.tensorflow.lite.DataType;
 import org.tensorflow.lite.Interpreter;
+import org.tensorflow.lite.Tensor;
 import org.tensorflow.lite.gpu.GpuDelegate;
 import org.tensorflow.lite.gpu.GpuDelegateFactory;
 import org.tensorflow.lite.nnapi.NnApiDelegate;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -52,9 +55,17 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     private static final int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
     private static final float[] QUAD_VERTICES = {-1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f};
     private static final float[] TEXTURE_VERTICES = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
-    private final String AI_MODEL = "midas-midas-v2-w8a8.tflite";
-    private final int modelInputHeight = 256;
-    private final int modelInputWidth = 256;
+    // The depth model in use. Chosen in the constructor from the preferences (falling back to the
+    // bundled MiDaS when a downloadable model is not on disk); the input size is taken from the
+    // descriptor so GL resources can be sized before the interpreter exists, then confirmed from
+    // the interpreter's tensors in adoptTensorLayout().
+    private DepthModel depthModel = DepthModel.DEFAULT;
+    private int modelInputHeight = DepthModel.DEFAULT.inputSize;
+    private int modelInputWidth = DepthModel.DEFAULT.inputSize;
+    private boolean floatInput = false;   // float32 RGB in 0..1 (Depth Anything) vs uint8 RGB (MiDaS)
+    private boolean floatOutput = false;  // float32 inverse depth vs uint8
+    // Synced ("movie") mode waits for the current frame's depth map, but never longer than this.
+    private static final long MOVIE_MODE_MAX_DEPTH_WAIT_NS = 100_000_000L;
     private final int NUM_BUFFERS = 6;
     private final int NUM_INPUT_BUFFERS = 10;
     private final int NUM_SMOOTHED_BUFFERS = 3;
@@ -158,6 +169,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         this.onSurfaceReadyListener = listener;
         this.context = context;
         this.prefConfig = prefConfig;
+        this.depthModel = selectDepthModel(context, prefConfig);
+        this.modelInputWidth = depthModel.inputSize;
+        this.modelInputHeight = depthModel.inputSize;
 
         quadVertexBuffer = ByteBuffer.allocateDirect(QUAD_VERTICES.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         quadVertexBuffer.put(QUAD_VERTICES).position(0);
@@ -251,6 +265,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         videoSurfaceTexture.setOnFrameAvailableListener(this);
         videoSurface = new Surface(videoSurfaceTexture);
 
+        // Load the model first: every buffer and FBO below is sized from its input tensor.
+        initializeTfLite();
+        adoptTensorLayout();
+        renderer = renderer + " " + depthModel.shortName();
+
         depthMapTextureId = createEmptyTexture(modelInputWidth, modelInputHeight);
 
         simple3dProgram = createProgram(ShaderUtils.SIMPLE_VERTEX_SHADER, ShaderUtils.SIMPLE_FRAGMENT_SHADER);
@@ -259,7 +278,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
         initializeFilterFbo();
         initializeIntermediateFbo();
-        initializeTfLite();
         initializeFbo();
         initBuffer();
         initializePBOs();
@@ -395,6 +413,18 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, filteredDepthMapTextureId);
         GLES20.glUniform1i(depthTexHandle, 1);
+
+        // Guide for the edge-aware depth upsampling: the model-resolution copy of the video frame
+        // that the depth map was computed from (see ShaderUtils.FRAGMENT_SHADER_3D).
+        int guideTexHandle = GLES20.glGetUniformLocation(program, "s_GuideTexture");
+        int depthTexelHandle = GLES20.glGetUniformLocation(program, "u_depthTexelSize");
+        int guidedHandle = GLES20.glGetUniformLocation(program, "u_guidedUpsampling");
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fboTextureId);
+        GLES20.glUniform1i(guideTexHandle, 2);
+        GLES20.glUniform2f(depthTexelHandle, 1.0f / modelInputWidth, 1.0f / modelInputHeight);
+        GLES20.glUniform1i(guidedHandle, (prefConfig != null && prefConfig.depthGuidedUpsampling) ? 1 : 0);
+
         GLES20.glUniform1f(parallaxHandle, parallax);
         GLES20.glUniform1f(convergenceHandle, convergence);
         GLES20.glUniform1f(shiftHandle, shift);
@@ -409,9 +439,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     private void initBuffer() {
         if (tflite != null) {
-            int inputSize = modelInputHeight * modelInputWidth * 3;
+            int inputSize = modelInputHeight * modelInputWidth * 3 * (floatInput ? 4 : 1);
             tfliteInputBuffer = ByteBuffer.allocateDirect(inputSize).order(ByteOrder.nativeOrder());
-            int outputSize = modelInputHeight * modelInputWidth;
+            int outputSize = modelInputHeight * modelInputWidth * (floatOutput ? 4 : 1);
             freeOutputBuffers = new ArrayBlockingQueue<>(NUM_BUFFERS);
             filledOutputBuffers = new ArrayBlockingQueue<>(NUM_BUFFERS);
             for (int i = 0; i < NUM_BUFFERS; i++) {
@@ -456,7 +486,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             if (block || !isMovieMode) {
                 ByteBuffer pixelBufferForAI = freeInputBuffers.poll();
                 if (pixelBufferForAI != null) {
-                    boolean success = readPixelsForAI(pixelBufferForAI);
+                    // Double-buffered PBO readback (one frame of latency, no GL stall); the
+                    // synchronous path only remains for API < 24, which lacks offset-based glReadPixels.
+                    boolean success = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                            ? readPixelsForAI_Async(pixelBufferForAI)
+                            : readPixelsForAI(pixelBufferForAI);
                     if (success) {
                         double difference = hasSceneChangedFast(pixelBufferForAI, previousFrameForComparison);
                         pixelBufferForAI.rewind();
@@ -474,11 +508,21 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 }
                 ByteBuffer newMap = null;
                 if (block && isMovieMode) {
-                    while ((newMap = latestDepthMap.getAndSet(null)) == null) {
+                    // Synced mode waits for this frame's depth map, but a slow or failed model must
+                    // not freeze the GL thread: give up after MOVIE_MODE_MAX_DEPTH_WAIT_NS or as
+                    // soon as the inference thread is gone, and render with the previous map.
+                    long deadline = System.nanoTime() + MOVIE_MODE_MAX_DEPTH_WAIT_NS;
+                    while ((newMap = latestDepthMap.getAndSet(null)) == null
+                            && isAiRunning.get() && System.nanoTime() < deadline) {
                         try {
                             Thread.sleep(1);
                         } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
                         }
+                    }
+                    if (newMap == null) {
+                        block = false;
                     }
                 } else {
                     newMap = latestDepthMap.getAndSet(null);
@@ -614,6 +658,33 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         }
     }
 
+    /**
+     * RGBA8 (glReadPixels order, bottom row first) -> float32 RGB in 0..1, top row first, which is
+     * what the Depth Anything exports take (ImageNet normalisation is inside the graph).
+     */
+    public static void convertRgbaToFloatRgb(ByteBuffer rgbaBuffer, ByteBuffer floatRgbBuffer, int width, int height) {
+        Mat rgbaMat = null;
+        Mat rgbMat = null;
+        Mat flippedMat = null;
+        Mat floatMat = null;
+        try {
+            rgbaBuffer.rewind();
+            rgbaMat = new Mat(height, width, CvType.CV_8UC4, rgbaBuffer);
+            rgbMat = new Mat();
+            Imgproc.cvtColor(rgbaMat, rgbMat, Imgproc.COLOR_RGBA2RGB);
+            flippedMat = new Mat();
+            Core.flip(rgbMat, flippedMat, 0);
+            floatRgbBuffer.rewind();
+            floatMat = new Mat(height, width, CvType.CV_32FC3, floatRgbBuffer);
+            flippedMat.convertTo(floatMat, CvType.CV_32FC3, 1.0 / 255.0);
+        } finally {
+            if (rgbaMat != null) rgbaMat.release();
+            if (rgbMat != null) rgbMat.release();
+            if (flippedMat != null) flippedMat.release();
+            if (floatMat != null) floatMat.release();
+        }
+    }
+
     public static double calculateAverageDifferenceOCV(ByteBuffer buffer1, ByteBuffer buffer2, int width, int height) {
         if (buffer1 == null || buffer2 == null) {
             return 1;
@@ -710,14 +781,14 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             options.addDelegate(gpuDelegate);
             LimeLog.info("GPU Delegate aktiviert");
             renderer = "GPU";
-            tflite = new Interpreter(loadModelFile(context, AI_MODEL), options);
+            tflite = new Interpreter(loadModelFile(), options);
         } catch (Exception e) {
             LimeLog.info("GPU Delegate nicht verfügbar: " + e.getMessage());
             gpuDelegate.close();
             try {
                 nnApiDelegate = new NnApiDelegate();
                 options.addDelegate(nnApiDelegate);
-                tflite = new Interpreter(loadModelFile(context, AI_MODEL), options);
+                tflite = new Interpreter(loadModelFile(), options);
                 LimeLog.info("NNAPI Delegate aktiviert");
                 renderer = "NNAPI";
             } catch (Exception exception) {
@@ -725,7 +796,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 nnApiDelegate.close();
                 try {
                     LimeLog.info("Fallback: CPU");
-                    tflite = new Interpreter(loadModelFile(context, AI_MODEL), options);
+                    tflite = new Interpreter(loadModelFile(), options);
                     renderer = "CPU";
                 } catch (Exception ex) {
                     reinitializeTfLiteOnCpu();
@@ -748,20 +819,68 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             Interpreter.Options options = new Interpreter.Options();
             options.setUseNNAPI(true);
             options.setNumThreads(4);
-            tflite = new Interpreter(loadModelFile(context, AI_MODEL), options);
+            tflite = new Interpreter(loadModelFile(), options);
             LimeLog.info("Successfully re-initialized TFLite interpreter on CPU.");
         } catch (IOException e) {
             LimeLog.severe("Failed to re-initialize TFLite model on CPU: " + e.getMessage());
         }
     }
 
-    private MappedByteBuffer loadModelFile(Context context, String modelPath) throws IOException {
-        AssetFileDescriptor fileDescriptor = context.getAssets().openFd(modelPath);
-        FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
-        FileChannel fileChannel = inputStream.getChannel();
-        long startOffset = fileDescriptor.getStartOffset();
-        long declaredLength = fileDescriptor.getDeclaredLength();
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+    private MappedByteBuffer loadModelFile() throws IOException {
+        if (depthModel.isBundled()) {
+            AssetFileDescriptor fileDescriptor = context.getAssets().openFd(depthModel.fileName);
+            FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
+            FileChannel fileChannel = inputStream.getChannel();
+            long startOffset = fileDescriptor.getStartOffset();
+            long declaredLength = fileDescriptor.getDeclaredLength();
+            return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+        }
+        File file = depthModel.localFile(context);
+        try (FileInputStream inputStream = new FileInputStream(file)) {
+            return inputStream.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, file.length());
+        }
+    }
+
+    /**
+     * The model the preferences ask for, if it is on disk; otherwise the bundled default. The
+     * settings screen downloads models before letting the preference change, so the fallback only
+     * triggers when the file was removed afterwards (cleared app data, failed verification).
+     */
+    private static DepthModel selectDepthModel(Context context, PreferenceConfiguration prefConfig) {
+        DepthModel wanted = DepthModel.fromPrefValue(prefConfig != null ? prefConfig.depthModel : null);
+        if (!wanted.isAvailable(context)) {
+            LimeLog.warning("Depth model " + wanted.fileName + " is not available; falling back to " + DepthModel.DEFAULT.fileName);
+            return DepthModel.DEFAULT;
+        }
+        return wanted;
+    }
+
+    /**
+     * Reads the input/output tensor layout from the loaded interpreter so the conversion code and
+     * the buffer sizes match the model instead of assuming MiDaS's uint8 256x256 contract.
+     */
+    private void adoptTensorLayout() {
+        if (tflite == null) {
+            return;
+        }
+        try {
+            Tensor input = tflite.getInputTensor(0);
+            Tensor output = tflite.getOutputTensor(0);
+            int[] shape = input.shape();
+            if (shape.length == 4 && shape[3] == 3) {          // NHWC, the layout all supported models use
+                modelInputHeight = shape[1];
+                modelInputWidth = shape[2];
+            } else {
+                LimeLog.warning("Unexpected depth model input shape " + Arrays.toString(shape)
+                        + "; keeping " + modelInputWidth + "x" + modelInputHeight);
+            }
+            floatInput = input.dataType() == DataType.FLOAT32;
+            floatOutput = output.dataType() == DataType.FLOAT32;
+            LimeLog.info("Depth model " + depthModel.fileName + ": input " + Arrays.toString(shape) + " "
+                    + input.dataType() + ", output " + Arrays.toString(output.shape()) + " " + output.dataType());
+        } catch (Exception e) {
+            LimeLog.warning("Could not read the depth model's tensor layout: " + e.getMessage());
+        }
     }
 
     @Override
@@ -1011,10 +1130,21 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         tfliteInputBuffer.rewind();
                         pixelBuffer.rewind();
 
-                        convertRgbaToRgb(pixelBuffer, tfliteInputBuffer, modelInputWidth, modelInputHeight);
+                        if (floatInput) {
+                            convertRgbaToFloatRgb(pixelBuffer, tfliteInputBuffer, modelInputWidth, modelInputHeight);
+                        } else {
+                            convertRgbaToRgb(pixelBuffer, tfliteInputBuffer, modelInputWidth, modelInputHeight);
+                        }
 
                         aiTime = System.nanoTime();
-                        ReflectivePaddingInt8Minimal.applyReflectedPadding(tfliteInputBuffer);
+                        if (depthModel == DepthModel.MIDAS_V2_256) {
+                            // MiDaS-specific pre-processing (reflects the top/bottom bands so letterbox
+                            // bars do not read as near planes); it also performs the vertical flip that
+                            // the glReadPixels row order needs, which the float path does itself.
+                            ReflectivePaddingInt8Minimal.applyReflectedPadding(tfliteInputBuffer);
+                        }
+                        tfliteInputBuffer.rewind();
+                        outputBuffer.rewind();
                         tflite.run(tfliteInputBuffer, outputBuffer);
                         if (previousRawMap == null) {
                             previousRawMap = ByteBuffer.allocateDirect(outputBuffer.capacity());
@@ -1092,9 +1222,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                     currentPixelBuffer.rewind();
                     double imageDifference = hasFrameChangedSignificantlyOCV(currentPixelBuffer, previousPixelBuffer) * IMAGE_DIFFERENCE_MULTIPLIER;
 
-                    rawMat = new Mat(modelInputHeight, modelInputWidth, CvType.CV_8UC1, rawDepthBuffer);
+                    rawDepthBuffer.rewind();
+                    rawMat = new Mat(modelInputHeight, modelInputWidth, floatOutput ? CvType.CV_32FC1 : CvType.CV_8UC1, rawDepthBuffer);
                     processedMat = new Mat();
-                    Core.normalize(rawMat, processedMat, 0, 255, Core.NORM_MINMAX);
+                    // Min-max normalise to 8 bit; the rest of the pipeline is 8-bit whatever the model emits
+                    Core.normalize(rawMat, processedMat, 0, 255, Core.NORM_MINMAX, CvType.CV_8U);
 
                     if (isFirstFrame) {
                         previousSmoothedMat = processedMat.clone();
@@ -1121,14 +1253,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                     inverseMask.release();
                     blended.release();
                     previousSmoothedMat.get(0, 0, processedDataArray);
-                    rawDepthBuffer.rewind();
-                    rawDepthBuffer.put(processedDataArray);
-
-                    rawDepthBuffer.rewind();
-                    resultBuffer.rewind();
-                    resultBuffer.put(rawDepthBuffer);
-
-                    rawDepthBuffer.rewind();
+                    // Straight into the 8-bit map buffer: the raw buffer may be float32 and 4x larger
+                    resultBuffer.clear();
+                    resultBuffer.put(processedDataArray);
                     resultBuffer.rewind();
                     latestDepthMap.set(resultBuffer);
 

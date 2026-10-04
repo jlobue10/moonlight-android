@@ -172,6 +172,16 @@
         <item>1</item>
         <item>2</item>
     </string-array>
+    <string-array name="depth_model_names">
+        <item>@string/depth_model_midas</item>
+        <item>@string/depth_model_dav2_252</item>
+        <item>@string/depth_model_dav2_364</item>
+    </string-array>
+    <string-array name="depth_model_values" translatable="false">
+        <item>midas</item>
+        <item>dav2_252</item>
+        <item>dav2_364</item>
+    </string-array>
     <string-array name="mouse_mode_names">
         <item>@string/mouse_mode_multi_touch</item>
         <item>@string/mouse_mode_absolute_touch</item>

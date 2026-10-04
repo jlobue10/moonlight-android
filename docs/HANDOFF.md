@@ -13,37 +13,30 @@ original conversation. Everything below is either in this repository, in
 | javac-only compile-check harness (no Android SDK needed), PR #8 | `tools/compilecheck/` | done |
 | Release **v20.3.0-fork.1** (commit 9cb7cc48), four ABI APKs, signed with a **throwaway key** | GitHub Releases | published |
 | Follow-up PRs: **#11** build chain (AGP 9.4.0, Gradle 9.7.1, compileSdk 37, OkHttp 5.5), **#9** warp-mode bitrate, **#10** release signing + bump to 20.3.0-fork.2 | merged into `moonlight-noir` | done, see §2 |
-| Audit Q9 cleanups (dead "Tight Vsync" option removed, lite perf overlay relabelled, portrait resolution no longer swapped back in the decoder) | PR from `fix/audit-q9-cleanups` | see §2 |
+| Audit Q9 cleanups (dead "Tight Vsync" option removed, lite perf overlay relabelled, portrait resolution no longer swapped back in the decoder), PR **#14** | merged into `moonlight-noir` (e482ad8f) | done |
+| Signing secrets set by the owner; **v20.3.0-fork.2 released** (run 37216690423, signed with the project key) | GitHub Releases | published |
+| 3D depth quality: selectable depth model (MiDaS / Depth Anything V2 Small 252 / 364, verified on-demand download), model-agnostic renderer, highp shaders, async PBO readback, bounded synced-mode wait, joint-bilateral depth upsampling; `docs/3D_DEPTH_MODELS.md` | PR from `feat/3d-depth-quality` | see §2 |
 
 ## 2. Where it stopped, and the next steps
 
-Check the live state first (`gh pr list`, the Actions tab); this section is a snapshot.
+Check the live state first (`gh pr list`, the Actions tab); this section is a snapshot (2026-10-04, late).
 
-1. **PRs #11, #9 and #10 are merged** into `moonlight-noir` (merge commits 83d95dea, e7c0ad8b,
-   baa62bbb). The build-only validation run of #11's branch was green
-   (https://github.com/jlobue10/moonlight-android/actions/runs/37211903167), and so was the
-   build-only run of the merged `moonlight-noir` (baa62bbb):
-   https://github.com/jlobue10/moonlight-android/actions/runs/37212297465. The default branch is
-   therefore release-ready; nothing is pending on the code side.
-2. **Signing secrets (needs the repository owner's machine, still not configured as of 2026-10-04
-   evening; `gh secret list` is empty):** run
-   `tools/release-signing/setup-signing-secrets.sh` (or the `.ps1`) with a JDK and a logged-in `gh`.
-   It creates `release.jks` locally and stores `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`,
-   `KEY_PASSWORD` as repository secrets. A Claude Code cloud session cannot do this: its GitHub proxy
-   denies the Actions secrets API ("Access to this GitHub Actions path is not permitted").
-3. **Release v20.3.0-fork.2:** dispatch *Build and release APKs* on `moonlight-noir` with
-   `release_tag = v20.3.0-fork.2` (the tag must equal `v` + `versionName` in `app/build.gradle`,
-   which is `20.3.0-fork.2` / versionCode 59 since PR #10). With the secrets in place the APKs are
-   signed with the persistent key; without them the workflow refuses to publish unless
-   `allow_throwaway_key` is set. Tag pushes from a cloud session are rejected by the git proxy
-   (HTTP 403), which is why the `release_tag` input exists.
-4. Install on the Galaxy XR via Obtainium: source `https://github.com/jlobue10/moonlight-android`,
-   APK filter `arm64-v8a`. The package id is still Artemis's `com.limelight.noir`, and fork.1 was
-   throwaway-signed, so both the official Artemis build and fork.1 must be uninstalled before
-   fork.2; from fork.2 on, releases install as updates.
-5. Device testing on the Galaxy XR has not happened yet for anything in this series: the render
-   loop / frame pacing change (PR #1), AV1-in-Auto (PR #4), the warp bitrate change (PR #9) and the
-   AGP 9 build (PR #11) are all CI-verified only.
+1. **Released:** v20.3.0-fork.2 is published and signed with the persistent key (the four signing
+   secrets exist in the repository; the keystore and its password are on the owner's machine, the
+   keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
+   over each other; fork.1 and the official Artemis build still have to be uninstalled once.
+2. **Open PR: 3D depth quality** (`feat/3d-depth-quality`). CI-verified only; review and merge, then
+   bump `versionName`/`versionCode` and dispatch *Build and release APKs* with `release_tag=v<versionName>`.
+   What it changes and what it still owes (device validation order) is in `docs/3D_DEPTH_MODELS.md`.
+   Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+   publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
+   Claude Code session was not allowed to download third-party model binaries to re-host them. A
+   mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
+3. Install on the Galaxy XR via Obtainium: source `https://github.com/jlobue10/moonlight-android`,
+   APK filter `arm64-v8a`.
+4. Device testing on the Galaxy XR has not happened yet for anything in this series: the render
+   loop / frame pacing change (PR #1), AV1-in-Auto (PR #4), the warp bitrate change (PR #9), the
+   AGP 9 build (PR #11), the Q9 cleanups (#14) and the 3D depth work are all CI-verified only.
 
 ## 3. Decisions taken (and why), so they are not re-litigated
 
@@ -74,8 +67,9 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
 
 Verify against `docs/audit/2026-10-04/MOONLIGHT_FORK_AUDIT.md` (§2–§4 ids) before starting:
 
-- **Q8** SBS-3D path: `precision mediump` in `ShaderUtils`, synchronous `glReadPixels`, unbounded
-  wait for the depth model — not touched.
+- **Q8** SBS-3D path: addressed in `feat/3d-depth-quality` (highp shaders, async PBO readback,
+  100 ms bound on the synced-mode wait, no wait when the model failed to load). Still SDR-only
+  (8-bit GLSurfaceView + SurfaceTexture), by design.
 - **Q9** low items still open: custom resolution/bitrate inputs are barely validated, HDR10 needs the
   exact `*Main10HDR10` profile constants (same as upstream), optional `PCM_FLOAT` audio. Done in
   `fix/audit-q9-cleanups`: lite overlay labels ("Frame loss", "Host FPS"), the dead "Tight Vsync

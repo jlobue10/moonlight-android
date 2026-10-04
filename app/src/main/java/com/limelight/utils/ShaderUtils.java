@@ -12,7 +12,7 @@ public class ShaderUtils {
 
     public static final String FRAGMENT_SHADER_3D =
             "#extension GL_OES_EGL_image_external : require\n" +
-                    "precision mediump float;\n" +
+                    "precision highp float;\n" +
                     "varying vec2 v_TexCoord;\n" +
                     "uniform samplerExternalOES s_ColorTexture;\n" +
                     "uniform sampler2D s_DepthTexture;\n" +
@@ -20,9 +20,43 @@ public class ShaderUtils {
                     "uniform float u_convergence;\n" +
                     "uniform float u_shift;\n" +
                     "uniform bool u_debugMode;\n" +
+                    "uniform sampler2D s_GuideTexture;\n" +
+                    "uniform vec2 u_depthTexelSize;\n" +
+                    "uniform bool u_guidedUpsampling;\n" +
+                    "\n" +
+                    "// Joint bilateral upsampling of the model-resolution depth map. The four depth\n" +
+                    "// texels around uv are weighted by bilinear distance and by how close the guide\n" +
+                    "// colour at each texel is to the guide colour at uv, so depth edges follow colour\n" +
+                    "// edges instead of bleeding ~1 depth texel into the neighbouring object.\n" +
+                    "// The guide is the FBO copy of the frame the depth was computed from; it is stored\n" +
+                    "// bottom-up (GL framebuffer order) while the depth texture is top-down.\n" +
+                    "float sampleDepth(vec2 uv) {\n" +
+                    "  if (!u_guidedUpsampling) {\n" +
+                    "    return texture2D(s_DepthTexture, uv).r;\n" +
+                    "  }\n" +
+                    "  vec2 p = uv / u_depthTexelSize - 0.5;\n" +
+                    "  vec2 f = fract(p);\n" +
+                    "  vec2 base = (floor(p) + 0.5) * u_depthTexelSize;\n" +
+                    "  vec3 guide = texture2D(s_GuideTexture, vec2(uv.x, 1.0 - uv.y)).rgb;\n" +
+                    "  const float sigma = 0.08;\n" +
+                    "  float wsum = 0.0;\n" +
+                    "  float dsum = 0.0;\n" +
+                    "  for (int j = 0; j < 2; j++) {\n" +
+                    "    for (int i = 0; i < 2; i++) {\n" +
+                    "      vec2 suv = base + vec2(float(i), float(j)) * u_depthTexelSize;\n" +
+                    "      float wb = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);\n" +
+                    "      vec3 c = texture2D(s_GuideTexture, vec2(suv.x, 1.0 - suv.y)).rgb - guide;\n" +
+                    "      float wr = exp(-dot(c, c) / (2.0 * sigma * sigma));\n" +
+                    "      float w = wb * (wr + 0.02);\n" +
+                    "      wsum += w;\n" +
+                    "      dsum += w * texture2D(s_DepthTexture, suv).r;\n" +
+                    "    }\n" +
+                    "  }\n" +
+                    "  return dsum / wsum;\n" +
+                    "}\n" +
                     "\n" +
                     "void main() {\n" +
-                    "  float depth = texture2D(s_DepthTexture, v_TexCoord).r;\n" +
+                    "  float depth = sampleDepth(v_TexCoord);\n" +
                     "\n" +
                     "  // Remap depth into symmetric range around convergence\n" +
                     "  float depthDiff;\n" +
@@ -88,7 +122,7 @@ public class ShaderUtils {
      * NOTE: For best performance and quality, a two-pass implementation is still highly recommended.
      */
     public static final String OPTIMIZED_SINGLE_PASS_GAUSSIAN_BLUR_SHADER =
-            "precision mediump float;\n" +
+            "precision highp float;\n" +
                     "varying vec2 v_TexCoord;\n" +
                     "uniform sampler2D s_InputTexture;\n" +
                     "uniform vec2 u_texelSize;\n" +
@@ -132,7 +166,7 @@ public class ShaderUtils {
                     "}\n";
 
     public static final String EDGE_AWARE_DEPTH_BLUR_SHADER =
-            "precision mediump float;\n" +
+            "precision highp float;\n" +
                     "varying vec2 v_TexCoord;\n" +
                     "uniform sampler2D uDepthMap;\n" +
                     "uniform vec2 u_texelSize;\n" +
@@ -193,7 +227,7 @@ public class ShaderUtils {
 
     public static final String SIMPLE_FRAGMENT_SHADER =
             "#extension GL_OES_EGL_image_external : require\n" +
-                    "precision mediump float;\n" +
+                    "precision highp float;\n" +
                     "varying vec2 v_TexCoord;\n" +
                     "uniform samplerExternalOES u_Texture;\n" +
                     "void main() {\n" +
