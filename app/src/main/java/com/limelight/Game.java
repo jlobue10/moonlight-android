@@ -600,33 +600,29 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // Check if the user has enabled HDR
         boolean willStreamHdr = false;
         if (prefConfig.enableHdr) {
-            if (onExternelDisplay) {
-                // Enforce HDR on unsupported hardware can still enable 10bit streaming for better quality
-                willStreamHdr = true;
-            } else {
-                // Start our HDR checklist
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    Display.HdrCapabilities hdrCaps = currentDisplay.getHdrCapabilities();
+            // Start our HDR checklist. currentDisplay is the display the stream is rendered on,
+            // so an external display is checked for HDR10 support just like the built-in one.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                Display.HdrCapabilities hdrCaps = currentDisplay.getHdrCapabilities();
 
-                    // We must now ensure our display is compatible with HDR10
-                    if (hdrCaps != null) {
-                        // getHdrCapabilities() returns null on Lenovo Lenovo Mirage Solo (vega), Android 8.0
-                        for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
-                            if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
-                                willStreamHdr = true;
-                                break;
-                            }
+                // We must now ensure our display is compatible with HDR10
+                if (hdrCaps != null) {
+                    // getHdrCapabilities() returns null on Lenovo Lenovo Mirage Solo (vega), Android 8.0
+                    for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
+                        if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
+                            willStreamHdr = true;
+                            break;
                         }
                     }
+                }
 
-                    if (!willStreamHdr) {
-                        // Nope, no HDR for us :(
-                        Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
-                    }
+                if (!willStreamHdr) {
+                    // Nope, no HDR for us :(
+                    Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
                 }
-                else {
-                    Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
-                }
+            }
+            else {
+                Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
             }
         }
 

@@ -637,8 +637,12 @@ public class StreamSettings extends AppCompatActivity {
                 category.removePreference(findPreference("checkbox_enable_hdr"));
             }
             else {
-                Display.HdrCapabilities hdrCaps = display.getHdrCapabilities();
-                Log.d("HDR CAP", display + "");
+                // Check the display the stream will actually be rendered on. In external display
+                // mode that is the secondary display (see ServerHelper.getActiveDisplay()), not
+                // the built-in panel.
+                Display hdrDisplay = getActiveDisplay(activity, prevPrefConfig);
+                Display.HdrCapabilities hdrCaps = hdrDisplay.getHdrCapabilities();
+                Log.d("HDR CAP", hdrDisplay + "");
                 // We must now ensure our display is compatible with HDR10
                 boolean foundHdr10 = false;
                 if (hdrCaps != null) {
