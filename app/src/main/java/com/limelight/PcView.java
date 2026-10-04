@@ -256,6 +256,10 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
 
         String hostname = intent.getStringExtra("hostname");
         int port = intent.getIntExtra("port", NvHTTP.DEFAULT_HTTP_PORT);
+        if (port <= 0 || port > 65535) {
+            // AddressTuple throws on an invalid port, so don't trust the extra blindly
+            port = NvHTTP.DEFAULT_HTTP_PORT;
+        }
         pendingPairingPin = intent.getStringExtra("pin");
         pendingPairingPassphrase = intent.getStringExtra("passphrase");
 
@@ -309,11 +313,18 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
                                 details.state == ComputerDetails.State.ONLINE &&
                                 details.activeAddress.equals(pendingPairingAddress)
                             ) {
+                                // Never pair automatically from a URI. The PIN and passphrase
+                                // from the link only pre-fill the pairing dialog; the user still
+                                // has to confirm with the Pair button.
+                                final String pin = pendingPairingPin;
+                                final String passphrase = pendingPairingPassphrase;
+                                pendingPairingAddress = null;
+                                pendingPairingPin = null;
+                                pendingPairingPassphrase = null;
                                 PcView.this.runOnUiThread(() -> {
-                                    doPair(details, pendingPairingPin, pendingPairingPassphrase);
-                                    pendingPairingAddress = null;
-                                    pendingPairingPin = null;
-                                    pendingPairingPassphrase = null;
+                                    if (!isFinishing()) {
+                                        doOTPPair(details, pin, passphrase);
+                                    }
                                 });
                             }
                         }
@@ -582,6 +593,12 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
     }
 
     private void doOTPPair(final ComputerDetails computer) {
+        doOTPPair(computer, null, null);
+    }
+
+    // initialPin/initialPassphrase only pre-fill the inputs (e.g. from a deep link); nothing is
+    // sent to the host until the user presses the button.
+    private void doOTPPair(final ComputerDetails computer, String initialPin, String initialPassphrase) {
         Context context = PcView.this;
 
         LinearLayout layout = new LinearLayout(context);
@@ -592,10 +609,16 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
         otpInput.setHint("PIN");
         otpInput.setInputType(InputType.TYPE_CLASS_NUMBER);
         otpInput.setFilters(new InputFilter[] { new InputFilter.LengthFilter(4) });
+        if (initialPin != null) {
+            otpInput.setText(initialPin);
+        }
 
         final EditText passphraseInput = new EditText(context);
         passphraseInput.setHint(getString(R.string.pair_passphrase_hint));
         passphraseInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        if (initialPassphrase != null) {
+            passphraseInput.setText(initialPassphrase);
+        }
 
         layout.addView(otpInput);
         layout.addView(passphraseInput);
