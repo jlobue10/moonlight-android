@@ -1291,26 +1291,38 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     public void setMetaKeyCaptureState(boolean enabled) {
-        // This uses custom APIs present on some Samsung devices to allow capture of
-        // meta key events while streaming.
-        try {
-            Class<?> semWindowManager = Class.forName("com.samsung.android.view.SemWindowManager");
-            Method getInstanceMethod = semWindowManager.getMethod("getInstance");
-            Object manager = getInstanceMethod.invoke(null);
+        // Android has native keyboard capture support starting in API 36.1
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
+            WindowManager.LayoutParams windowLayoutParams = getWindow().getAttributes();
+            windowLayoutParams.setKeyboardCaptureEnabled(enabled);
+            getWindow().setAttributes(windowLayoutParams);
+        }
+        else {
+            // This uses custom APIs present on some Samsung devices to allow capture of
+            // meta key events while streaming.
+            try {
+                Class<?> semWindowManager = Class.forName("com.samsung.android.view.SemWindowManager");
+                Method getInstanceMethod = semWindowManager.getMethod("getInstance");
+                Object manager = getInstanceMethod.invoke(null);
 
-            if (manager != null) {
-                Class<?>[] parameterTypes = new Class<?>[2];
-                parameterTypes[0] = ComponentName.class;
-                parameterTypes[1] = boolean.class;
-                Method requestMetaKeyEventMethod = semWindowManager.getDeclaredMethod("requestMetaKeyEvent", parameterTypes);
-                requestMetaKeyEventMethod.invoke(manager, this.getComponentName(), enabled);
+                if (manager != null) {
+                    Class<?>[] parameterTypes = new Class<?>[2];
+                    parameterTypes[0] = ComponentName.class;
+                    parameterTypes[1] = boolean.class;
+                    Method requestMetaKeyEventMethod = semWindowManager.getDeclaredMethod("requestMetaKeyEvent", parameterTypes);
+                    requestMetaKeyEventMethod.invoke(manager, this.getComponentName(), enabled);
+                }
+                else {
+                    LimeLog.warning("SemWindowManager.getInstance() returned null");
+                }
+            } catch (ClassNotFoundException ignored) {
+            } catch (NoSuchMethodException e) {
+                e.printStackTrace();
+            } catch (InvocationTargetException e) {
+                e.printStackTrace();
+            } catch (IllegalAccessException e) {
+                e.printStackTrace();
             }
-            else {
-                LimeLog.warning("SemWindowManager.getInstance() returned null");
-            }
-        } catch (ClassNotFoundException | NoSuchMethodException | InvocationTargetException |
-                 IllegalAccessException e) {
-            e.printStackTrace();
         }
     }
 
@@ -3808,6 +3820,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             holder.getSurface().setFrameRate(desiredFrameRate,
                     Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+        }
+
+        // Disable producer throttling on the underlying surface for reduced latency
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+            holder.getSurface().setProducerThrottlingEnabled(false);
         }
     }
 
