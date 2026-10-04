@@ -301,7 +301,9 @@ public class GameMenu implements Game.GameMenuCallbacks {
         options.add(new MenuOption(getString(R.string.game_menu_server_cmd), true,
                 () -> {
                     ArrayList<String> serverCmds = game.getServerCmds();
-                    if (serverCmds.isEmpty()) {
+                    // Null when Game was started without the extra (e.g. resuming a running game
+                    // from ShortcutTrampoline); treat that as "no server commands"
+                    if (serverCmds == null || serverCmds.isEmpty()) {
                         int themeResId = game.getApplicationInfo().theme;
                         Context themedContext = new ContextThemeWrapper(dialogScreenContext, themeResId);
                         new AlertDialog.Builder(themedContext)
