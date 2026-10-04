@@ -114,6 +114,7 @@ public class ServerHelper {
         gameIntent.putExtra(Game.EXTRA_PC_NAME, computer.name);
         gameIntent.putExtra(Game.EXTRA_VDISPLAY, withVDisplay);
         gameIntent.putExtra(Game.EXTRA_SERVER_COMMANDS, (ArrayList<String>) computer.serverCommands);
+        gameIntent.putExtra(Game.EXTRA_HOST_PERMISSION, computer.permission);
 
         try {
             if (computer.serverCert != null) {
