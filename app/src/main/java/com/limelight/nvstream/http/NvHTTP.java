@@ -187,6 +187,9 @@ public class NvHTTP {
                 .readTimeout(READ_TIMEOUT, TimeUnit.MILLISECONDS)
                 .connectTimeout(LONG_CONNECTION_TIMEOUT, TimeUnit.MILLISECONDS)
                 .proxy(Proxy.NO_PROXY)
+                // OkHttp 5 fast fallback (RFC 8305) does not tolerate the thread interruptions
+                // the polling code uses to cancel requests (upstream 98c12beb)
+                .fastFallback(false)
                 .build();
 
         httpClientShortConnectTimeout = httpClientLongConnectTimeout.newBuilder()

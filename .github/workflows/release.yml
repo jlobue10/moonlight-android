@@ -8,7 +8,8 @@ name: Build and release APKs
 # KEY_ALIAS and KEY_PASSWORD, the APKs are signed with that keystore so later
 # releases install as updates. Without them a throwaway key is generated for the
 # run, which means every release has a different signature and must be installed
-# after uninstalling the previous build. See docs/RELEASING.md.
+# after uninstalling the previous build; a release (as opposed to a build-only run) is
+# refused in that state unless allow_throwaway_key is set. See docs/RELEASING.md.
 
 on:
   push:
@@ -20,6 +21,11 @@ on:
         required: false
         default: ''
         type: string
+      allow_throwaway_key:
+        description: "Publish the release even though no keystore secrets are configured (throwaway signature: users must uninstall to update)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -62,7 +68,15 @@ jobs:
           "$SDKMANAGER" --install "cmdline-tools;latest" >/dev/null 2>&1 || echo "::warning::cmdline-tools update failed; using the preinstalled SDK manager"
           echo "== SDK packages of interest available in the repository =="
           "$SDKMANAGER" --list 2>/dev/null | awk '{print $1}' | grep -E '^(platforms;android-3[5-9]|build-tools;3[5-9]\.|ndk;2[7-9]\.)' | sort -u || true
-          "$SDKMANAGER" --install "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS_VERSION}"
+          # Android 17 and later are published with an SDK minor version ("platforms;android-37.0"):
+          # install the plain package when it exists, else the lowest minor of that API level.
+          PLATFORM=$("$SDKMANAGER" --list 2>/dev/null | awk '{print $1}' | grep -E "^platforms;android-${COMPILE_SDK}(\.[0-9]+)?$" | sort -t. -k2,2n | head -1 || true)
+          if [ -n "$PLATFORM" ]; then
+            "$SDKMANAGER" --install "$PLATFORM" "build-tools;${BUILD_TOOLS_VERSION}"
+          else
+            echo "::warning::no platforms;android-${COMPILE_SDK}* package is listed; the Android Gradle plugin will download the platform it needs"
+            "$SDKMANAGER" --install "build-tools;${BUILD_TOOLS_VERSION}"
+          fi
           "$SDKMANAGER" --install "ndk;${NDK_VERSION}" || echo "::warning::ndk;${NDK_VERSION} is not installable via sdkmanager; the Android Gradle plugin will try to download it"
           "$SDKMANAGER" --list_installed 2>/dev/null | grep -E 'platforms;|build-tools;|ndk;' || true
 
@@ -91,6 +105,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ALLOW_THROWAWAY_KEY: ${{ inputs.allow_throwaway_key }}
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/${BUILD_TOOLS_VERSION}"
@@ -101,6 +116,10 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
             SIGNING_NOTE="Signed with the project's release key."
           else
+            if [ -n "${RELEASE_TAG:-}" ] && [ "${ALLOW_THROWAWAY_KEY:-false}" != "true" ]; then
+              echo "::error::Refusing to publish ${RELEASE_TAG} without the KEYSTORE_BASE64/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD secrets: the APKs would carry a throwaway signature that no later release can update. Run tools/release-signing/setup-signing-secrets.sh (see docs/RELEASING.md), or re-run with allow_throwaway_key enabled."
+              exit 1
+            fi
             echo "::warning::No KEYSTORE_BASE64 secret: signing with a throwaway key generated for this run. The resulting APKs cannot be installed over a build signed with a different key; uninstall the previous build first."
             KEYSTORE_PASSWORD="throwaway-$RANDOM$RANDOM"
             KEY_ALIAS="throwaway"
@@ -123,10 +142,14 @@ jobs:
           ls -la dist/
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
+      - name: Name the workflow artifact
+        # Artifact names may not contain "/", which branch names such as port/agp9 do.
+        run: echo "ARTIFACT_NAME=apks-$(printf '%s' "${RELEASE_TAG:-$GITHUB_REF_NAME}" | tr '/' '-')" >> "$GITHUB_ENV"
+
       - name: Upload APKs as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apks-${{ env.RELEASE_TAG || github.ref_name }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: |
             dist/*.apk
             dist/SHA256SUMS.txt

@@ -36,8 +36,8 @@ CACHE="$HERE/.cache"
 LIB="$CACHE/lib"
 SRC="$CACHE/src"
 
-ANDROID_ALL_VERSION=16-robolectric-13921718          # Android 16 / API 36 framework (matches compileSdk 36)
-ANDROID_ALL_SHA1=6c7b88d363a52044649d7756a079e62b9ee82434
+ANDROID_ALL_VERSION=17-robolectric-15733970          # Android 17 / API 37 framework (matches compileSdk 37)
+ANDROID_ALL_SHA1=c4074fdab740a7ddbb7e6a6a4960810d91ec30f9
 MAVEN_CENTRAL=https://repo1.maven.org/maven2
 AOSP_REPO=https://github.com/msft-mirror-aosp/platform.prebuilts.sdk   # mirror of AOSP platform/prebuilts/sdk
 AOSP_COMMIT=3af7c93524be6f51e092b87b17f009f13ee98b43                  # 2025-03-14, androidx snapshot of early 2025

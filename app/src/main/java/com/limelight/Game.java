@@ -266,9 +266,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     public static final String EXTRA_SERVER_CERT = "ServerCert";
     public static final String EXTRA_VDISPLAY = "VirtualDisplay";
     public static final String EXTRA_SERVER_COMMANDS = "ServerCommands";
+    public static final String EXTRA_HOST_PERMISSION = "HostPermission";
     public static final String EXTRA_DISPLAY_ID = "DisplayID";
 
     public static final String CLIPBOARD_IDENTIFIER = "ArtemisStreaming";
+
+    // Upper bound for the bitrate warp mode asks for after scaling (kbps)
+    private static final int MAX_WARP_BITRATE_KBPS = 1000000;
 
     private String appUUID;
     private String host;
@@ -278,6 +282,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private String uniqueId;
     private X509Certificate serverCert;
     private boolean vDisplay;
+    // Apollo-family hosts report a Permission bitmask in serverinfo; -1 means none was reported
+    // (Sunshine, GFE). Warp mode uses this to decide who scales the bitrate.
+    private int hostPermission = -1;
+    // What was actually requested from the host (warp modes change both)
+    private int effectiveBitrateKbps;
+    private float effectiveFrameRate;
     private ArrayList<String> serverCommands;
 
     private ViewParent rootView;
@@ -575,6 +585,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         uniqueId = Game.this.getIntent().getStringExtra(EXTRA_UNIQUEID);
         vDisplay = Game.this.getIntent().getBooleanExtra(EXTRA_VDISPLAY, false);
         serverCommands = Game.this.getIntent().getStringArrayListExtra(EXTRA_SERVER_COMMANDS);
+        hostPermission = Game.this.getIntent().getIntExtra(EXTRA_HOST_PERMISSION, -1);
         boolean appSupportsHdr = Game.this.getIntent().getBooleanExtra(EXTRA_APP_HDR, false);
         byte[] derCertData = Game.this.getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
 
@@ -746,9 +757,28 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             }
         }
 
+        int bitrateKbps = isMetered ? prefConfig.meteredBitrate : prefConfig.bitrate;
         if (prefConfig.framePacingWarpFactor > 0) {
+            // Warp modes ask the host for 2x/4x the selected frame rate and present only the
+            // newest frame, so the frame on screen is always the freshest one. Encoding twice
+            // (or four times) the frames at an unchanged bitrate halves (quarters) the bits each
+            // frame gets, so the bitrate has to grow with the frame rate to keep picture quality.
             chosenFrameRate *= prefConfig.framePacingWarpFactor;
+            if (hostPermission >= 0) {
+                // Apollo-family host: Apollo restores the bitrate itself (x warp factor) when its
+                // "Limit framerate" option is on, and scaling here as well would double-scale it.
+                LimeLog.info("Warp x" + prefConfig.framePacingWarpFactor + ": Apollo host, bitrate left at " +
+                        bitrateKbps + " kbps for the host to scale");
+            }
+            else {
+                long scaledKbps = (long) bitrateKbps * prefConfig.framePacingWarpFactor;
+                bitrateKbps = (int) Math.min(scaledKbps, MAX_WARP_BITRATE_KBPS);
+                LimeLog.info("Warp x" + prefConfig.framePacingWarpFactor + ": bitrate scaled to " +
+                        bitrateKbps + " kbps to keep the bits per frame constant");
+            }
         }
+        effectiveBitrateKbps = bitrateKbps;
+        effectiveFrameRate = chosenFrameRate;
 
         StreamConfiguration config = new StreamConfiguration.Builder()
                 .setResolution(
@@ -761,7 +791,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 .setResolutionScaleFactor(prefConfig.resolutionScaleFactor)
                 .setApp(app)
                 .setEnableUltraLowLatency(prefConfig.enableUltraLowLatency)
-                .setBitrate(isMetered ? prefConfig.meteredBitrate: prefConfig.bitrate)
+                .setBitrate(bitrateKbps)
                 .setEnableSops(prefConfig.enableSops)
                 .enableLocalAudioPlayback(prefConfig.playHostAudio)
                 .setMaxPacketSize(1392)
@@ -1290,31 +1320,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     }
 
-    // Returns true if the platform accepted the request (API 36.1+), false if the API is absent.
-    private boolean setNativeKeyboardCaptureState(boolean enabled) {
-        try {
-            WindowManager.LayoutParams windowLayoutParams = getWindow().getAttributes();
-            Method setKeyboardCaptureEnabled =
-                    WindowManager.LayoutParams.class.getMethod("setKeyboardCaptureEnabled", boolean.class);
-            setKeyboardCaptureEnabled.invoke(windowLayoutParams, enabled);
-            getWindow().setAttributes(windowLayoutParams);
-            return true;
-        } catch (NoSuchMethodException e) {
-            // Android 16.0 or earlier
-            return false;
-        } catch (InvocationTargetException | IllegalAccessException e) {
-            e.printStackTrace();
-            return false;
-        }
-    }
-
     public void setMetaKeyCaptureState(boolean enabled) {
         // Android has native keyboard capture support starting in API 36.1
-        // (WindowManager.LayoutParams.setKeyboardCaptureEnabled). It is invoked reflectively so
-        // the app still builds against compileSdk 36; on Android 16.0 and earlier the method does
-        // not exist and the Samsung path below is used instead.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && setNativeKeyboardCaptureState(enabled)) {
-            // Handled by the platform
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
+            WindowManager.LayoutParams windowLayoutParams = getWindow().getAttributes();
+            windowLayoutParams.setKeyboardCaptureEnabled(enabled);
+            getWindow().setAttributes(windowLayoutParams);
         }
         else {
             // This uses custom APIs present on some Samsung devices to allow capture of
@@ -1828,9 +1839,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                         selectedVideoFormat,
                         decoderRenderer.getMinDecoderLatency(),
                         decoderRenderer.getMinDecoderLatencyFullLog(),
-                        String.valueOf((prefConfig.bitrate / 1000)),
+                        String.valueOf(effectiveBitrateKbps / 1000),
                         displayWidth + "x" + displayHeight,
-                        prefConfig.fps + " hz",
+                        formatFrameRate(effectiveFrameRate) + " hz",
                         decoderRenderer.getAverageDecoderLatency() + " ms",
                         PreferenceConfiguration.getSelectedFramePacingName(getBaseContext()),
                         formatCurrentTime(System.currentTimeMillis())
@@ -1840,6 +1851,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
 
         finish();
+    }
+
+    private static String formatFrameRate(float fps) {
+        return fps == (int) fps ? String.valueOf((int) fps) : String.valueOf(fps);
     }
 
     public static String formatCurrentTime(long currentTimeMillis) {
@@ -3841,16 +3856,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
         }
 
-        // Disable producer throttling on the underlying surface for reduced latency (Android 17+).
-        // Surface.setProducerThrottlingEnabled() is invoked reflectively so the app still builds
-        // against compileSdk 36; it is a no-op on earlier releases.
-        if (Build.VERSION.SDK_INT >= 37) {
-            try {
-                Surface.class.getMethod("setProducerThrottlingEnabled", boolean.class)
-                        .invoke(holder.getSurface(), false);
-            } catch (Exception e) {
-                LimeLog.warning("Unable to disable producer throttling: " + e);
-            }
+        // Disable producer throttling on the underlying surface for reduced latency
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+            holder.getSurface().setProducerThrottlingEnabled(false);
         }
     }
 
