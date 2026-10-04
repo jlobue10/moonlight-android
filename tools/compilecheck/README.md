@@ -39,8 +39,8 @@ also `git`, `curl`, `unzip` and Gradle (`gradle` on PATH, else the repo's
 Everything lands in `tools/compilecheck/.cache/` (git-ignored); nothing is
 committed and nothing is fetched by `compilecheck.sh` itself.
 
-1. **Android framework**: Robolectric's `org.robolectric:android-all:16-robolectric-13921718`
-   from Maven Central (Android 16 / API 36 framework classes, sha1-verified).
+1. **Android framework**: Robolectric's `org.robolectric:android-all:17-robolectric-15733970`
+   from Maven Central (Android 17 / API 37 framework classes, sha1-verified).
 2. **Dependencies** are read from `app/build.gradle` (`gradlecfg.py --deps`, so a version
    bump there is picked up) and resolved -- with their transitive closure -- by the small
    Gradle project in `deps/`, leniently, through **Google Maven, Maven Central and JitPack**.

@@ -62,7 +62,15 @@ jobs:
           "$SDKMANAGER" --install "cmdline-tools;latest" >/dev/null 2>&1 || echo "::warning::cmdline-tools update failed; using the preinstalled SDK manager"
           echo "== SDK packages of interest available in the repository =="
           "$SDKMANAGER" --list 2>/dev/null | awk '{print $1}' | grep -E '^(platforms;android-3[5-9]|build-tools;3[5-9]\.|ndk;2[7-9]\.)' | sort -u || true
-          "$SDKMANAGER" --install "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS_VERSION}"
+          # Android 17 and later are published with an SDK minor version ("platforms;android-37.0"):
+          # install the plain package when it exists, else the lowest minor of that API level.
+          PLATFORM=$("$SDKMANAGER" --list 2>/dev/null | awk '{print $1}' | grep -E "^platforms;android-${COMPILE_SDK}(\.[0-9]+)?$" | sort -t. -k2,2n | head -1 || true)
+          if [ -n "$PLATFORM" ]; then
+            "$SDKMANAGER" --install "$PLATFORM" "build-tools;${BUILD_TOOLS_VERSION}"
+          else
+            echo "::warning::no platforms;android-${COMPILE_SDK}* package is listed; the Android Gradle plugin will download the platform it needs"
+            "$SDKMANAGER" --install "build-tools;${BUILD_TOOLS_VERSION}"
+          fi
           "$SDKMANAGER" --install "ndk;${NDK_VERSION}" || echo "::warning::ndk;${NDK_VERSION} is not installable via sdkmanager; the Android Gradle plugin will try to download it"
           "$SDKMANAGER" --list_installed 2>/dev/null | grep -E 'platforms;|build-tools;|ndk;' || true
 
@@ -123,10 +131,14 @@ jobs:
           ls -la dist/
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
+      - name: Name the workflow artifact
+        # Artifact names may not contain "/", which branch names such as port/agp9 do.
+        run: echo "ARTIFACT_NAME=apks-$(printf '%s' "${RELEASE_TAG:-$GITHUB_REF_NAME}" | tr '/' '-')" >> "$GITHUB_ENV"
+
       - name: Upload APKs as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apks-${{ env.RELEASE_TAG || github.ref_name }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: |
             dist/*.apk
             dist/SHA256SUMS.txt
