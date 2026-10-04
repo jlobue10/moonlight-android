@@ -42,3 +42,9 @@
 # jMDNS
 -dontwarn javax.jmdns.impl.DNSCache
 -dontwarn org.slf4j.**
+
+# Android XR: the Jetpack XR libraries call the platform-provided com.android.extensions.xr library
+# (declared as an optional uses-library, present only on XR devices). It is never in the APK, so
+# R8 must not treat its classes as missing.
+-dontwarn com.android.extensions.xr.**
+-dontwarn android.extensions.xr.**

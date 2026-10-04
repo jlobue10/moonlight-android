@@ -61,6 +61,10 @@
         android:theme="@style/AppTheme"
         >
 
+        <!-- Android XR platform extensions, present only on XR devices; the Jetpack XR libraries load it when available -->
+
+        <uses-library android:name="com.android.extensions.xr" android:required="false" />
+
         <provider
             android:name=".PosterContentProvider"
             android:authorities="poster.${applicationId}"
