@@ -304,6 +304,8 @@ public class AddComputerManually extends AppCompatActivity {
                     intent.putExtra(Game.EXTRA_APP_UUID, appUUID);
                     intent.putExtra(Game.EXTRA_APP_NAME, appName);
                     intent.putExtra(Game.EXTRA_APP_ID, appID);
+                    // Tell the trampoline this came from a link so it asks before streaming
+                    intent.putExtra(ShortcutTrampoline.EXTRA_FROM_DEEP_LINK, true);
 
                     finish();
 
