@@ -58,6 +58,7 @@ import com.limelight.PcView;
 import com.limelight.R;
 import com.limelight.binding.input.virtual_controller.keyboard.KeyBoardControllerConfigurationLoader;
 import com.limelight.binding.video.MediaCodecHelper;
+import com.limelight.binding.input.driver.ble.SteamControllerBleManager;
 import com.limelight.utils.DepthModel;
 import com.limelight.utils.DepthModelDownloader;
 import com.limelight.utils.Dialog;
@@ -428,6 +429,16 @@ public class StreamSettings extends AppCompatActivity {
 
         public void initializePreferences() {
             addPreferencesFromResource(R.xml.preferences);
+
+            // The Steam Controller driver needs BLUETOOTH_CONNECT on Android 12+; ask when it is enabled.
+            findPreference("checkbox_steam_controller_ble").setOnPreferenceChangeListener((preference, newValue) -> {
+                if (Boolean.TRUE.equals(newValue) && getActivity() != null
+                        && !SteamControllerBleManager.hasPermission(getActivity())
+                        && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    requestPermissions(new String[]{SteamControllerBleManager.requiredPermission()}, 0x5C);
+                }
+                return true;
+            });
 
             // Downloadable depth models: the preference only changes once the file is on disk and
             // verified, so the renderer never has to fall back behind the user's back.

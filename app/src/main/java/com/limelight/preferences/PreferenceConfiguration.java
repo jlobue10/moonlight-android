@@ -63,6 +63,8 @@ public class PreferenceConfiguration {
     private static final String MULTI_CONTROLLER_PREF_STRING = "checkbox_multi_controller";
     static final String AUDIO_CONFIG_PREF_STRING = "list_audio_config";
     private static final String USB_DRIVER_PREF_SRING = "checkbox_usb_driver";
+    private static final String STEAM_CONTROLLER_BLE_PREF_STRING = "checkbox_steam_controller_ble";
+    private static final String STEAM_CONTROLLER_MOTION_PREF_STRING = "checkbox_steam_controller_motion";
     private static final String VIDEO_FORMAT_PREF_STRING = "video_format";
     private static final String ONSCREEN_CONTROLLER_PREF_STRING = "checkbox_show_onscreen_controls";
     private static final String CHECKBOX_HIDE_OSC_WHEN_HAS_GAMEPAD = "checkbox_hide_osc_when_has_gamepad";
@@ -251,6 +253,8 @@ public class PreferenceConfiguration {
     public ScaleMode videoScaleMode;
     public String language;
     public int renderMode;
+    public boolean steamControllerBle;      // 2026 Steam Controller over Bluetooth LE (in-app driver)
+    public boolean steamControllerMotion;   // forward its gyro/accel to the host
     public String depthModel;              // DepthModel.prefValue
     public boolean depthGuidedUpsampling;
     public boolean xrStereo;               // Android XR: stereo SurfaceEntity for the SBS frame
@@ -903,6 +907,8 @@ private static int getFramePacingValue(Context context) {
         config.smallIconMode = prefs.getBoolean(SMALL_ICONS_PREF_STRING, getDefaultSmallMode(context));
         config.multiController = prefs.getBoolean(MULTI_CONTROLLER_PREF_STRING, DEFAULT_MULTI_CONTROLLER);
         config.usbDriver = prefs.getBoolean(USB_DRIVER_PREF_SRING, DEFAULT_USB_DRIVER);
+        config.steamControllerBle = prefs.getBoolean(STEAM_CONTROLLER_BLE_PREF_STRING, true);
+        config.steamControllerMotion = prefs.getBoolean(STEAM_CONTROLLER_MOTION_PREF_STRING, true);
         config.fullScreen = prefs.getBoolean(FULL_SCREEN_PREF_STRING, DEFAULT_FULL_SCREEN);
 
         String renderMode = prefs.getString("render_mode_list", "0");

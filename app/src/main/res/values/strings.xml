@@ -235,6 +235,11 @@
     <string name="suffix_seekbar_deadzone">%</string>
     <string name="title_checkbox_xb1_driver">Xbox 360/One/NintendoPro USB gamepad driver</string>
     <string name="summary_checkbox_xb1_driver">Enables a built-in USB driver for devices without native Xbox/Nintendo Pro controller support</string>
+    <string name="title_checkbox_steam_controller_ble">Steam Controller (2026) over Bluetooth</string>
+    <string name="summary_checkbox_steam_controller_ble">Built-in driver for the 2026 Steam Controller paired over Bluetooth. Android does not recognise it as a gamepad on its own; this talks to it directly, turns its keyboard/mouse emulation off while streaming and reports it to the host as a Steam Controller with both trackpads, grips and battery. Needs the Bluetooth permission.</string>
+    <string name="title_checkbox_steam_controller_motion">Steam Controller gyro and accelerometer</string>
+    <string name="summary_checkbox_steam_controller_motion">Forward the controller\'s motion sensors to the host for gyro aiming. Turn off if motion input misbehaves.</string>
+    <string name="toast_steam_controller_permission">Bluetooth permission is needed for the Steam Controller driver. Enable it in the stream settings.</string>
     <string name="title_checkbox_usb_bind_all">Override native Xbox gamepad support</string>
     <string name="summary_checkbox_usb_bind_all">Use Artemis\'s USB driver for all supported gamepads, even if native Xbox/Nintendo Pro controller support is present</string>
     <string name="title_checkbox_mouse_emulation">Mouse emulation via gamepad</string>

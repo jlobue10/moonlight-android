@@ -602,6 +602,16 @@ public class NvConnection {
         }
     }
 
+    public int sendControllerTouchEvent2(byte controllerNumber, byte eventType, byte touchpadIndex, int pointerId,
+                                         float x, float y, float pressure) {
+        if (!isMonkey) {
+            return MoonBridge.sendControllerTouchEvent2(controllerNumber, eventType, touchpadIndex, pointerId, x, y, pressure);
+        }
+        else {
+            return MoonBridge.LI_ERR_UNSUPPORTED;
+        }
+    }
+
     public int sendControllerMotionEvent(byte controllerNumber, byte motionType,
                                          float x, float y, float z) {
         if (!isMonkey) {
