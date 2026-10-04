@@ -58,12 +58,13 @@ jobs:
           COMPILE_SDK=$(sed -nE 's/^\s*compileSdk\s*=?\s*([0-9]+).*/\1/p' app/build.gradle | head -1)
           echo "compileSdk from app/build.gradle: $COMPILE_SDK"
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          "$SDKMANAGER" --install \
-            "platforms;android-${COMPILE_SDK}" \
-            "build-tools;${BUILD_TOOLS_VERSION}" \
-            "ndk;${NDK_VERSION}" \
-            "cmake;3.22.1"
-          "$SDKMANAGER" --list_installed | grep -E 'platforms;|build-tools;|ndk;' || true
+          # Refresh the SDK manager itself so recently published packages are visible to it
+          "$SDKMANAGER" --install "cmdline-tools;latest" >/dev/null 2>&1 || echo "::warning::cmdline-tools update failed; using the preinstalled SDK manager"
+          echo "== SDK packages of interest available in the repository =="
+          "$SDKMANAGER" --list 2>/dev/null | awk '{print $1}' | grep -E '^(platforms;android-3[5-9]|build-tools;3[5-9]\.|ndk;2[7-9]\.)' | sort -u || true
+          "$SDKMANAGER" --install "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS_VERSION}"
+          "$SDKMANAGER" --install "ndk;${NDK_VERSION}" || echo "::warning::ndk;${NDK_VERSION} is not installable via sdkmanager; the Android Gradle plugin will try to download it"
+          "$SDKMANAGER" --list_installed 2>/dev/null | grep -E 'platforms;|build-tools;|ndk;' || true
 
       - name: Verify the release tag matches the version in app/build.gradle
         if: env.RELEASE_TAG != ''

@@ -1290,12 +1290,31 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     }
 
+    // Returns true if the platform accepted the request (API 36.1+), false if the API is absent.
+    private boolean setNativeKeyboardCaptureState(boolean enabled) {
+        try {
+            WindowManager.LayoutParams windowLayoutParams = getWindow().getAttributes();
+            Method setKeyboardCaptureEnabled =
+                    WindowManager.LayoutParams.class.getMethod("setKeyboardCaptureEnabled", boolean.class);
+            setKeyboardCaptureEnabled.invoke(windowLayoutParams, enabled);
+            getWindow().setAttributes(windowLayoutParams);
+            return true;
+        } catch (NoSuchMethodException e) {
+            // Android 16.0 or earlier
+            return false;
+        } catch (InvocationTargetException | IllegalAccessException e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
     public void setMetaKeyCaptureState(boolean enabled) {
         // Android has native keyboard capture support starting in API 36.1
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
-            WindowManager.LayoutParams windowLayoutParams = getWindow().getAttributes();
-            windowLayoutParams.setKeyboardCaptureEnabled(enabled);
-            getWindow().setAttributes(windowLayoutParams);
+        // (WindowManager.LayoutParams.setKeyboardCaptureEnabled). It is invoked reflectively so
+        // the app still builds against compileSdk 36; on Android 16.0 and earlier the method does
+        // not exist and the Samsung path below is used instead.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && setNativeKeyboardCaptureState(enabled)) {
+            // Handled by the platform
         }
         else {
             // This uses custom APIs present on some Samsung devices to allow capture of
@@ -3822,9 +3841,16 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
         }
 
-        // Disable producer throttling on the underlying surface for reduced latency
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
-            holder.getSurface().setProducerThrottlingEnabled(false);
+        // Disable producer throttling on the underlying surface for reduced latency (Android 17+).
+        // Surface.setProducerThrottlingEnabled() is invoked reflectively so the app still builds
+        // against compileSdk 36; it is a no-op on earlier releases.
+        if (Build.VERSION.SDK_INT >= 37) {
+            try {
+                Surface.class.getMethod("setProducerThrottlingEnabled", boolean.class)
+                        .invoke(holder.getSurface(), false);
+            } catch (Exception e) {
+                LimeLog.warning("Unable to disable producer throttling: " + e);
+            }
         }
     }
 
