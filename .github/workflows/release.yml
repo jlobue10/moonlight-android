@@ -1,0 +1,153 @@
+name: Build and release APKs
+
+# Builds the nonRoot_game release APKs (one per ABI), signs them, and:
+#   - on a `v*` tag push: publishes them as a GitHub release (Obtainium reads these);
+#   - on manual dispatch: uploads them as workflow artifacts only.
+#
+# Signing: if the repository has the secrets KEYSTORE_BASE64, KEYSTORE_PASSWORD,
+# KEY_ALIAS and KEY_PASSWORD, the APKs are signed with that keystore so later
+# releases install as updates. Without them a throwaway key is generated for the
+# run, which means every release has a different signature and must be installed
+# after uninstalling the previous build. See docs/RELEASING.md.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BUILD_TOOLS_VERSION: "36.0.0"
+  NDK_VERSION: "29.0.14206865"
+
+jobs:
+  build:
+    name: Build, sign and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          COMPILE_SDK=$(sed -nE 's/^\s*compileSdk\s*=?\s*([0-9]+).*/\1/p' app/build.gradle | head -1)
+          echo "compileSdk from app/build.gradle: $COMPILE_SDK"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install \
+            "platforms;android-${COMPILE_SDK}" \
+            "build-tools;${BUILD_TOOLS_VERSION}" \
+            "ndk;${NDK_VERSION}" \
+            "cmake;3.22.1"
+          "$SDKMANAGER" --list_installed | grep -E 'platforms;|build-tools;|ndk;' || true
+
+      - name: Verify the tag matches the version in app/build.gradle
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          VERSION_NAME=$(sed -nE 's/^\s*versionName\s+"([^"]+)".*/\1/p' app/build.gradle | head -1)
+          TAG="${GITHUB_REF_NAME}"
+          echo "versionName=$VERSION_NAME tag=$TAG"
+          if [ "v$VERSION_NAME" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match versionName $VERSION_NAME in app/build.gradle"
+            exit 1
+          fi
+
+      - name: Build release APKs
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleNonRoot_gameRelease
+          ls -la app/build/outputs/apk/nonRoot_game/release/
+
+      - name: Sign APKs
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/${BUILD_TOOLS_VERSION}"
+          mkdir -p dist
+          KS="$RUNNER_TEMP/release.jks"
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "Signing with the repository keystore"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+            SIGNING_NOTE="Signed with the project's release key."
+          else
+            echo "::warning::No KEYSTORE_BASE64 secret: signing with a throwaway key generated for this run. The resulting APKs cannot be installed over a build signed with a different key; uninstall the previous build first."
+            KEYSTORE_PASSWORD="throwaway-$RANDOM$RANDOM"
+            KEY_ALIAS="throwaway"
+            KEY_PASSWORD="$KEYSTORE_PASSWORD"
+            keytool -genkeypair -v -keystore "$KS" -storepass "$KEYSTORE_PASSWORD" \
+              -alias "$KEY_ALIAS" -keypass "$KEY_PASSWORD" -keyalg RSA -keysize 2048 \
+              -validity 36500 -dname "CN=throwaway release key, O=moonlight-android fork" >/dev/null 2>&1
+            SIGNING_NOTE="Signed with a THROWAWAY key generated for this run (no KEYSTORE_BASE64 secret configured): uninstall any previously installed build before installing, and expect to do the same for the next release."
+          fi
+          echo "$SIGNING_NOTE" > dist/SIGNING_NOTE.txt
+          for unsigned in app/build/outputs/apk/nonRoot_game/release/*-unsigned.apk; do
+            name=$(basename "$unsigned" -unsigned.apk)
+            "$BT/zipalign" -p -f 4 "$unsigned" "$RUNNER_TEMP/$name-aligned.apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$KEYSTORE_PASSWORD" \
+              --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASSWORD" \
+              --out "dist/$name.apk" "$RUNNER_TEMP/$name-aligned.apk"
+            "$BT/apksigner" verify --print-certs "dist/$name.apk" | head -3
+          done
+          rm -f "$KS"
+          ls -la dist/
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Upload APKs as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks-${{ github.ref_name }}
+          path: |
+            dist/*.apk
+            dist/SHA256SUMS.txt
+            dist/SIGNING_NOTE.txt
+          if-no-files-found: error
+
+      - name: Write release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          {
+            echo "Release build of \`${GITHUB_REF_NAME}\` (commit ${GITHUB_SHA})."
+            echo
+            echo "Install the APK matching your device's CPU architecture (most phones, tablets and headsets: **arm64-v8a**). For Obtainium, add this repository as a GitHub source and pick the arm64-v8a APK."
+            echo
+            echo "**Signing:** $(cat dist/SIGNING_NOTE.txt)"
+            echo
+            echo "SHA-256:"
+            echo '```'
+            cat dist/SHA256SUMS.txt
+            echo '```'
+          } > dist/RELEASE_NOTES.md
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: dist/RELEASE_NOTES.md
+          generate_release_notes: true
+          files: |
+            dist/*.apk
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
