@@ -60,7 +60,14 @@ stop that arrives while the presenter is still waiting for Full Space.
   media3-exoplayer 1.10 and arcore transitively; the library ships its own R8 consumer rules.
 - `Session.create(Activity)` is the non-suspend overload, so no coroutine bridge is needed from
   Java. `SessionExt.getScene(session)` is the Java spelling of `session.scene`.
-- Manifest: `android.software.xr.api.spatial` declared `required="false"`.
+- Manifest: `android.software.xr.api.spatial` declared `required="false"`, plus the optional
+  `uses-library com.android.extensions.xr`.
+- **`compileOnly 'com.android.extensions.xr:extensions-xr'` is mandatory with R8.** Without the stubs
+  R8 cannot see the platform interfaces the Jetpack XR callbacks implement and desugars them without
+  the generic bridge method; the first platform callback then kills the process with
+  `AbstractMethodError: com.android.extensions.xr.function.Consumer.accept(Object)`. That was the
+  cause of every "3D mode exits/fails to connect" report between fork.4 and fork.6 (visible only in
+  logcat, as a FATAL EXCEPTION, never in LimeLog). `-dontwarn` alone hides the symptom at build time.
 
 ## Known gaps and what to verify on the headset
 

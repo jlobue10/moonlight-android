@@ -43,8 +43,8 @@
 -dontwarn javax.jmdns.impl.DNSCache
 -dontwarn org.slf4j.**
 
-# Android XR: the Jetpack XR libraries call the platform-provided com.android.extensions.xr library
-# (declared as an optional uses-library, present only on XR devices). It is never in the APK, so
-# R8 must not treat its classes as missing.
--dontwarn com.android.extensions.xr.**
+# Android XR: the platform-provided com.android.extensions.xr library is visible to R8 through the
+# compileOnly extensions-xr stubs (app/build.gradle), which is what lets R8 keep the bridge methods of
+# the callbacks that implement its interfaces. Only the legacy android.extensions.xr names that one
+# SceneCore dependency still references have no stub.
 -dontwarn android.extensions.xr.**

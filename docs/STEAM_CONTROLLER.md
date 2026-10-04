@@ -82,6 +82,15 @@ service, state notifications lack the report id, MTU 100): the SteamController-A
 (MIT), which uses Shizuku to create a system-wide virtual gamepad instead. All code here is
 original; these were used as documentation.
 
+## Seen on the headset (fork.6)
+
+- Connects, announces as `LI_CTYPE_STEAM`, host (Vibepollo, `gamepad=auto`) emulates a DualShock 4;
+  Steam button and rumble work; sticks were vertically inverted (fixed in fork.7).
+- GATT MTU negotiates to 67 on the Galaxy XR (the state report fits).
+- A second bonded controller that is off or out of range fails `connectGatt` with status 133 after
+  about 30 s; the driver now stops retrying such a device and waits for the system's
+  ACL-connected broadcast instead.
+
 ## Unverified until tried on the headset
 
 - That the Galaxy XR's Bluetooth stack exposes the vendor service to apps (it does on phones).
