@@ -149,10 +149,20 @@ public final class XrStereoPresenter {
                 SurfaceEntity.StereoMode.SIDE_BY_SIDE);
         entity.setSurfacePixelDimensions(new IntSize2d(frameWidthPx, frameHeightPx));
 
-        // When the system (re)enters Full Space it recommends where content should sit.
+        // When the system (re)enters Full Space it recommends where content should sit. The listener
+        // fires immediately on registration. Setting the pose in Space.ACTIVITY threw
+        // "Cannot get pose in Activity Space with a non-AndroidXrEntity parent" and killed the process
+        // (Galaxy XR, fork.7), so apply it in the entity's parent space, which is the activity space
+        // for a top-level entity, and never let a positioning hint take the stream down.
         modeListener = event -> {
-            if (entity != null && event.getRecommendedPose() != null) {
-                entity.setPose(event.getRecommendedPose(), Space.ACTIVITY);
+            if (entity == null || event.getRecommendedPose() == null) {
+                return;
+            }
+            try {
+                entity.setPose(event.getRecommendedPose(), Space.PARENT);
+                LimeLog.info("XR stereo: moved the screen to the system's recommended pose");
+            } catch (RuntimeException e) {
+                LimeLog.warning("XR stereo: recommended pose not applied: " + e.getMessage());
             }
         };
         scene.setSpatialModeChangedListener(modeListener);

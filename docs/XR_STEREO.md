@@ -69,6 +69,16 @@ stop that arrives while the presenter is still waiting for Full Space.
   cause of every "3D mode exits/fails to connect" report between fork.4 and fork.6 (visible only in
   logcat, as a FATAL EXCEPTION, never in LimeLog). `-dontwarn` alone hides the symptom at build time.
 
+### Seen on the headset (fork.7 logcat)
+
+- With the extensions-xr stubs the crash from #25 is gone; `SurfaceEntity` creation and the EGL thread
+  work: `XR stereo: SIDE_BY_SIDE SurfaceEntity 2560x720 px on a 2.0x1.125 m quad`, `ES3 context on a
+  2560x720 surface`, MiDaS on the GPU delegate (140/140 nodes).
+- The spatial-mode listener then crashed the process: `IllegalStateException: Cannot get pose in
+  Activity Space with a non-AndroidXrEntity parent` from `Entity.setPose(pose, Space.ACTIVITY)`. The
+  listener fires synchronously on registration. Fixed by setting the pose in `Space.PARENT` inside a
+  try/catch.
+
 ## Known gaps and what to verify on the headset
 
 1. **Does the entity appear and in stereo?** Start a 3D render mode; the app should jump to Full
