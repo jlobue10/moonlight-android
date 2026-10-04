@@ -72,6 +72,9 @@ public class NvHTTP {
     public static final int LONG_CONNECTION_TIMEOUT = 5000;
     public static final int READ_TIMEOUT = 7000;
 
+    // Upper bound on a clipboard payload fetched from the host
+    private static final int MAX_CLIPBOARD_BYTES = 64 * 1024;
+
     // Print URL and content to logcat on debug builds
     private static boolean verbose = BuildConfig.DEBUG;
 
@@ -986,7 +989,14 @@ public class NvHTTP {
     public String getClipboard() throws IOException {
         // Add type for future-proof
         // Might return arbitrary type from host if not set
-        return openHttpConnectionToString(httpClientLongConnectTimeout, getHttpsUrl(true), "actions/clipboard", "type=text");
+        try (ResponseBody body = openHttpConnection(httpClientLongConnectTimeout, getHttpsUrl(true), "actions/clipboard", "type=text", null)) {
+            // The host decides how much it sends back, so bound it instead of buffering an
+            // arbitrarily large response in memory with ResponseBody.string()
+            if (body.source().request(MAX_CLIPBOARD_BYTES + 1)) {
+                throw new IOException("Clipboard content too large");
+            }
+            return body.source().readUtf8();
+        }
     }
 
     // We currently only support plain text
