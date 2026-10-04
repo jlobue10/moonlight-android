@@ -13,6 +13,7 @@ import com.limelight.grid.assets.DiskAssetLoader;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.util.List;
+import java.util.UUID;
 
 public class PosterContentProvider extends ContentProvider {
 
@@ -53,7 +54,21 @@ public class PosterContentProvider extends ContentProvider {
         }
         String appId = segments.get(APP_ID_PATH_INDEX);
         String uuid = segments.get(COMPUTER_UUID_PATH_INDEX);
-        File file = mDiskAssetLoader.getFile(uuid, Integer.parseInt(appId));
+
+        // The provider is exported, so both segments are caller-controlled: only a real UUID may
+        // be used as a directory name, and a non-numeric app id is a missing file, not a crash.
+        try {
+            UUID.fromString(uuid);
+        } catch (IllegalArgumentException e) {
+            throw new FileNotFoundException();
+        }
+        int appIdValue;
+        try {
+            appIdValue = Integer.parseInt(appId);
+        } catch (NumberFormatException e) {
+            throw new FileNotFoundException();
+        }
+        File file = mDiskAssetLoader.getFile(uuid, appIdValue);
         if (file.exists()) {
             return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
         }
