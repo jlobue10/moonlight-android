@@ -124,7 +124,7 @@
                 <data android:scheme="file" />
                 <data android:host="*" />
                 <data android:mimeType="*/*" />
-                <data android:pathPattern=".*\.art" />
+                <data android:pathPattern=".*\\.art" />
             </intent-filter>
         </activity>
         <activity
