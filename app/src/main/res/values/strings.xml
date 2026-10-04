@@ -567,6 +567,9 @@
     <string name="title_hide_clipboard_content">Hide clipboard content</string>
     <string name="summary_hide_clipboard_content">Mark remote clipboard as sensitive information</string>
     <string name="title_settings_misc">MISC</string>
+    <string name="title_share_stream_log">Share stream log</string>
+    <string name="summary_share_stream_log">Send the log of the last stream (plus this app\'s recent system log) to another app, e.g. for a bug report. Contains device model, host address and stream settings; no credentials.</string>
+    <string name="toast_no_stream_log">No stream log yet. Start a stream first.</string>
     <string name="perf_overlay_lite_bandwidth">Bandwidth</string>
     <string name="perf_overlay_lite_network_decoding_delay">Network/Decoding delay</string>
     <string name="perf_overlay_lite_frame_loss">Frame loss</string>

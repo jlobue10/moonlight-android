@@ -52,6 +52,7 @@ import com.limelight.utils.PerformanceDataTracker;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.ShortcutHelper;
 import com.limelight.utils.SpinnerDialog;
+import com.limelight.utils.StreamLog;
 import com.limelight.utils.UiHelper;
 
 import android.annotation.SuppressLint;
@@ -357,6 +358,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
         instance = this;
         timerHandler = new Handler(Looper.getMainLooper());
+
+        // Capture this stream's log for "Share stream log" in the settings
+        StreamLog.start(this);
 
         UiHelper.setLocale(this);
 
@@ -1703,6 +1707,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         super.onDestroy();
 
         instance = null;
+        StreamLog.stop();
         timerHandler.removeCallbacksAndMessages(null);
 
         if (prefConfig.enableFullExDisplay) handleDisplayRemoved();
