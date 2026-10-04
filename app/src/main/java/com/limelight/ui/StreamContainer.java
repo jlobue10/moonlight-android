@@ -111,6 +111,14 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         }
     }
 
+    /**
+     * True while Android XR is moving the activity to Full Space at our request. The activity is
+     * stopped and restarted during that transition; Game must not treat that stop as "stream over".
+     */
+    public boolean isXrSpaceTransitionInProgress() {
+        return xrStereo && xrPresenter != null && xrPresenter.isWaitingForFullSpace();
+    }
+
     /** Flat displays: a GLSurfaceView shows the side-by-side frame as-is. */
     private void createFlatStereoView() {
         Context context = getContext();

@@ -34,6 +34,17 @@ each eye into half the window instead). Quad: *Stereo screen width* setting (def
 width / eye aspect, 2.0 m in front of the activity space origin until the system's
 `SpatialModeChangeEvent` suggests a pose.
 
+### Launching into Full Space
+
+Requesting Full Space from inside the running stream turned out to stop and restart the Game
+activity during the transition. Moonlight ends the stream and finishes its activity whenever
+Android stops it, so a 3D stream was torn down before it started ("kicked back to the app list",
+no dialog). `xr/XrLaunch.fullSpaceOptionsIfNeeded()` therefore gives `ServerHelper.doStart()` activity
+options from `LaunchUtils.createBundleForFullSpaceLaunch()` when an XR device will stream in a 3D
+render mode with the stereo screen enabled, so the activity is born in Full Space and the presenter
+finds the 3D-content capability already there. As a belt-and-braces measure `Game.onStop()` ignores a
+stop that arrives while the presenter is still waiting for Full Space.
+
 ### Settings (3D section)
 
 - **Stereo screen on Android XR** (on): use the SurfaceEntity path on XR devices.

@@ -3,6 +3,7 @@ package com.limelight.utils;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Bundle;
 import android.hardware.display.DisplayManager;
 import android.os.Build;
 import android.view.Display;
@@ -14,6 +15,7 @@ import com.limelight.AppView;
 import com.limelight.Game;
 import com.limelight.LimeLog;
 import com.limelight.R;
+import com.limelight.xr.XrLaunch;
 import com.limelight.ShortcutTrampoline;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.computers.ComputerManagerService;
@@ -152,7 +154,13 @@ public class ServerHelper {
         }
 
         Intent intent = createStartIntent(parent, app, computer, managerBinder, withVDisplay);
-        parent.startActivity(intent);
+        // Android XR + stereo 3D: start the stream already in Full Space (see XrLaunch)
+        Bundle options = XrLaunch.fullSpaceOptionsIfNeeded(parent);
+        if (options != null) {
+            parent.startActivity(intent, options);
+        } else {
+            parent.startActivity(intent);
+        }
     }
 
     public static void doNetworkTest(final Activity parent) {

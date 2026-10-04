@@ -70,6 +70,7 @@ public final class XrStereoPresenter {
     private float screenWidthMeters;
     private boolean hideMainPanel;
     private boolean mainPanelHidden;
+    private volatile boolean waitingForFullSpace;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable fullSpaceTimeout = () -> {
         if (entity == null && listener != null) {
@@ -123,6 +124,7 @@ public final class XrStereoPresenter {
                 scene.addSpatialCapabilitiesChangedListener(capabilitiesListener);
                 LimeLog.info("XR stereo: requesting Full Space");
                 scene.requestFullSpace();
+                waitingForFullSpace = true;
                 // Never leave the stream waiting for a surface that may not come.
                 mainHandler.postDelayed(fullSpaceTimeout, FULL_SPACE_TIMEOUT_MS);
             }
@@ -132,7 +134,13 @@ public final class XrStereoPresenter {
         }
     }
 
+    /** True while the system is moving this activity to Full Space on our request. */
+    public boolean isWaitingForFullSpace() {
+        return waitingForFullSpace;
+    }
+
     private void createEntity() {
+        waitingForFullSpace = false;
         mainHandler.removeCallbacks(fullSpaceTimeout);
         float eyeAspect = (frameWidthPx / 2f) / frameHeightPx;   // one eye's picture
         FloatSize2d extents = new FloatSize2d(screenWidthMeters, screenWidthMeters / eyeAspect);
@@ -166,6 +174,7 @@ public final class XrStereoPresenter {
 
     /** Disposes the entity, restores the main panel and returns to Home Space. Safe to call twice. */
     public void stop() {
+        waitingForFullSpace = false;
         mainHandler.removeCallbacks(fullSpaceTimeout);
         try {
             if (scene != null) {
