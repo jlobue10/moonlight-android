@@ -99,6 +99,16 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
         return width;
     }
 
+    /**
+     * The XR compositor samples a SurfaceEntity's buffers top-down without the GL producer's
+     * vertical flip (observed on the Galaxy XR by another GL-into-SurfaceEntity project), so the
+     * renderer must draw its output upside down relative to a window to appear upright.
+     */
+    @Override
+    public boolean flipOutputVertically() {
+        return true;
+    }
+
     @Override
     public int getHeight() {
         return height;
@@ -251,7 +261,11 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
         }
         // Opaque black for anything the renderer leaves uncovered; the entity is told it is opaque.
         GLES20.glClearColor(0f, 0f, 0f, 1f);
-        LimeLog.info("XR stereo GL thread: ES3 context on a " + width + "x" + height + " surface");
+        int[] w = new int[1], h = new int[1];
+        EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, w, 0);
+        EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, h, 0);
+        LimeLog.info("XR stereo GL thread: ES3 context; requested " + width + "x" + height
+                + ", EGL reports " + w[0] + "x" + h[0] + " on " + surface);
         return true;
     }
 

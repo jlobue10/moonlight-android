@@ -19,6 +19,7 @@ import com.limelight.LimeLog;
 import com.limelight.R;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.utils.Stereo3DRenderer;
+import com.limelight.xr.CanvasTestPattern;
 import com.limelight.xr.SurfaceGlThread;
 import com.limelight.xr.XrStereoPresenter;
 
@@ -50,6 +51,7 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     // Android XR: the SBS frame goes to a stereo SurfaceEntity instead of a GLSurfaceView
     private XrStereoPresenter xrPresenter;
     private SurfaceGlThread xrGlThread;
+    private CanvasTestPattern xrTestPattern;
     private boolean xrStereo = false;
 
     private SurfaceView mSurfaceView;
@@ -142,11 +144,24 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         final int frameWidth = Math.max(2, prefConfig.width) * 2;   // full resolution per eye
         final int frameHeight = Math.max(2, prefConfig.height);
         xrPresenter = new XrStereoPresenter(game);
+        final boolean canvasTest = "canvas".equals(prefConfig.xrStereoLayout);
+        xrPresenter.setLayout("mono".equals(prefConfig.xrStereoLayout) || canvasTest
+                ? XrStereoPresenter.LAYOUT_MONO : XrStereoPresenter.LAYOUT_SBS);
         xrPresenter.start(frameWidth, frameHeight, prefConfig.xrScreenWidthMeters, prefConfig.xrHideMainPanel,
                 new XrStereoPresenter.Listener() {
             @Override
             public void onStereoSurfaceReady(Surface surface, int widthPx, int heightPx) {
-                if (xrGlThread != null) {
+                if (xrGlThread != null || xrTestPattern != null) {
+                    return;
+                }
+                if (canvasTest) {
+                    // Diagnostic: paint the entity with Canvas instead of OpenGL and run the stream in
+                    // the flat view, so the user can compare the two producers on the same entity.
+                    xrTestPattern = new CanvasTestPattern(surface, widthPx, heightPx);
+                    xrTestPattern.start();
+                    LimeLog.info("XR stereo: canvas test pattern on the SurfaceEntity; stream renders flat");
+                    xrStereo = false;
+                    fallBackToFlatStereo("canvas test pattern mode");
                     return;
                 }
                 xrGlThread = new SurfaceGlThread(surface, widthPx, heightPx);
@@ -384,6 +399,10 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         if (xrGlThread != null) {
             xrGlThread.shutdown();                  // drains that cleanup, then releases EGL
             xrGlThread = null;
+        }
+        if (xrTestPattern != null) {
+            xrTestPattern.shutdown();
+            xrTestPattern = null;
         }
         if (xrPresenter != null) {
             xrPresenter.stop();                     // disposes the entity, back to Home Space

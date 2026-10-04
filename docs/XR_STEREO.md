@@ -90,6 +90,23 @@ stop that arrives while the presenter is still waiting for Full Space.
   pixel (`XR stereo GL: N frames swapped, centre-left pixel rgba=(...)`). Non-black pixel + black quad =
   the entity does not display our buffers; black pixel = our render path.
 
+### Seen on the headset (fork.9 logcat)
+
+- Decisive: `XR stereo GL: 576 frames swapped, centre-left pixel rgba=(31,32,30,255)` — our frames
+  carry the game and leave at ~60 fps, yet the quad stays black. The entity is not showing GL
+  buffers. Colour metadata and opaque blending did not change it.
+- Prior art: SchoenMon (mtschoen) renders OpenGL into a SurfaceEntity on the same SM-I610 and it
+  works, with StereoMode **MONO**, explicit `SuperSampling.NONE`/`SurfaceProtection.NONE`, a
+  CustomMesh shape, on-demand rendering, and a **vertical flip** (the compositor samples the buffer
+  top-down without the GL producer's flip). Chromium feeds its compositor into a Quad entity in MONO.
+- fork.10 therefore adds *Stereo screen content (diagnostics)*: side-by-side (normal), **mono** (same
+  GL frames, MONO entity, full-frame aspect) and a **Canvas test pattern** (no OpenGL at all, the path
+  the AndroidX test app uses for images; the game then runs in the flat window). It also passes
+  `SuperSampling.NONE`, flips the eye pass vertically for the XR host, and logs the surface identity and
+  the EGL-reported surface size. Outcomes: canvas visible + mono visible + SBS black → the SBS mode of
+  the entity rejects RGBA GL buffers (then render TOP_BOTTOM or a mono trick); canvas visible + mono
+  black → the EGL producer is the problem; canvas black → the entity itself (placement/size/mode).
+
 ## Known gaps and what to verify on the headset
 
 1. **Does the entity appear and in stereo?** Start a 3D render mode; the app should jump to Full

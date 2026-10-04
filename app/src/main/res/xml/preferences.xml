@@ -199,6 +199,15 @@
             android:summary="@string/summary_xr_hide_main_panel"
             android:title="@string/title_xr_hide_main_panel"
             app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="sbs"
+            android:dependency="checkbox_xr_stereo"
+            android:entries="@array/xr_stereo_layout_names"
+            android:entryValues="@array/xr_stereo_layout_values"
+            android:key="xr_stereo_layout"
+            android:summary="@string/summary_xr_stereo_layout"
+            android:title="@string/title_xr_stereo_layout"
+            app:iconSpaceReserved="false" />
         <com.limelight.preferences.SeekBarPreference
             android:key="parallax_depth"
             android:dialogMessage=""

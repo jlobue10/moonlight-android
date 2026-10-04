@@ -55,6 +55,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     private static final int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
     private static final float[] QUAD_VERTICES = {-1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f};
     private static final float[] TEXTURE_VERTICES = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    private static final float[] TEXTURE_VERTICES_FLIPPED = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f};
     // The depth model in use. Chosen in the constructor from the preferences (falling back to the
     // bundled MiDaS when a downloadable model is not on disk); the input size is taken from the
     // descriptor so GL resources can be sized before the interpreter exists, then confirmed from
@@ -95,6 +96,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     private final Object frameLock = new Object();
     private final FloatBuffer quadVertexBuffer;
     private final FloatBuffer textureVertexBuffer;
+    private final FloatBuffer flippedTextureVertexBuffer;
     private final AtomicBoolean frameAvailable = new AtomicBoolean(false);
     private final AtomicBoolean gpuDelegateFailed = new AtomicBoolean(false);
     private final AtomicBoolean isAiResultHandlingRunning = new AtomicBoolean(false);
@@ -155,6 +157,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         void queueEvent(Runnable r);
         int getWidth();
         int getHeight();
+        /** true when the host shows GL output upside down (XR SurfaceEntity); the eye pass compensates. */
+        default boolean flipOutputVertically() { return false; }
     }
 
     public static RenderHost hostFor(final GLSurfaceView view) {
@@ -202,6 +206,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         quadVertexBuffer.put(QUAD_VERTICES).position(0);
         textureVertexBuffer = ByteBuffer.allocateDirect(TEXTURE_VERTICES.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         textureVertexBuffer.put(TEXTURE_VERTICES).position(0);
+        flippedTextureVertexBuffer = ByteBuffer.allocateDirect(TEXTURE_VERTICES_FLIPPED.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+        flippedTextureVertexBuffer.put(TEXTURE_VERTICES_FLIPPED).position(0);
     }
 
     public void setPrefConfig(PreferenceConfiguration prefConfig) {
@@ -425,7 +431,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         int debugModeHandle = GLES20.glGetUniformLocation(program, "u_debugMode");
 
         GLES20.glVertexAttribPointer(posHandle, 2, GLES20.GL_FLOAT, false, 0, quadVertexBuffer);
-        GLES20.glVertexAttribPointer(texHandle, 2, GLES20.GL_FLOAT, false, 0, textureVertexBuffer);
+        GLES20.glVertexAttribPointer(texHandle, 2, GLES20.GL_FLOAT, false, 0,
+                host.flipOutputVertically() ? flippedTextureVertexBuffer : textureVertexBuffer);
         GLES20.glEnableVertexAttribArray(posHandle);
         GLES20.glEnableVertexAttribArray(texHandle);
 

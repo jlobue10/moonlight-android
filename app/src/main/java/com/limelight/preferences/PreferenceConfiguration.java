@@ -264,6 +264,7 @@ public class PreferenceConfiguration {
     public boolean xrStereo;               // Android XR: stereo SurfaceEntity for the SBS frame
     public float xrScreenWidthMeters;
     public boolean xrHideMainPanel;
+    public String xrStereoLayout;          // sbs | mono | canvas (diagnostics)
     public boolean smallIconMode, multiController, usbDriver, flipFaceButtons;
     public boolean onscreenController;
     public boolean hideOSCWhenHasGamepad;
@@ -407,6 +408,7 @@ public class PreferenceConfiguration {
     private static final String CHECKBOX_XR_STEREO = "checkbox_xr_stereo";
     private static final String XR_STEREO_SCREEN_WIDTH = "xr_stereo_screen_width";
     private static final String CHECKBOX_XR_HIDE_MAIN_PANEL = "checkbox_xr_hide_main_panel";
+    private static final String XR_STEREO_LAYOUT = "xr_stereo_layout";
 
     private static final String CONVERGENCE_RATIO = "convergence_ratio";
     private static final String BALANCE_SHIFT = "balance_shift";
@@ -924,6 +926,7 @@ private static int getFramePacingValue(Context context) {
         config.depthGuidedUpsampling = prefs.getBoolean(CHECKBOX_DEPTH_GUIDED_UPSAMPLING, true);
         config.xrStereo = prefs.getBoolean(CHECKBOX_XR_STEREO, true);
         config.xrHideMainPanel = prefs.getBoolean(CHECKBOX_XR_HIDE_MAIN_PANEL, false);
+        config.xrStereoLayout = prefs.getString(XR_STEREO_LAYOUT, "sbs");
         try {
             config.xrScreenWidthMeters = Float.parseFloat(prefs.getString(XR_STEREO_SCREEN_WIDTH, "2.0"));
         } catch (NumberFormatException e) {

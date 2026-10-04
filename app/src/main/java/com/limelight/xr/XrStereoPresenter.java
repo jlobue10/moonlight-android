@@ -65,6 +65,10 @@ public final class XrStereoPresenter {
     private Listener listener;
     private Consumer<Set<SpatialCapability>> capabilitiesListener;
     private Consumer<SpatialModeChangeEvent> modeListener;
+    /** How the frame is presented: SIDE_BY_SIDE stereo (normal), or MONO for A/B testing. */
+    public static final int LAYOUT_SBS = 0;
+    public static final int LAYOUT_MONO = 1;
+    private int layout = LAYOUT_SBS;
     private int frameWidthPx;
     private int frameHeightPx;
     private float screenWidthMeters;
@@ -93,6 +97,10 @@ public final class XrStereoPresenter {
      * @param screenWidthMeters physical width of the floating screen
      * @param hideMainPanel hide the activity's flat window while the stereo screen shows
      */
+    public void setLayout(int layout) {
+        this.layout = layout;
+    }
+
     public void start(int frameWidthPx, int frameHeightPx, float screenWidthMeters, boolean hideMainPanel, Listener listener) {
         this.frameWidthPx = frameWidthPx;
         this.frameHeightPx = frameHeightPx;
@@ -142,12 +150,21 @@ public final class XrStereoPresenter {
     private void createEntity() {
         waitingForFullSpace = false;
         mainHandler.removeCallbacks(fullSpaceTimeout);
-        float eyeAspect = (frameWidthPx / 2f) / frameHeightPx;   // one eye's picture
-        FloatSize2d extents = new FloatSize2d(screenWidthMeters, screenWidthMeters / eyeAspect);
+        // SBS: the quad has one eye's aspect (each half is stretched over it). MONO (A/B test):
+        // the whole side-by-side frame is shown flat, so the quad takes the full frame's aspect.
+        boolean mono = layout == LAYOUT_MONO;
+        float aspect = mono ? (float) frameWidthPx / frameHeightPx : (frameWidthPx / 2f) / frameHeightPx;
+        FloatSize2d extents = new FloatSize2d(screenWidthMeters, screenWidthMeters / aspect);
         Pose pose = new Pose(new Vector3(0f, 0f, -SCREEN_DISTANCE_METERS));
+        // Explicit SuperSampling.NONE / SurfaceProtection.NONE: the one project known to feed a
+        // SurfaceEntity from OpenGL on this device (SM-I610) passes exactly these.
         entity = SurfaceEntity.create(session, pose, new SurfaceEntity.Shape.Quad(extents),
-                SurfaceEntity.StereoMode.SIDE_BY_SIDE);
+                mono ? SurfaceEntity.StereoMode.MONO : SurfaceEntity.StereoMode.SIDE_BY_SIDE,
+                SurfaceEntity.SuperSampling.NONE, SurfaceEntity.SurfaceProtection.NONE);
         entity.setSurfacePixelDimensions(new IntSize2d(frameWidthPx, frameHeightPx));
+        Surface probe = entity.getSurface();
+        LimeLog.info("XR stereo: entity surface " + probe + " valid=" + (probe != null && probe.isValid())
+                + " layout=" + (mono ? "MONO" : "SIDE_BY_SIDE"));
 
         // A video decoder tags its buffers with a colour space and the entity reads it from there;
         // OpenGL output carries no such tag (dataspace UNKNOWN) and an RGBA alpha channel. Tell the
@@ -190,7 +207,7 @@ public final class XrStereoPresenter {
             scene.getMainPanelEntity().setEnabled(false);
             mainPanelHidden = true;
         }
-        LimeLog.info("XR stereo: SIDE_BY_SIDE SurfaceEntity " + frameWidthPx + "x" + frameHeightPx
+        LimeLog.info("XR stereo: " + (mono ? "MONO" : "SIDE_BY_SIDE") + " SurfaceEntity " + frameWidthPx + "x" + frameHeightPx
                 + " px on a " + extents.getWidth() + "x" + extents.getHeight() + " m quad");
         listener.onStereoSurfaceReady(entity.getSurface(), frameWidthPx, frameHeightPx);
     }
