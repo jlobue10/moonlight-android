@@ -46,12 +46,12 @@ import android.widget.AbsListView;
 import android.widget.AdapterView;
 import android.widget.AdapterView.OnItemClickListener;
 import android.widget.ImageView;
-import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.AdapterView.AdapterContextMenuInfo;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -293,6 +293,15 @@ public class AppView extends AppCompatActivity implements AdapterFragmentCallbac
     }
 
     @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
@@ -327,9 +336,15 @@ public class AppView extends AppCompatActivity implements AdapterFragmentCallbac
 
         String computerName = getIntent().getStringExtra(NAME_EXTRA);
 
-        TextView label = findViewById(R.id.appListText);
+        // Toolbar with the computer name and an Up arrow back to the PC list. Android XR shows
+        // this activity as a flat panel without a system back gesture, so without this there was
+        // no way to leave the app list other than killing the app.
+        Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        }
         setTitle(computerName);
-        label.setText(computerName);
 
         this.prefConfig = PreferenceConfiguration.readPreferences(this);
 
