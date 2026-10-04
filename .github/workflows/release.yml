@@ -131,10 +131,14 @@ jobs:
           ls -la dist/
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
+      - name: Name the workflow artifact
+        # Artifact names may not contain "/", which branch names such as port/agp9 do.
+        run: echo "ARTIFACT_NAME=apks-$(printf '%s' "${RELEASE_TAG:-$GITHUB_REF_NAME}" | tr '/' '-')" >> "$GITHUB_ENV"
+
       - name: Upload APKs as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apks-${{ env.RELEASE_TAG || github.ref_name }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: |
             dist/*.apk
             dist/SHA256SUMS.txt
