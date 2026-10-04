@@ -149,6 +149,25 @@ public final class XrStereoPresenter {
                 SurfaceEntity.StereoMode.SIDE_BY_SIDE);
         entity.setSurfacePixelDimensions(new IntSize2d(frameWidthPx, frameHeightPx));
 
+        // A video decoder tags its buffers with a colour space and the entity reads it from there;
+        // OpenGL output carries no such tag (dataspace UNKNOWN) and an RGBA alpha channel. Tell the
+        // entity explicitly what it is looking at: opaque SDR BT.709 sRGB, full range. (fork.8 showed
+        // the quad black while frames were being swapped into it.)
+        try {
+            entity.setMediaBlendingMode(SurfaceEntity.MediaBlendingMode.OPAQUE);
+        } catch (RuntimeException e) {
+            LimeLog.warning("XR stereo: blending mode not applied: " + e.getMessage());
+        }
+        try {
+            entity.setContentColorMetadata(new SurfaceEntity.ContentColorMetadata(
+                    SurfaceEntity.ContentColorMetadata.ColorSpace.BT709,
+                    SurfaceEntity.ContentColorMetadata.ColorTransfer.SRGB,
+                    SurfaceEntity.ContentColorMetadata.ColorRange.FULL,
+                    0));
+        } catch (RuntimeException e) {
+            LimeLog.warning("XR stereo: colour metadata not applied: " + e.getMessage());
+        }
+
         // When the system (re)enters Full Space it recommends where content should sit. The listener
         // fires immediately on registration. Setting the pose in Space.ACTIVITY threw
         // "Cannot get pose in Activity Space with a non-AndroidXrEntity parent" and killed the process
