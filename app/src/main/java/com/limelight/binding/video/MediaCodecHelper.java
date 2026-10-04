@@ -403,12 +403,6 @@ public class MediaCodecHelper {
                 refFrameInvalidationHevcPrefixes.add("omx.qcom");
                 refFrameInvalidationAvcPrefixes.add("c2.qti");
                 refFrameInvalidationHevcPrefixes.add("c2.qti");
-
-                refFrameInvalidationAvcPrefixes.add("c2.mtk"); //derflacco
-                refFrameInvalidationHevcPrefixes.add("c2.mtk"); //derflacco
-                refFrameInvalidationAvcPrefixes.add("omx.mtk"); //derflacco
-                refFrameInvalidationHevcPrefixes.add("omx.mtk"); //derflacco
-                refFrameInvalidationHevcPrefixes.add("c2.qcom"); //derflacco
             }
 
             // Qualcomm's early HEVC decoders break hard on our HEVC stream. The best check to
@@ -782,7 +776,9 @@ public class MediaCodecHelper {
         }
     }
 
-    public static boolean decoderSupportsRefFrameInvalidationAvc(String decoderName, int videoHeight) {
+    public static boolean decoderSupportsRefFrameInvalidationAvc(MediaCodecInfo decoderInfo, int videoHeight) {
+        String decoderName = decoderInfo.getName();
+
         // Reference frame invalidation is broken on low-end Snapdragon SoCs at 1080p.
         if (videoHeight > 720 && isLowEndSnapdragon) {
             return false;
@@ -792,6 +788,16 @@ public class MediaCodecHelper {
         // RFI to see if we can get that under control.
         if (Build.DEVICE.equals("b3") || Build.DEVICE.equals("b5")) {
             return false;
+        }
+
+        // MediaTek decoders are deliberately not on the AVC RFI list: the OMX-era ones either
+        // hang or need a maxNumReferenceFrames setting that adds a lot of latency (see the
+        // PowerVR comment in initialize()). Only trust a MediaTek decoder that advertises
+        // FEATURE_LowLatency, which is the same gate HEVC RFI uses.
+        if (isDecoderInList(mtkDecoderPrefixes, decoderName) &&
+                decoderSupportsAndroidRLowLatency(decoderInfo, "video/avc")) {
+            LimeLog.info("Enabling AVC RFI on MediaTek decoder based on FEATURE_LowLatency support");
+            return true;
         }
 
         return isDecoderInList(refFrameInvalidationAvcPrefixes, decoderName);
