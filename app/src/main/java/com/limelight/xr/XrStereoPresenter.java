@@ -3,6 +3,8 @@ package com.limelight.xr;
 import android.app.Activity;
 import android.content.Context;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Surface;
 
 import androidx.xr.runtime.Session;
@@ -53,6 +55,8 @@ public final class XrStereoPresenter {
     private static final String FEATURE_XR_SPATIAL = "android.software.xr.api.spatial";
     /** Distance of the floating screen from the activity space origin, in metres. */
     private static final float SCREEN_DISTANCE_METERS = 2.0f;
+    /** How long to wait for Full Space (the SPATIAL_3D_CONTENT capability) before giving up. */
+    private static final long FULL_SPACE_TIMEOUT_MS = 6000;
 
     private final Activity activity;
     private Session session;
@@ -66,6 +70,12 @@ public final class XrStereoPresenter {
     private float screenWidthMeters;
     private boolean hideMainPanel;
     private boolean mainPanelHidden;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable fullSpaceTimeout = () -> {
+        if (entity == null && listener != null) {
+            fail("Full Space was not granted within " + FULL_SPACE_TIMEOUT_MS + " ms");
+        }
+    };
 
     public XrStereoPresenter(Activity activity) {
         this.activity = activity;
@@ -113,6 +123,8 @@ public final class XrStereoPresenter {
                 scene.addSpatialCapabilitiesChangedListener(capabilitiesListener);
                 LimeLog.info("XR stereo: requesting Full Space");
                 scene.requestFullSpace();
+                // Never leave the stream waiting for a surface that may not come.
+                mainHandler.postDelayed(fullSpaceTimeout, FULL_SPACE_TIMEOUT_MS);
             }
         } catch (Throwable t) {
             // Includes NoClassDefFoundError/LinkageError when the XR runtime is missing.
@@ -121,6 +133,7 @@ public final class XrStereoPresenter {
     }
 
     private void createEntity() {
+        mainHandler.removeCallbacks(fullSpaceTimeout);
         float eyeAspect = (frameWidthPx / 2f) / frameHeightPx;   // one eye's picture
         FloatSize2d extents = new FloatSize2d(screenWidthMeters, screenWidthMeters / eyeAspect);
         Pose pose = new Pose(new Vector3(0f, 0f, -SCREEN_DISTANCE_METERS));
@@ -153,6 +166,7 @@ public final class XrStereoPresenter {
 
     /** Disposes the entity, restores the main panel and returns to Home Space. Safe to call twice. */
     public void stop() {
+        mainHandler.removeCallbacks(fullSpaceTimeout);
         try {
             if (scene != null) {
                 if (capabilitiesListener != null) {

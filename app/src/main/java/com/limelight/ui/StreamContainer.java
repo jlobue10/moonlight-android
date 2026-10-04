@@ -12,9 +12,11 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.widget.FrameLayout;
+import android.widget.Toast;
 
 import com.limelight.Game;
 import com.limelight.LimeLog;
+import com.limelight.R;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.utils.Stereo3DRenderer;
 import com.limelight.xr.SurfaceGlThread;
@@ -142,6 +144,7 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
                 xrGlThread = new SurfaceGlThread(surface, widthPx, heightPx);
                 mStereoRenderer = new Stereo3DRenderer(xrGlThread, StreamContainer.this, getContext(), prefConfig);
                 xrGlThread.setRenderer(mStereoRenderer);
+                xrGlThread.setInitListener(reason -> post(() -> onXrGlFailed(reason)));
                 xrGlThread.start();
                 LimeLog.info("XR stereo: rendering " + widthPx + "x" + heightPx + " side-by-side into the SurfaceEntity");
             }
@@ -155,16 +158,40 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
                     return;   // already rendering into the entity; nothing to fall back from
                 }
                 // A failure inside start() is synchronous: init() sees xrStereo == false right after
-                // and builds the flat view itself. A later failure (Full Space granted, entity
-                // creation failed) has to build it here; the posted check makes both paths idempotent.
-                post(() -> {
-                    if (!(mSurfaceView instanceof GLSurfaceView) && mStereoRenderer == null) {
-                        createFlatStereoView();
-                        mSurfaceView.getHolder().addCallback(StreamContainer.this);
-                    }
-                });
+                // and builds the flat view itself. A later failure (Full Space never granted, entity
+                // creation failed) has to build it here; fallBackToFlatStereo() is idempotent.
+                post(() -> fallBackToFlatStereo(reason));
             }
         });
+    }
+
+    /** The EGL thread could not start on the entity's surface: tear the XR path down and go flat. */
+    private void onXrGlFailed(String reason) {
+        LimeLog.warning("XR stereo GL thread failed (" + reason + "); showing the side-by-side frame flat");
+        if (xrGlThread != null) {
+            xrGlThread.shutdown();
+            xrGlThread = null;
+        }
+        mStereoRenderer = null;   // never received onSurfaceCreated, so there is nothing to release
+        if (xrPresenter != null) {
+            xrPresenter.stop();
+            xrPresenter = null;
+        }
+        xrStereo = false;
+        fallBackToFlatStereo(reason);
+    }
+
+    /** Builds the flat GLSurfaceView path if it does not exist yet and tells the user why. */
+    private void fallBackToFlatStereo(String reason) {
+        try {
+            Toast.makeText(getContext(), getContext().getString(R.string.xr_stereo_fallback_toast, reason), Toast.LENGTH_LONG).show();
+        } catch (RuntimeException ignored) {
+            // no window yet; the log line is enough
+        }
+        if (!(mSurfaceView instanceof GLSurfaceView) && mStereoRenderer == null) {
+            createFlatStereoView();
+            mSurfaceView.getHolder().addCallback(this);
+        }
     }
 
     // --- Aspect Ratio and Scaling Logic ---

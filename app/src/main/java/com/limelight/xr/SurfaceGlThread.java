@@ -30,6 +30,17 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
     private final int width;
     private final int height;
     private GLSurfaceView.Renderer renderer;
+    private InitListener initListener;
+    private String lastError;
+
+    /** Told once if the thread could not bring up EGL or the renderer; the caller should fall back. */
+    public interface InitListener {
+        void onInitFailed(String reason);
+    }
+
+    public void setInitListener(InitListener listener) {
+        this.initListener = listener;
+    }
 
     private final Object lock = new Object();
     private final ArrayDeque<Runnable> events = new ArrayDeque<>();
@@ -110,10 +121,17 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
         }
         try {
             if (!initEgl()) {
+                notifyInitFailed(lastError != null ? lastError : "EGL setup failed");
                 return;
             }
-            renderer.onSurfaceCreated(null, null);
-            renderer.onSurfaceChanged(null, width, height);
+            try {
+                renderer.onSurfaceCreated(null, null);
+                renderer.onSurfaceChanged(null, width, height);
+            } catch (RuntimeException e) {
+                LimeLog.severe("XR stereo renderer failed to start: " + e);
+                notifyInitFailed("renderer start failed: " + e.getMessage());
+                return;
+            }
 
             while (true) {
                 Runnable event;
@@ -156,16 +174,27 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
         }
     }
 
+    private void notifyInitFailed(String reason) {
+        InitListener l = initListener;
+        if (l != null) {
+            l.onInitFailed(reason);
+        }
+    }
+
+    private boolean fail(String message) {
+        lastError = message;
+        LimeLog.severe(message);
+        return false;
+    }
+
     private boolean initEgl() {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
         if (eglDisplay == EGL14.EGL_NO_DISPLAY) {
-            LimeLog.severe("eglGetDisplay failed");
-            return false;
+            return fail("eglGetDisplay failed");
         }
         int[] version = new int[2];
         if (!EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) {
-            LimeLog.severe("eglInitialize failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
-            return false;
+            return fail("eglInitialize failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
         }
         int[] configAttribs = {
                 EGL14.EGL_RED_SIZE, 8,
@@ -179,24 +208,20 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
         EGLConfig[] configs = new EGLConfig[1];
         int[] numConfigs = new int[1];
         if (!EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0) || numConfigs[0] == 0) {
-            LimeLog.severe("eglChooseConfig found no ES3 RGBA8 window config");
-            return false;
+            return fail("eglChooseConfig found no ES3 RGBA8 window config");
         }
         int[] contextAttribs = {EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE};
         eglContext = EGL14.eglCreateContext(eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT, contextAttribs, 0);
         if (eglContext == EGL14.EGL_NO_CONTEXT) {
-            LimeLog.severe("eglCreateContext failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
-            return false;
+            return fail("eglCreateContext failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
         }
         int[] surfaceAttribs = {EGL14.EGL_NONE};
         eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, configs[0], surface, surfaceAttribs, 0);
         if (eglSurface == EGL14.EGL_NO_SURFACE) {
-            LimeLog.severe("eglCreateWindowSurface failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
-            return false;
+            return fail("eglCreateWindowSurface failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
         }
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
-            LimeLog.severe("eglMakeCurrent failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
-            return false;
+            return fail("eglMakeCurrent failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
         }
         LimeLog.info("XR stereo GL thread: ES3 context on a " + width + "x" + height + " surface");
         return true;
