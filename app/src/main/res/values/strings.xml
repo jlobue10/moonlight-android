@@ -739,6 +739,8 @@
     <string name="profile_manager_active_profile">Active profile: %s</string>
     <string name="rename">Rename</string>
     <string name="save">Save</string>
+    <string name="done">Done</string>
+    <string name="title_activity_stream_settings">Streaming Settings</string>
     <string name="title_low_latency_frame_balance">LFR (Experimental)</string>
     <string name="summary_low_latency_frame_balance">Forces the lowest-latency frame pacing: the newest decoded frame is shown immediately and older queued frames are dropped (overrides Frame Pacing).</string>
     <string name="category_perf_monitor_settings">Performance Monitor</string>

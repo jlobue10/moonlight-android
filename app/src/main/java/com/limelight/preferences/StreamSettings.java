@@ -17,8 +17,10 @@ import android.app.ProgressDialog;
 import android.os.Handler;
 import android.os.Vibrator;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import androidx.core.content.FileProvider;
 import androidx.fragment.app.DialogFragment;
 import androidx.preference.CheckBoxPreference;
@@ -39,6 +41,8 @@ import android.util.Range;
 import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -103,7 +107,42 @@ public class StreamSettings extends AppCompatActivity {
 
         setContentView(R.layout.activity_stream_settings);
 
+        // A visible way out. Headsets (Android XR shows this activity as a flat panel) and
+        // desktop-style windows have no system back gesture, which left users stuck here and
+        // made them think changes were not saved (they are saved on every change).
+        Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            getSupportActionBar().setTitle(R.string.title_activity_stream_settings);
+        }
+
+        // Back (gesture, key or predictive back) goes through the same path as the toolbar.
+        // onBackPressed() is not called on Android 13+ with enableOnBackInvokedCallback.
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                closeSettings();
+            }
+        });
+
 //        UiHelper.notifyNewRootView(this);
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.stream_settings_menu, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        int id = item.getItemId();
+        if (id == android.R.id.home || id == R.id.action_done) {
+            closeSettings();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     @Override
@@ -142,9 +181,8 @@ public class StreamSettings extends AppCompatActivity {
         }
     }
 
-    @Override
-    // NOTE: This will NOT be called on Android 13+ with android:enableOnBackInvokedCallback="true"
-    public void onBackPressed() {
+    /** Leaves the settings screen; preferences are already persisted. Handles a language change. */
+    private void closeSettings() {
         finish();
 
         // Language changes are handled via configuration changes in Android 13+,
