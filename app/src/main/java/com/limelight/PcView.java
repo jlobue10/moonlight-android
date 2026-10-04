@@ -565,6 +565,13 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
                 } catch (XmlPullParserException | IOException e) {
                     e.printStackTrace();
                     message = e.getMessage();
+                } catch (RuntimeException e) {
+                    // PairingManager decodes hex strings and slices fixed-length byte arrays out of
+                    // the host's responses, so a malformed response surfaces here as an
+                    // IllegalArgumentException or ArrayIndexOutOfBoundsException. Report a failed
+                    // pairing instead of letting it kill the process.
+                    e.printStackTrace();
+                    message = getResources().getString(R.string.pair_fail);
                 }
 
                 Dialog.closeDialogs();
