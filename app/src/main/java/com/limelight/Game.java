@@ -407,7 +407,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             displayHeight = currentMode.getPhysicalHeight();
             prefConfig.width = displayWidth;
             prefConfig.height = displayHeight;
-            prefConfig.fps = currentMode.getRefreshRate();
+            // TVs commonly report rates such as 60.000004 or 59.940063 Hz. A non-integer rate is
+            // sent to the host in millihertz (see StreamConfiguration.getRefreshRate()), which only
+            // Apollo understands, so snap near-integer rates to the integer here.
+            prefConfig.fps = snapNearIntegerRefreshRate(currentMode.getRefreshRate());
             prefConfig.videoScaleMode = PreferenceConfiguration.ScaleMode.STRETCH;
             prefConfig.enableFloatingButton = false;
             prefConfig.showOverlayZoomToggleButton = false;
@@ -1406,6 +1409,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // With Android native pointer capture, capture is lost when focus is lost,
         // so it must be requested again when focus is regained.
         inputCaptureProvider.onWindowFocusChanged(hasFocus);
+    }
+
+    // Round a measured display refresh rate to the nearest integer when it is within 0.05 Hz of
+    // one (60.000004 -> 60), leaving genuinely fractional rates such as 59.94 untouched.
+    private static float snapNearIntegerRefreshRate(float refreshRate) {
+        float rounded = Math.round(refreshRate);
+        return Math.abs(refreshRate - rounded) < 0.05f ? rounded : refreshRate;
     }
 
     private boolean isRefreshRateEqualMatch(float refreshRate) {
