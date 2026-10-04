@@ -2,9 +2,12 @@ package com.limelight;
 
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.os.Build;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.Toast;
+
+import com.limelight.utils.ExternalDisplayControlActivity;
 
 import java.util.Arrays;
 import java.util.List;
@@ -24,7 +27,8 @@ public class KeyboardAccessibilityService extends AccessibilityService {
         int keyCode = event.getKeyCode();
 //        Toast.makeText(getApplicationContext(),"scancode:"+event.getScanCode()+",code:"+event.getKeyCode(),Toast.LENGTH_LONG).show();
         //主要解决系统自带快捷键在pc端无法使用问题 home键 scancode=172 code- 3
-        if (Game.instance != null && Game.instance.connected && !BLACKLIST_KEYS.contains(keyCode)) {
+        Game g = Game.instance;
+        if (g != null && g.connected && streamHasFocus(g) && !BLACKLIST_KEYS.contains(keyCode)) {
 
             if (action == KeyEvent.ACTION_DOWN) {
                 //fix 小米平板esc键按钮映射错误 KEYCODE_BACK=4
@@ -46,6 +50,24 @@ public class KeyboardAccessibilityService extends AccessibilityService {
         }
 
         return super.onKeyEvent(event);
+    }
+
+    // Only intercept keys while the stream UI is actually in front of the user. The service
+    // receives every hardware key pressed anywhere on the device, so without this check keys
+    // typed into other apps (stream in the background, split-screen or picture-in-picture)
+    // would be swallowed here and forwarded to the host.
+    private static boolean streamHasFocus(Game game) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && game.isInPictureInPictureMode()) {
+            return false;
+        }
+
+        if (game.hasWindowFocus()) {
+            return true;
+        }
+
+        // The stream may be driven from the external display control activity instead
+        ExternalDisplayControlActivity control = ExternalDisplayControlActivity.instance;
+        return control != null && control.hasWindowFocus();
     }
 
     @Override
