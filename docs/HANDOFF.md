@@ -30,6 +30,8 @@ original conversation. Everything below is either in this repository, in
 | **v20.3.0-fork.8 released** (versionCode 65, run 37240107700, signed) | GitHub Releases | published |
 | fork.8 on device: no crash, stream runs, stereo quad appears **but black** while the EGL thread swaps frames. PR **#27**: `MediaBlendingMode.OPAQUE` + `ContentColorMetadata`(BT709/sRGB/full) on the entity, opaque clear, 5 s diagnostic `XR stereo GL: N frames swapped, centre-left pixel rgba=(…)` | merged (1b314995) | done |
 | **v20.3.0-fork.9 released** (versionCode 66, run 37241694993, signed) | GitHub Releases | published |
+| fork.9 on device: GL frames proven good (`centre-left pixel rgba=(31,32,30,255)`, ~60 fps) yet the SurfaceEntity stays black. Prior art (SchoenMon: GL into SurfaceEntity works on SM-I610 in MONO, SuperSampling.NONE, needs y-flip; Chromium: MONO quad). PR **#28**: *Stereo screen content (diagnostics)* = sbs / mono / canvas test pattern, SuperSampling.NONE, y-flip, EGL size logging | merged (b352dbb3) | done |
+| **v20.3.0-fork.10 released** (versionCode 67, run 37244248312, signed) | GitHub Releases | published |
 
 ## 2. Where it stopped, and the next steps
 
@@ -39,13 +41,11 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.9** (PR #27, bump f764a468) is the current release; no PR is open. Open problem: the
-   stereo quad was black on fork.8 although frames were swapped into it. fork.9 adds explicit colour/blend
-   metadata and a diagnostic line; read `XR stereo GL: … centre-left pixel rgba=(…)` in the next
-   stream.log: non-black pixel + black quad = the entity does not display GL buffers (then try another
-   hand-off, e.g. render through an ImageReader/MediaCodec-like path or check dataspace via
-   `EGL_GL_COLORSPACE`), black pixel = our render path. User also has a Galaxy XR "auto spatialization"
-   setting; suggested off for clean tests. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.10** (PR #28, bump 6a98146d) is the current release; no PR is open. The user is to A/B
+   the three *Stereo screen content* modes on the headset (decision table in `docs/XR_STEREO.md`): canvas
+   ✓ + mono ✓ + SBS ✗ → the entity's SIDE_BY_SIDE mode rejects RGBA GL buffers (next: TOP_BOTTOM, or a
+   MONO entity per eye / own split); canvas ✓ + mono ✗ → EGL producer; canvas ✗ → entity placement/size.
+   Read `XR stereo GL thread: ... EGL reports WxH` and `XR canvas test pattern:` lines in stream.log. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
