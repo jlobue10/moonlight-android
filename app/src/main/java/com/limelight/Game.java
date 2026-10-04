@@ -1797,6 +1797,14 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     protected void onStop() {
         super.onStop();
 
+        if (streamContainer != null && streamContainer.isXrSpaceTransitionInProgress()) {
+            // Android XR stops the activity while it moves to Full Space; the stream has not started
+            // yet at that point (we wait for the stereo surface), so keep everything and let the
+            // restart continue normally instead of ending the session and finishing.
+            LimeLog.info("onStop during the XR space transition; keeping the session");
+            return;
+        }
+
         SpinnerDialog.closeDialogs(this);
         Dialog.closeDialogs();
 
