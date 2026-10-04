@@ -15,7 +15,8 @@ original conversation. Everything below is either in this repository, in
 | Follow-up PRs: **#11** build chain (AGP 9.4.0, Gradle 9.7.1, compileSdk 37, OkHttp 5.5), **#9** warp-mode bitrate, **#10** release signing + bump to 20.3.0-fork.2 | merged into `moonlight-noir` | done, see §2 |
 | Audit Q9 cleanups (dead "Tight Vsync" option removed, lite perf overlay relabelled, portrait resolution no longer swapped back in the decoder), PR **#14** | merged into `moonlight-noir` (e482ad8f) | done |
 | Signing secrets set by the owner; **v20.3.0-fork.2 released** (run 37216690423, signed with the project key) | GitHub Releases | published |
-| 3D depth quality: selectable depth model (MiDaS / Depth Anything V2 Small 252 / 364, verified on-demand download), model-agnostic renderer, highp shaders, async PBO readback, bounded synced-mode wait, joint-bilateral depth upsampling; `docs/3D_DEPTH_MODELS.md` | PR from `feat/3d-depth-quality` | see §2 |
+| 3D depth quality: selectable depth model (MiDaS / Depth Anything V2 Small 252 / 364, verified on-demand download), model-agnostic renderer, highp shaders, async PBO readback, bounded synced-mode wait, joint-bilateral depth upsampling; `docs/3D_DEPTH_MODELS.md`, PR **#15** | merged (5080509e) | done |
+| **v20.3.0-fork.3 released** (versionCode 60, run 37218760864, signed with the project key) | GitHub Releases | published |
 
 ## 2. Where it stopped, and the next steps
 
@@ -25,10 +26,9 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **Open PR: 3D depth quality** (`feat/3d-depth-quality`). CI-verified only; review and merge, then
-   bump `versionName`/`versionCode` and dispatch *Build and release APKs* with `release_tag=v<versionName>`.
-   What it changes and what it still owes (device validation order) is in `docs/3D_DEPTH_MODELS.md`.
-   Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.3** (PR #15 merged, bump 5694c662) is the current release; no PR is open. The 3D
+   depth work is CI-verified only; what it still owes (device validation order) is in
+   `docs/3D_DEPTH_MODELS.md`. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
