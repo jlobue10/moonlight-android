@@ -898,6 +898,33 @@ public class MediaCodecHelper {
         return true;
     }
 
+    public static boolean isDecoderEligibleForAv1Auto(MediaCodecInfo decoderInfo) {
+        // Only consulted in auto mode, after isDecoderWhitelistedForAv1() has already ruled out
+        // software decoders. Hardware AV1 decoders vary a lot in quality, so we only prefer AV1
+        // over HEVC when there's a reason to believe the decoder is fast and modern enough for
+        // low latency streaming.
+
+        // If the decoder supports FEATURE_LowLatency, we will assume it is fast and modern enough
+        // to be preferable for streaming over HEVC decoders (the same heuristic HEVC uses vs H.264).
+        if (decoderSupportsAndroidRLowLatency(decoderInfo, "video/av01")) {
+            LimeLog.info("Allowing AV1 in auto mode based on FEATURE_LowLatency support");
+            return true;
+        }
+
+        // Android 13's media performance class requirements include a hardware AV1 decoder, so
+        // we trust the hardware AV1 decoder on any device that meets performance class 13+.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            LimeLog.info("Media performance class: " + Build.VERSION.MEDIA_PERFORMANCE_CLASS);
+            if (Build.VERSION.MEDIA_PERFORMANCE_CLASS >= Build.VERSION_CODES.TIRAMISU) {
+                LimeLog.info("Allowing AV1 in auto mode based on media performance class");
+                return true;
+            }
+        }
+
+        LimeLog.info("Not allowing AV1 in auto mode for decoder: " + decoderInfo.getName());
+        return false;
+    }
+
     @SuppressWarnings("deprecation")
     @SuppressLint("NewApi")
     private static LinkedList<MediaCodecInfo> getMediaCodecList() {

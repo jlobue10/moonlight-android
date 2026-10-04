@@ -326,18 +326,47 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         return hevcDecoderInfo;
     }
 
-    private MediaCodecInfo findAv1Decoder(PreferenceConfiguration prefs) {
-        // For now, don't use AV1 unless explicitly requested
-        if (prefs.videoFormat != PreferenceConfiguration.FormatOption.FORCE_AV1) {
+    private static boolean decoderSupportsAv1Main10Hdr10(MediaCodecInfo decoderInfo) {
+        for (MediaCodecInfo.CodecProfileLevel profileLevel : decoderInfo.getCapabilitiesForType("video/av01").profileLevels) {
+            if (profileLevel.profile == MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10HDR10) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private MediaCodecInfo findAv1Decoder(PreferenceConfiguration prefs, boolean requestedHdr) {
+        // Don't return anything if H.264 or HEVC is forced
+        if (prefs.videoFormat == PreferenceConfiguration.FormatOption.FORCE_H264 ||
+                prefs.videoFormat == PreferenceConfiguration.FormatOption.FORCE_HEVC) {
             return null;
         }
 
         MediaCodecInfo decoderInfo = MediaCodecHelper.findProbableSafeDecoder("video/av01", -1);
         if (decoderInfo != null) {
-            if (!MediaCodecHelper.isDecoderWhitelistedForAv1(decoderInfo)) {
+            if (prefs.videoFormat != PreferenceConfiguration.FormatOption.FORCE_AV1) {
+                // In auto mode, only advertise AV1 for hardware decoders that we have reason to
+                // believe are fast and modern enough to beat the HEVC path (see MediaCodecHelper).
+                // Otherwise we'd rather stay on the well-tested HEVC/AVC decoders.
+                if (!MediaCodecHelper.isDecoderWhitelistedForAv1(decoderInfo) ||
+                        !MediaCodecHelper.isDecoderEligibleForAv1Auto(decoderInfo)) {
+                    LimeLog.info("Not using AV1 decoder in auto mode - "+decoderInfo.getName());
+                    return null;
+                }
+
+                // moonlight-common-c negotiates AV1 ahead of HEVC whenever both are advertised, so
+                // don't trade an HDR10-capable HEVC decoder for an AV1 decoder that can't do HDR10,
+                // which would silently downgrade an HDR stream to SDR AV1.
+                if (requestedHdr && isHevcMain10Hdr10Supported() && !decoderSupportsAv1Main10Hdr10(decoderInfo)) {
+                    LimeLog.info("Not using AV1 decoder in auto mode for HDR without AV1 Main 10 HDR10 - "+decoderInfo.getName());
+                    return null;
+                }
+            }
+            else if (!MediaCodecHelper.isDecoderWhitelistedForAv1(decoderInfo)) {
                 LimeLog.info("Found AV1 decoder, but it's not whitelisted - "+decoderInfo.getName());
 
-                // Force HEVC enabled if the user asked for it
+                // Force AV1 enabled if the user asked for it
                 if (prefs.videoFormat == PreferenceConfiguration.FormatOption.FORCE_AV1) {
                     LimeLog.info("Forcing AV1 enabled despite non-whitelisted decoder");
                 }
@@ -397,7 +426,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             LimeLog.info("No HEVC decoder found");
         }
 
-        av1Decoder = findAv1Decoder(prefs);
+        av1Decoder = findAv1Decoder(prefs, requestedHdr);
         if (av1Decoder != null) {
             LimeLog.info("Selected AV1 decoder: "+av1Decoder.getName());
         }
