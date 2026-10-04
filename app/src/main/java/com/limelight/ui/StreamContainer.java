@@ -17,6 +17,8 @@ import com.limelight.Game;
 import com.limelight.LimeLog;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.utils.Stereo3DRenderer;
+import com.limelight.xr.SurfaceGlThread;
+import com.limelight.xr.XrStereoPresenter;
 
 /**
  * A container that manages different stream display modes and now correctly
@@ -42,6 +44,11 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     private Game game;
     private PreferenceConfiguration prefConfig;
     private Stereo3DRenderer mStereoRenderer;
+
+    // Android XR: the SBS frame goes to a stereo SurfaceEntity instead of a GLSurfaceView
+    private XrStereoPresenter xrPresenter;
+    private SurfaceGlThread xrGlThread;
+    private boolean xrStereo = false;
 
     private SurfaceView mSurfaceView;
     private Surface mCurrentSurface;
@@ -86,19 +93,78 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
             // OpenCV (a ~23 MB native library), which 2D streams must not pay for.
             Stereo3DRenderer.isMovieMode = renderMode == StreamMode.MODE_AI_3D_MOVIE;
 
-            GLSurfaceView glSurfaceView = new GLSurfaceView(context);
-            glSurfaceView.setEGLContextClientVersion(3);
-            mStereoRenderer = new Stereo3DRenderer(glSurfaceView, this, context, prefConfig);
-            glSurfaceView.setRenderer(mStereoRenderer);
-            glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
-            mSurfaceView = glSurfaceView;
-            addView(mSurfaceView, childParams);
+            if (prefConfig.xrStereo && XrStereoPresenter.isSupported(context)) {
+                // Headset: true stereo via a SceneCore SurfaceEntity in Full Space. The plain
+                // SurfaceView above stays as the (black) app window that keeps input focus.
+                startXrStereo();
+            }
+            if (!xrStereo) {
+                createFlatStereoView();
+            }
         }
 
         mSurfaceView.getHolder().addCallback(this);
         if (mSurfaceView.getHolder().getSurface() != null && mSurfaceView.getHolder().getSurface().isValid()) {
             surfaceChanged(mSurfaceView.getHolder(), PixelFormat.RGBA_8888, mSurfaceView.getWidth(), mSurfaceView.getHeight());
         }
+    }
+
+    /** Flat displays: a GLSurfaceView shows the side-by-side frame as-is. */
+    private void createFlatStereoView() {
+        Context context = getContext();
+        GLSurfaceView glSurfaceView = new GLSurfaceView(context);
+        glSurfaceView.setEGLContextClientVersion(3);
+        mStereoRenderer = new Stereo3DRenderer(Stereo3DRenderer.hostFor(glSurfaceView), this, context, prefConfig);
+        glSurfaceView.setRenderer(mStereoRenderer);
+        glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        mSurfaceView = glSurfaceView;
+        addView(mSurfaceView, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
+    }
+
+    /**
+     * Android XR: ask for a side-by-side stereo SurfaceEntity sized for one eye's aspect and
+     * render the SBS frame into it from an EGL thread. Failure (no XR runtime, Full Space refused)
+     * falls back to the flat view; a failure that happens synchronously inside start() leaves
+     * xrStereo false so init() creates the flat view, a later one creates it from the callback.
+     */
+    private void startXrStereo() {
+        xrStereo = true;
+        final int frameWidth = Math.max(2, prefConfig.width) * 2;   // full resolution per eye
+        final int frameHeight = Math.max(2, prefConfig.height);
+        xrPresenter = new XrStereoPresenter(game);
+        xrPresenter.start(frameWidth, frameHeight, prefConfig.xrScreenWidthMeters, prefConfig.xrHideMainPanel,
+                new XrStereoPresenter.Listener() {
+            @Override
+            public void onStereoSurfaceReady(Surface surface, int widthPx, int heightPx) {
+                if (xrGlThread != null) {
+                    return;
+                }
+                xrGlThread = new SurfaceGlThread(surface, widthPx, heightPx);
+                mStereoRenderer = new Stereo3DRenderer(xrGlThread, StreamContainer.this, getContext(), prefConfig);
+                xrGlThread.setRenderer(mStereoRenderer);
+                xrGlThread.start();
+                LimeLog.info("XR stereo: rendering " + widthPx + "x" + heightPx + " side-by-side into the SurfaceEntity");
+            }
+
+            @Override
+            public void onStereoUnavailable(String reason) {
+                LimeLog.warning("XR stereo unavailable (" + reason + "); showing the side-by-side frame flat");
+                xrStereo = false;
+                xrPresenter = null;
+                if (xrGlThread != null) {
+                    return;   // already rendering into the entity; nothing to fall back from
+                }
+                // A failure inside start() is synchronous: init() sees xrStereo == false right after
+                // and builds the flat view itself. A later failure (Full Space granted, entity
+                // creation failed) has to build it here; the posted check makes both paths idempotent.
+                post(() -> {
+                    if (!(mSurfaceView instanceof GLSurfaceView) && mStereoRenderer == null) {
+                        createFlatStereoView();
+                        mSurfaceView.getHolder().addCallback(StreamContainer.this);
+                    }
+                });
+            }
+        });
     }
 
     // --- Aspect Ratio and Scaling Logic ---
@@ -252,7 +318,8 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         if (renderMode == StreamMode.MODE_2D) {
             isSurfaceReady = false;
             mCurrentSurface = null;
-        } else if (mStereoRenderer != null) {
+        } else if (mStereoRenderer != null && !xrStereo) {
+            // The XR stereo renderer does not live in this View's surface; onDestroy() stops it.
             mStereoRenderer.onSurfaceDestroyed();
         }
 
@@ -269,7 +336,15 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
 
     public void onDestroy() {
         if (mStereoRenderer != null) {
-            mStereoRenderer.onSurfaceDestroyed();
+            mStereoRenderer.onSurfaceDestroyed();   // queues its GL cleanup on the host thread
+        }
+        if (xrGlThread != null) {
+            xrGlThread.shutdown();                  // drains that cleanup, then releases EGL
+            xrGlThread = null;
+        }
+        if (xrPresenter != null) {
+            xrPresenter.stop();                     // disposes the entity, back to Home Space
+            xrPresenter = null;
         }
     }
 }

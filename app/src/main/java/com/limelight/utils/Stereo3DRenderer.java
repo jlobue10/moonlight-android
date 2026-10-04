@@ -90,7 +90,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     // Final Member Variables
     private final Context context;
-    private final GLSurfaceView glSurfaceView;
+    private final RenderHost host;
     private final OnSurfaceReadyListener onSurfaceReadyListener;
     private final Object frameLock = new Object();
     private final FloatBuffer quadVertexBuffer;
@@ -144,6 +144,31 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         void onStereo3DSurfaceReady(Surface surface);
     }
 
+    /**
+     * What the renderer needs from whatever owns its GL context: a GLSurfaceView on a flat
+     * display, or an EGL thread drawing into an Android XR SurfaceEntity (com.limelight.xr).
+     */
+    public interface RenderHost {
+        void requestRender();
+        /** true = RENDERMODE_CONTINUOUSLY, false = RENDERMODE_WHEN_DIRTY */
+        void setContinuousRendering(boolean continuous);
+        void queueEvent(Runnable r);
+        int getWidth();
+        int getHeight();
+    }
+
+    public static RenderHost hostFor(final GLSurfaceView view) {
+        return new RenderHost() {
+            @Override public void requestRender() { view.requestRender(); }
+            @Override public void setContinuousRendering(boolean continuous) {
+                view.setRenderMode(continuous ? GLSurfaceView.RENDERMODE_CONTINUOUSLY : GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+            }
+            @Override public void queueEvent(Runnable r) { view.queueEvent(r); }
+            @Override public int getWidth() { return view.getWidth(); }
+            @Override public int getHeight() { return view.getHeight(); }
+        };
+    }
+
     private static boolean openCvLoaded = false;
 
     // OpenCV (a ~23 MB native library) used to be loaded from a static initializer, which ran on the
@@ -162,10 +187,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         }
     }
 
-    public Stereo3DRenderer(GLSurfaceView view, OnSurfaceReadyListener listener, Context context, PreferenceConfiguration prefConfig) {
+    public Stereo3DRenderer(RenderHost host, OnSurfaceReadyListener listener, Context context, PreferenceConfiguration prefConfig) {
         ensureOpenCvLoaded();
 
-        this.glSurfaceView = view;
+        this.host = host;
         this.onSurfaceReadyListener = listener;
         this.context = context;
         this.prefConfig = prefConfig;
@@ -217,7 +242,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             videoSurfaceTexture = null;
         }
 
-        glSurfaceView.queueEvent(() -> {
+        host.queueEvent(() -> {
             GLES20.glDeleteProgram(simple3dProgram);
             GLES20.glDeleteProgram(bilateralBlurProgram);
             GLES20.glDeleteProgram(dibr3dProgram);
@@ -255,7 +280,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         synchronized (frameLock) {
             frameAvailable.set(true);
         }
-        glSurfaceView.requestRender();
+        host.requestRender();
     }
 
     @Override
@@ -376,8 +401,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     }
 
     private void drawBothEyes(int dualBubble3dProgram, float convergence, float shift) {
-        int viewWidth = glSurfaceView.getWidth();
-        int viewHeight = glSurfaceView.getHeight();
+        int viewWidth = host.getWidth();
+        int viewHeight = host.getHeight();
 
         float parallax = getParallax() * 0.06f;
 
@@ -459,9 +484,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         synchronized (frameLock) {
             if (!frameAvailable.get()) {
                 if (!isMovieMode) {
-                    glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+                    host.setContinuousRendering(true);
                 } else {
-                    glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+                    host.setContinuousRendering(false);
                     return;
                 }
             } else if (isMovieMode) {

@@ -179,6 +179,26 @@
             android:summary="@string/summary_depth_guided_upsampling"
             android:title="@string/title_depth_guided_upsampling"
             app:iconSpaceReserved="false" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:key="checkbox_xr_stereo"
+            android:summary="@string/summary_xr_stereo"
+            android:title="@string/title_xr_stereo"
+            app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="2.0"
+            android:entries="@array/xr_screen_width_names"
+            android:entryValues="@array/xr_screen_width_values"
+            android:key="xr_stereo_screen_width"
+            android:summary="@string/summary_xr_screen_width"
+            android:title="@string/title_xr_screen_width"
+            app:iconSpaceReserved="false" />
+        <CheckBoxPreference
+            android:defaultValue="false"
+            android:key="checkbox_xr_hide_main_panel"
+            android:summary="@string/summary_xr_hide_main_panel"
+            android:title="@string/title_xr_hide_main_panel"
+            app:iconSpaceReserved="false" />
         <com.limelight.preferences.SeekBarPreference
             android:key="parallax_depth"
             android:dialogMessage=""
