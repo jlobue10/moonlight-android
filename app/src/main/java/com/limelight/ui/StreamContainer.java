@@ -71,8 +71,6 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         this.prefConfig = prefConfig;
         this.renderMode = mapIntToStreamMode(prefConfig.renderMode);
 
-        Stereo3DRenderer.isMovieMode = renderMode == StreamMode.MODE_AI_3D_MOVIE;
-
         isSurfaceReady = false;
         mCurrentSurface = null;
 
@@ -84,6 +82,10 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         addView(mSurfaceView, childParams);
 
         if (renderMode != StreamMode.MODE_2D) {
+            // Only touch Stereo3DRenderer when 3D is actually in use: its static initializer loads
+            // OpenCV (a ~23 MB native library), which 2D streams must not pay for.
+            Stereo3DRenderer.isMovieMode = renderMode == StreamMode.MODE_AI_3D_MOVIE;
+
             GLSurfaceView glSurfaceView = new GLSurfaceView(context);
             glSurfaceView.setEGLContextClientVersion(3);
             mStereoRenderer = new Stereo3DRenderer(glSurfaceView, this, context, prefConfig);

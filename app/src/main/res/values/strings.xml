@@ -729,7 +729,7 @@
     <string name="rename">Rename</string>
     <string name="save">Save</string>
     <string name="title_low_latency_frame_balance">LFR (Experimental)</string>
-    <string name="summary_low_latency_frame_balance">Minimizes delay by dropping queued frames.</string>
+    <string name="summary_low_latency_frame_balance">Forces the lowest-latency frame pacing: the newest decoded frame is shown immediately and older queued frames are dropped (overrides Frame Pacing).</string>
     <string name="category_perf_monitor_settings">Performance Monitor</string>
     <string name="category_perf_charts">Performance Charts</string>
     <string name="desc_chart_latency">Network latency chart</string>
