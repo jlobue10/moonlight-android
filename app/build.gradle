@@ -8,7 +8,8 @@ android {
     namespace 'com.limelight'
 
     defaultConfig {
-        minSdk 21
+        // 24: required by the Jetpack XR libraries (androidx.xr.*); upstream Moonlight is 21
+        minSdk 24
         targetSdk 36
 
         versionName "20.3.0-fork.3"
@@ -186,6 +187,11 @@ dependencies {
     implementation 'com.google.ai.edge.litert:litert:1.4.0'
     implementation 'com.google.ai.edge.litert:litert-gpu:1.4.0'
     implementation 'org.opencv:opencv:4.12.0'
+
+    // Android XR: stereoscopic presentation of the SBS 3D output in Full Space (docs/XR_STEREO.md).
+    // Only loaded at runtime on devices that declare android.software.xr.api.spatial.
+    implementation 'androidx.xr.scenecore:scenecore:1.0.0-rc01'
+    implementation 'androidx.xr.runtime:runtime:1.0.0-rc01'
 
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 

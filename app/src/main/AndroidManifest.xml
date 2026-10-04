@@ -12,6 +12,8 @@
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA"/>
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA"/>
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <!-- Android XR spatial APIs are used when present (stereo screen for the 3D modes), never required -->
+    <uses-feature android:name="android.software.xr.api.spatial" android:required="false" />
     <!-- We don't need a MulticastLock on API level 34+ because we use NsdManager for mDNS -->
     <uses-permission
         android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"
@@ -58,6 +60,10 @@
         android:enableOnBackInvokedCallback="false"
         android:theme="@style/AppTheme"
         >
+
+        <!-- Android XR platform extensions, present only on XR devices; the Jetpack XR libraries load it when available -->
+
+        <uses-library android:name="com.android.extensions.xr" android:required="false" />
 
         <provider
             android:name=".PosterContentProvider"

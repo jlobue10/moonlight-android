@@ -253,6 +253,9 @@ public class PreferenceConfiguration {
     public int renderMode;
     public String depthModel;              // DepthModel.prefValue
     public boolean depthGuidedUpsampling;
+    public boolean xrStereo;               // Android XR: stereo SurfaceEntity for the SBS frame
+    public float xrScreenWidthMeters;
+    public boolean xrHideMainPanel;
     public boolean smallIconMode, multiController, usbDriver, flipFaceButtons;
     public boolean onscreenController;
     public boolean hideOSCWhenHasGamepad;
@@ -393,6 +396,9 @@ public class PreferenceConfiguration {
 
     private static final String PARALLAX_DEPTH = "parallax_depth";
     private static final String CHECKBOX_DEPTH_GUIDED_UPSAMPLING = "checkbox_depth_guided_upsampling";
+    private static final String CHECKBOX_XR_STEREO = "checkbox_xr_stereo";
+    private static final String XR_STEREO_SCREEN_WIDTH = "xr_stereo_screen_width";
+    private static final String CHECKBOX_XR_HIDE_MAIN_PANEL = "checkbox_xr_hide_main_panel";
 
     private static final String CONVERGENCE_RATIO = "convergence_ratio";
     private static final String BALANCE_SHIFT = "balance_shift";
@@ -904,6 +910,13 @@ private static int getFramePacingValue(Context context) {
         config.renderMode = renderModeInt;
         config.depthModel = prefs.getString(DepthModel.PREF_KEY, DepthModel.DEFAULT.prefValue);
         config.depthGuidedUpsampling = prefs.getBoolean(CHECKBOX_DEPTH_GUIDED_UPSAMPLING, true);
+        config.xrStereo = prefs.getBoolean(CHECKBOX_XR_STEREO, true);
+        config.xrHideMainPanel = prefs.getBoolean(CHECKBOX_XR_HIDE_MAIN_PANEL, false);
+        try {
+            config.xrScreenWidthMeters = Float.parseFloat(prefs.getString(XR_STEREO_SCREEN_WIDTH, "2.0"));
+        } catch (NumberFormatException e) {
+            config.xrScreenWidthMeters = 2.0f;
+        }
 
         // Read mouse mode and set touch settings accordingly
         String mouseMode = prefs.getString("mouse_mode_list", "0");

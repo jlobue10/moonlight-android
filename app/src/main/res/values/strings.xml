@@ -589,6 +589,12 @@
     <string name="depth_model_downloading">Downloading %1$s</string>
     <string name="depth_model_download_failed">Depth model download failed: %1$s</string>
     <string name="depth_model_download_done">Depth model ready</string>
+    <string name="title_xr_stereo">Stereo screen on Android XR</string>
+    <string name="summary_xr_stereo">On an Android XR headset, show the AI SBS 3D stream as a real stereoscopic floating screen: the app switches to Full Space and each eye sees its own half of the frame. Off: the side-by-side frame is shown flat in the app window.</string>
+    <string name="title_xr_screen_width">Stereo screen width</string>
+    <string name="summary_xr_screen_width">Physical width of the floating stereo screen, placed about 2 m in front of you.</string>
+    <string name="title_xr_hide_main_panel">Hide the app window in stereo mode</string>
+    <string name="summary_xr_hide_main_panel">Hide the flat app window while the stereo screen is shown. Leave it visible if you need its on-screen controls or if input stops working.</string>
     <string name="mouse_mode_absolute_touch">Absolute touch</string>
     <string name="mouse_mode_track_pad_natural">Track pad(Natural/Double tap to drag)</string>
     <string name="mouse_mode_track_pad_gaming">Track pad(Gaming/Long press to drag)</string>

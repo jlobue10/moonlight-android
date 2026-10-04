@@ -182,6 +182,22 @@
         <item>dav2_252</item>
         <item>dav2_364</item>
     </string-array>
+    <string-array name="xr_screen_width_names" translatable="false">
+        <item>1.0 m</item>
+        <item>1.5 m</item>
+        <item>2.0 m</item>
+        <item>2.5 m</item>
+        <item>3.0 m</item>
+        <item>4.0 m</item>
+    </string-array>
+    <string-array name="xr_screen_width_values" translatable="false">
+        <item>1.0</item>
+        <item>1.5</item>
+        <item>2.0</item>
+        <item>2.5</item>
+        <item>3.0</item>
+        <item>4.0</item>
+    </string-array>
     <string-array name="mouse_mode_names">
         <item>@string/mouse_mode_multi_touch</item>
         <item>@string/mouse_mode_absolute_touch</item>
