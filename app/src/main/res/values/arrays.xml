@@ -190,6 +190,16 @@
         <item>3.0 m</item>
         <item>4.0 m</item>
     </string-array>
+    <string-array name="xr_stereo_layout_names">
+        <item>@string/xr_stereo_layout_sbs</item>
+        <item>@string/xr_stereo_layout_mono</item>
+        <item>@string/xr_stereo_layout_canvas</item>
+    </string-array>
+    <string-array name="xr_stereo_layout_values" translatable="false">
+        <item>sbs</item>
+        <item>mono</item>
+        <item>canvas</item>
+    </string-array>
     <string-array name="steam_controller_grips_names">
         <item>@string/steam_controller_grips_paddles</item>
         <item>@string/steam_controller_grips_ds4</item>
