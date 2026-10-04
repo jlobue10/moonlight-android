@@ -306,6 +306,22 @@
             android:title="@string/title_checkbox_steam_controller_motion"
             app:iconSpaceReserved="false" />
         <CheckBoxPreference
+            android:defaultValue="true"
+            android:dependency="checkbox_steam_controller_ble"
+            android:key="checkbox_steam_controller_split_pads"
+            android:summary="@string/summary_checkbox_steam_controller_split_pads"
+            android:title="@string/title_checkbox_steam_controller_split_pads"
+            app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="paddles"
+            android:dependency="checkbox_steam_controller_ble"
+            android:entries="@array/steam_controller_grips_names"
+            android:entryValues="@array/steam_controller_grips_values"
+            android:key="steam_controller_grips"
+            android:summary="@string/summary_steam_controller_grips"
+            android:title="@string/title_steam_controller_grips"
+            app:iconSpaceReserved="false" />
+        <CheckBoxPreference
             android:defaultValue="false"
             android:dependency="checkbox_usb_driver"
             android:key="checkbox_usb_bind_all"

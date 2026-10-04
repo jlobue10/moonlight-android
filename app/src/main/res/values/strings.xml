@@ -239,6 +239,13 @@
     <string name="summary_checkbox_steam_controller_ble">Built-in driver for the 2026 Steam Controller paired over Bluetooth. Android does not recognise it as a gamepad on its own; this talks to it directly, turns its keyboard/mouse emulation off while streaming and reports it to the host as a Steam Controller with both trackpads, grips and battery. Needs the Bluetooth permission.</string>
     <string name="title_checkbox_steam_controller_motion">Steam Controller gyro and accelerometer</string>
     <string name="summary_checkbox_steam_controller_motion">Forward the controller\'s motion sensors to the host for gyro aiming. Turn off if motion input misbehaves.</string>
+    <string name="title_checkbox_steam_controller_split_pads">Trackpads as DualShock touchpad halves</string>
+    <string name="summary_checkbox_steam_controller_split_pads">Hosts that emulate a DualShock 4 have one touchpad, which Steam Input splits into left and right halves. On: the left pad drives the left half and the right pad the right half (two fingers). Off: send two separate touchpads for hosts with Steam Controller support.</string>
+    <string name="title_steam_controller_grips">Grip buttons (L4 L5 R4 R5)</string>
+    <string name="summary_steam_controller_grips">What the four back grips send. Paddles need a host that emulates a controller with paddles; a DualShock host drops them, so \"DualShock extras\" gives them Share, touchpad click, L3 and R3 instead.</string>
+    <string name="steam_controller_grips_paddles">Paddles 1–4 (Xbox Elite style)</string>
+    <string name="steam_controller_grips_ds4">DualShock extras: L4 Share, R4 touchpad click, L5 L3, R5 R3</string>
+    <string name="steam_controller_grips_off">Off</string>
     <string name="toast_steam_controller_permission">Bluetooth permission is needed for the Steam Controller driver. Enable it in the stream settings.</string>
     <string name="title_checkbox_usb_bind_all">Override native Xbox gamepad support</string>
     <string name="summary_checkbox_usb_bind_all">Use Artemis\'s USB driver for all supported gamepads, even if native Xbox/Nintendo Pro controller support is present</string>

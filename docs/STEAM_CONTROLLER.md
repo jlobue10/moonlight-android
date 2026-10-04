@@ -57,11 +57,21 @@ raw/65536 + 0.5, y = −raw/65536 + 0.5, pressure/32768. IMU: gyro ±2000 °/s, 
 
 ## Host side
 
-The host decides what it emulates from the arrival event. Sunshine/Apollo/Vibepollo treat unknown
-types as Xbox; hosts that know `LI_CTYPE_STEAM` (added to moonlight-common-c in 2026) can present a
-Steam-style pad with trackpads to Steam Input. Either way buttons, sticks, triggers, grips and rumble
-work as an Xbox-class pad; the touchpads and motion only do something on hosts that forward them
-(`LI_FF_CONTROLLER_TOUCH_EVENTS`).
+The host decides what it emulates from the arrival event. In the Sunshine family's default
+`gamepad = auto` mode a client that reports touchpad or motion capabilities gets a **DualShock 4**,
+which is why Vibepollo shows the controller as a PS4 pad: that is the only emulated pad with a
+touchpad and gyro, and Steam Input handles it well. Consequences, and the settings that address them:
+
+- A DualShock 4 has one touchpad, which Steam Input splits into left and right halves. *Trackpads as
+  DualShock touchpad halves* (default on) therefore sends the left pad as finger 0 in the left half
+  and the right pad as finger 1 in the right half of touchpad 0, so Steam sees "left pad"/"right pad".
+  Turn it off only for a host that understands `LI_CCAP_DUAL_TOUCHPAD` (common-c drops touchpad 1
+  otherwise).
+- A DualShock 4 has no paddles, so the host drops the grips. *Grip buttons* lets you choose
+  "DualShock extras" (L4 Share, R4 touchpad click, L5 L3, R5 R3), which Steam Input can rebind, or
+  keep paddles for hosts that emulate a pad with them.
+- The Steam button arrives as the PS button and opens Big Picture.
+- To get an Xbox pad instead, set `gamepad = x360` on the host; touchpads and gyro are then dropped.
 
 ## Sources
 

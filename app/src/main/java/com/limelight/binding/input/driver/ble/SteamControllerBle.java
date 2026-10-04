@@ -95,6 +95,17 @@ public class SteamControllerBle extends AbstractController {
     private final Context context;
     private final BluetoothDevice device;
     private final boolean motionEnabled;
+    /**
+     * Hosts without Steam Controller support emulate a DualShock 4, whose single touchpad Steam
+     * Input splits into a left and a right half. With splitPads the two physical pads are sent as
+     * two fingers on one pad (left pad → left half, right pad → right half) so that split lines up;
+     * without it they go out as touchpad 0 and 1 for hosts that understand LI_CCAP_DUAL_TOUCHPAD.
+     */
+    private final boolean splitPads;
+    public static final int GRIPS_PADDLES = 0;   // L4/L5/R4/R5 as PADDLE1..4 (Xbox Elite style)
+    public static final int GRIPS_DS4 = 1;       // extras a DualShock host can use: Share, touchpad click, L3, R3
+    public static final int GRIPS_OFF = 2;
+    private final int gripsMode;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private BluetoothGatt gatt;
@@ -122,14 +133,16 @@ public class SteamControllerBle extends AbstractController {
     };
 
     public SteamControllerBle(int deviceId, UsbDriverListener listener, Context context,
-                              BluetoothDevice device, boolean motionEnabled) {
+                              BluetoothDevice device, boolean motionEnabled, boolean splitPads, int gripsMode) {
         super(deviceId, listener, VENDOR_ID_VALVE, PRODUCT_ID_IBEX_BLE);
         this.context = context.getApplicationContext();
         this.device = device;
         this.motionEnabled = motionEnabled;
+        this.splitPads = splitPads;
+        this.gripsMode = gripsMode;
         this.type = MoonBridge.LI_CTYPE_STEAM;
         this.capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
-                | MoonBridge.LI_CCAP_TOUCHPAD | MoonBridge.LI_CCAP_DUAL_TOUCHPAD
+                | MoonBridge.LI_CCAP_TOUCHPAD | (splitPads ? 0 : MoonBridge.LI_CCAP_DUAL_TOUCHPAD)
                 | MoonBridge.LI_CCAP_BATTERY_STATE
                 | (motionEnabled ? (MoonBridge.LI_CCAP_GYRO | MoonBridge.LI_CCAP_ACCEL) : 0));
         this.supportedButtonFlags = SUPPORTED_BUTTONS;
@@ -364,7 +377,7 @@ public class SteamControllerBle extends AbstractController {
             announced = false;
             // Release any touches the host still thinks are down
             if (leftPadTouched) reportTouch((byte) 0, MoonBridge.LI_TOUCH_EVENT_UP, 0, 0, 0, 0);
-            if (rightPadTouched) reportTouch((byte) 1, MoonBridge.LI_TOUCH_EVENT_UP, 0, 0, 0, 0);
+            if (rightPadTouched) reportTouch(splitPads ? (byte) 0 : (byte) 1, MoonBridge.LI_TOUCH_EVENT_UP, splitPads ? 1 : 0, 0, 0, 0);
             leftPadTouched = rightPadTouched = false;
             notifyDeviceRemoved();
         }
@@ -502,11 +515,24 @@ public class SteamControllerBle extends AbstractController {
         if (bit(buttons, BTN_RSTICK_CLICK)) flags |= ControllerPacket.RS_CLK_FLAG;
         if (bit(buttons, BTN_STEAM)) flags |= ControllerPacket.SPECIAL_BUTTON_FLAG;
         if (bit(buttons, BTN_QUICK_ACCESS)) flags |= ControllerPacket.MISC_FLAG;
-        // Xbox Elite paddle order: P1 upper right, P2 upper left, P3 lower right, P4 lower left
-        if (bit(buttons, BTN_GRIP_R_TOP)) flags |= ControllerPacket.PADDLE1_FLAG;
-        if (bit(buttons, BTN_GRIP_L_TOP)) flags |= ControllerPacket.PADDLE2_FLAG;
-        if (bit(buttons, BTN_GRIP_R_BOTTOM)) flags |= ControllerPacket.PADDLE3_FLAG;
-        if (bit(buttons, BTN_GRIP_L_BOTTOM)) flags |= ControllerPacket.PADDLE4_FLAG;
+        switch (gripsMode) {
+            case GRIPS_PADDLES:
+                // Xbox Elite paddle order: P1 upper right, P2 upper left, P3 lower right, P4 lower left
+                if (bit(buttons, BTN_GRIP_R_TOP)) flags |= ControllerPacket.PADDLE1_FLAG;
+                if (bit(buttons, BTN_GRIP_L_TOP)) flags |= ControllerPacket.PADDLE2_FLAG;
+                if (bit(buttons, BTN_GRIP_R_BOTTOM)) flags |= ControllerPacket.PADDLE3_FLAG;
+                if (bit(buttons, BTN_GRIP_L_BOTTOM)) flags |= ControllerPacket.PADDLE4_FLAG;
+                break;
+            case GRIPS_DS4:
+                // A DualShock 4 has no paddles; give the grips inputs the host can actually emulate
+                if (bit(buttons, BTN_GRIP_L_TOP)) flags |= ControllerPacket.MISC_FLAG;       // Share
+                if (bit(buttons, BTN_GRIP_R_TOP)) flags |= ControllerPacket.TOUCHPAD_FLAG;   // touchpad click
+                if (bit(buttons, BTN_GRIP_L_BOTTOM)) flags |= ControllerPacket.LS_CLK_FLAG;  // L3
+                if (bit(buttons, BTN_GRIP_R_BOTTOM)) flags |= ControllerPacket.RS_CLK_FLAG;  // R3
+                break;
+            default:
+                break;
+        }
         if (bit(buttons, BTN_LPAD_CLICK) || bit(buttons, BTN_RPAD_CLICK)) flags |= ControllerPacket.TOUCHPAD_FLAG;
         buttonFlags = flags;
 
@@ -543,13 +569,21 @@ public class SteamControllerBle extends AbstractController {
     }
 
     private boolean updatePad(byte pad, boolean wasTouched, boolean touched, short rawX, short rawY, int rawPressure) {
+        // Split mode: both pads are fingers 0/1 on touchpad 0, each confined to its half.
+        // Dual mode: pad 0/1 with finger 0 each (needs a host that knows LI_CCAP_DUAL_TOUCHPAD;
+        // common-c drops touchpad 1 on hosts without the feature).
+        byte touchpadIndex = splitPads ? 0 : pad;
+        int pointerId = splitPads ? pad : 0;
         if (touched) {
             float x = rawX / 65536f + 0.5f;
             float y = -rawY / 65536f + 0.5f;
+            if (splitPads) {
+                x = pad == 0 ? x * 0.5f : 0.5f + x * 0.5f;
+            }
             float pressure = clamp01(rawPressure / 32768f);
-            reportTouch(pad, wasTouched ? MoonBridge.LI_TOUCH_EVENT_MOVE : MoonBridge.LI_TOUCH_EVENT_DOWN, 0, x, y, pressure);
+            reportTouch(touchpadIndex, wasTouched ? MoonBridge.LI_TOUCH_EVENT_MOVE : MoonBridge.LI_TOUCH_EVENT_DOWN, pointerId, x, y, pressure);
         } else if (wasTouched) {
-            reportTouch(pad, MoonBridge.LI_TOUCH_EVENT_UP, 0, 0, 0, 0);
+            reportTouch(touchpadIndex, MoonBridge.LI_TOUCH_EVENT_UP, pointerId, 0, 0, 0);
         }
         return touched;
     }
