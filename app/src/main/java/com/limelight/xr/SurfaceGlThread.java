@@ -6,6 +6,7 @@ import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
 import android.opengl.EGLExt;
 import android.opengl.EGLSurface;
+import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.view.Surface;
 
@@ -51,6 +52,9 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
     private EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
     private EGLSurface eglSurface = EGL14.EGL_NO_SURFACE;
+    private long swaps;
+    private long lastReportNs;
+    private final java.nio.ByteBuffer probe = java.nio.ByteBuffer.allocateDirect(4);
 
     public SurfaceGlThread(Surface surface, int width, int height) {
         super("XrStereoGl");
@@ -155,6 +159,7 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
                 }
                 if (draw) {
                     renderer.onDrawFrame(null);
+                    reportProgress();
                     if (!EGL14.eglSwapBuffers(eglDisplay, eglSurface)) {
                         LimeLog.warning("eglSwapBuffers failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
                         // The consumer is gone (entity disposed); stop drawing but keep draining events.
@@ -185,6 +190,27 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
         lastError = message;
         LimeLog.severe(message);
         return false;
+    }
+
+    /**
+     * Diagnostics for the headset (no adb there): about every 5 s, log how many frames were swapped,
+     * the GL error state and the colour of the pixel at the centre of the left eye *as rendered*.
+     * A non-black pixel here with a black screen means the entity is not showing our buffers; a
+     * black pixel means our own render path is at fault.
+     */
+    private void reportProgress() {
+        swaps++;
+        long now = System.nanoTime();
+        if (swaps != 1 && now - lastReportNs < 5_000_000_000L) {
+            return;
+        }
+        lastReportNs = now;
+        probe.clear();
+        GLES20.glReadPixels(width / 4, height / 2, 1, 1, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, probe);
+        int err = GLES20.glGetError();
+        LimeLog.info("XR stereo GL: " + swaps + " frames swapped, centre-left pixel rgba=("
+                + (probe.get(0) & 0xFF) + "," + (probe.get(1) & 0xFF) + "," + (probe.get(2) & 0xFF) + ","
+                + (probe.get(3) & 0xFF) + ")" + (err != GLES20.GL_NO_ERROR ? ", glGetError=0x" + Integer.toHexString(err) : ""));
     }
 
     private boolean initEgl() {
@@ -223,6 +249,8 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
             return fail("eglMakeCurrent failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
         }
+        // Opaque black for anything the renderer leaves uncovered; the entity is told it is opaque.
+        GLES20.glClearColor(0f, 0f, 0f, 1f);
         LimeLog.info("XR stereo GL thread: ES3 context on a " + width + "x" + height + " surface");
         return true;
     }

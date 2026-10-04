@@ -79,6 +79,17 @@ stop that arrives while the presenter is still waiting for Full Space.
   listener fires synchronously on registration. Fixed by setting the pose in `Space.PARENT` inside a
   try/catch.
 
+### Seen on the headset (fork.8 logcat)
+
+- No crash any more. The stream connected and ran; the stereo quad appeared in Full Space **but stayed
+  black** while the GL thread drew and swapped frames continuously (depth maps every few ms, no EGL
+  errors). The flat app window was black as designed.
+- fork.9 sets `MediaBlendingMode.OPAQUE` and explicit `ContentColorMetadata` (BT.709, sRGB, full range)
+  on the entity, because OpenGL output carries no dataspace tag the way decoder buffers do, clears to
+  opaque black, and logs every ~5 s the swap count plus the rendered colour of the left eye's centre
+  pixel (`XR stereo GL: N frames swapped, centre-left pixel rgba=(...)`). Non-black pixel + black quad =
+  the entity does not display our buffers; black pixel = our render path.
+
 ## Known gaps and what to verify on the headset
 
 1. **Does the entity appear and in stereo?** Start a 3D render mode; the app should jump to Full
