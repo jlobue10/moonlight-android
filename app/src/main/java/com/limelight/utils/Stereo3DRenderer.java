@@ -133,7 +133,17 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         void onStereo3DSurfaceReady(Surface surface);
     }
 
-    static {
+    private static boolean openCvLoaded = false;
+
+    // OpenCV (a ~23 MB native library) used to be loaded from a static initializer, which ran on the
+    // first touch of ANY static member of this class -- including the perf overlay's stats fields and
+    // the movie-mode flag -- i.e. on every stream start, even in 2D mode. Load it only when a 3D
+    // renderer is actually constructed.
+    private static synchronized void ensureOpenCvLoaded() {
+        if (openCvLoaded) {
+            return;
+        }
+        openCvLoaded = true;
         if (!OpenCVLoader.initLocal()) {
             LimeLog.severe("Internal OpenCV library not found. Using OpenCV Manager for initialization");
         } else {
@@ -142,6 +152,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     }
 
     public Stereo3DRenderer(GLSurfaceView view, OnSurfaceReadyListener listener, Context context, PreferenceConfiguration prefConfig) {
+        ensureOpenCvLoaded();
+
         this.glSurfaceView = view;
         this.onSurfaceReadyListener = listener;
         this.context = context;
