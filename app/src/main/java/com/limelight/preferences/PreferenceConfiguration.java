@@ -662,6 +662,11 @@ private static int getFramePacingValue(Context context) {
         else if (str.equals("smoothness")) {
             return FRAME_PACING_MAX_SMOOTHNESS;
         }
+        else if (str.equals("warp") || str.equals("warp2")) {
+            // Warp modes present the newest frame as soon as it is decoded, like "latency";
+            // their 2x/4x host frame rate multiplier is read into framePacingWarpFactor.
+            return FRAME_PACING_MIN_LATENCY;
+        }
         else {
             // Should never get here
             return FRAME_PACING_MIN_LATENCY;

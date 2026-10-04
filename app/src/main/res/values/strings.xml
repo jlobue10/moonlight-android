@@ -356,9 +356,9 @@
     <string name="videoformat_h264always">Prefer H.264</string>
 
     <string name="title_frame_pacing">Video frame pacing</string>
-    <string name="summary_frame_pacing">Specify how to balance video latency and smoothness</string>
-    <string name="pacing_warp">Warp Drive (Experimental)</string>
-    <string name="pacing_warp2">Warp 2 (Experimental)</string>
+    <string name="summary_frame_pacing">Specify how to balance video latency and smoothness. Warp modes stream at 2x/4x the selected FPS and raise the bitrate to match (an Apollo host does that itself when its Limit Framerate option is on)</string>
+    <string name="pacing_warp">Warp Drive (2x FPS from host, Experimental)</string>
+    <string name="pacing_warp2">Warp 2 (4x FPS from host, Experimental)</string>
     <string name="pacing_latency">Prefer lowest latency</string>
     <string name="pacing_balanced">Balanced</string>
     <string name="pacing_balanced_alt">Balanced with FPS limit</string>
