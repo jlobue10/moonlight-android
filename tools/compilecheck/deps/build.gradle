@@ -1,0 +1,142 @@
+// Dependency resolver for tools/compilecheck/setup.sh -- not part of the app build.
+//
+//   gradle --no-daemon -q -p tools/compilecheck/deps copyDeps \
+//       -PcompileDeps="group:artifact:version ..." -PlibDir=<abs path of .cache/lib> \
+//       [-PuseGoogle=false] [-PuseJitpack=false]
+//
+// Resolves the given coordinates (plus transitive dependencies) LENIENTLY: every
+// artifact that can be fetched is copied into libDir (AARs: classes.jar + libs/*.jar,
+// with R.txt/AndroidManifest.xml kept under libDir/aar-meta/), and every dependency
+// that could not be resolved is listed in libDir/.failed-gradle.txt so that setup.sh
+// can try its fallback routes (AOSP prebuilts mirror, source builds).
+plugins {
+    id 'java'
+}
+
+def depList = ((findProperty('compileDeps') ?: '') as String).trim().split(/\s+/).findAll { it }
+def libDir = file(findProperty('libDir') ?: "${rootDir}/../.cache/lib")
+def useGoogle = (findProperty('useGoogle') ?: 'true') != 'false'
+def useJitpack = (findProperty('useJitpack') ?: 'true') != 'false'
+
+repositories {
+    if (useGoogle) {
+        google()            // AndroidX, Material, LiteRT (redirects artifact downloads to dl.google.com)
+    }
+    mavenCentral()
+    if (useJitpack) {
+        maven { name = 'JitPack'; url = uri('https://jitpack.io') }
+    }
+}
+
+configurations {
+    androidCompile {
+        canBeConsumed = false
+        canBeResolved = true
+        attributes {
+            // Only usage + category: lets AndroidX (libraryelements=aar variants) and plain
+            // jar modules match the same consumer configuration without the Android plugin.
+            attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage, Usage.JAVA_RUNTIME))
+            attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category, Category.LIBRARY))
+        }
+    }
+}
+
+dependencies {
+    depList.each { androidCompile it }
+}
+
+import java.util.zip.ZipFile
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import org.gradle.api.artifacts.result.UnresolvedDependencyResult
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+
+tasks.register('copyDeps') {
+    doLast {
+        if (depList.isEmpty()) throw new GradleException('copyDeps: no dependencies given (-PcompileDeps="g:a:v ...")')
+        def cfg = configurations.androidCompile
+        libDir.mkdirs()
+        def metaDir = new File(libDir, 'aar-meta')
+        metaDir.mkdirs()
+
+        // Which repository served each component (best effort; the API is version dependent).
+        def repoOf = [:]
+        def result = cfg.incoming.resolutionResult
+        result.allComponents.each { c ->
+            try {
+                def rn = c.hasProperty('repositoryName') ? c.repositoryName : (c.hasProperty('repositoryId') ? c.repositoryId : null)
+                if (rn != null) repoOf[c.id.displayName] = rn.toString()
+            } catch (Throwable ignored) {
+            }
+        }
+
+        def resolved = []
+        def used = new HashSet<String>()
+        def place = { File dir, String wanted, String groupPrefix ->
+            def name = wanted
+            if (!used.add(new File(dir, name).path)) {
+                name = groupPrefix + '-' + wanted
+                used.add(new File(dir, name).path)
+            }
+            return new File(dir, name)
+        }
+        cfg.incoming.artifactView { lenient(true) }.artifacts.artifacts.each { art ->
+            def cid = art.id.componentIdentifier
+            def f = art.file
+            def isModule = cid instanceof ModuleComponentIdentifier
+            def base = isModule ? "${cid.module}-${cid.version}" : f.name.replaceAll(/\.(jar|aar)$/, '')
+            def group = isModule ? cid.group : 'local'
+            def coords = isModule ? "${cid.group}:${cid.module}:${cid.version}" : cid.displayName
+            def repo = repoOf.get(cid.displayName) ?: 'unknown-repository'
+            if (f.name.endsWith('.aar')) {
+                def zf = new ZipFile(f)
+                try {
+                    def extracted = []
+                    def classes = zf.getEntry('classes.jar')
+                    if (classes != null) {
+                        def out = place(libDir, "${base}.jar", group)
+                        Files.copy(zf.getInputStream(classes), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                        extracted << out.name
+                    }
+                    def meta = new File(metaDir, "${group}__${base}")
+                    meta.mkdirs()
+                    for (e in zf.entries()) {
+                        if (e.name == 'api.jar') {
+                            Files.copy(zf.getInputStream(e), new File(meta, 'api.jar').toPath(), StandardCopyOption.REPLACE_EXISTING)
+                            extracted << "aar-meta/${meta.name}/api.jar(API-JAR-PRESENT)"
+                        } else if (e.name.startsWith('libs/') && e.name.endsWith('.jar')) {
+                            def out = place(libDir, "${base}-libs-${new File(e.name).name}", group)
+                            Files.copy(zf.getInputStream(e), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                            extracted << out.name
+                        } else if (e.name == 'R.txt' || e.name == 'AndroidManifest.xml') {
+                            Files.copy(zf.getInputStream(e), new File(meta, e.name).toPath(), StandardCopyOption.REPLACE_EXISTING)
+                        }
+                    }
+                    resolved << "${coords}\taar\t${f.name}\t${extracted.join(',')}\t${repo}"
+                } finally {
+                    zf.close()
+                }
+            } else if (f.name.endsWith('.jar')) {
+                def out = place(libDir, f.name, group)
+                Files.copy(f.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                resolved << "${coords}\tjar\t${f.name}\t${out.name}\t${repo}"
+            } else {
+                resolved << "${coords}\tother\t${f.name}\tSKIPPED\t${repo}"
+            }
+        }
+
+        def failed = []
+        result.allDependencies.each { d ->
+            if (d instanceof UnresolvedDependencyResult) {
+                def msg = (d.failure?.message ?: 'unknown failure').replaceAll(/\s+/, ' ')
+                failed << "${d.requested.displayName}\t${msg}"
+            }
+        }
+        failed = failed.unique().sort()
+        resolved.sort()
+        new File(libDir, '.resolved-gradle.txt').text = resolved.join('\n') + (resolved ? '\n' : '')
+        new File(libDir, '.failed-gradle.txt').text = failed.join('\n') + (failed ? '\n' : '')
+        println "copyDeps: ${resolved.size()} artifact(s) copied to ${libDir}, ${failed.size()} dependency(ies) unresolved"
+        failed.each { println "copyDeps: UNRESOLVED ${it}" }
+    }
+}
