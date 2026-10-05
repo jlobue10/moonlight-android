@@ -119,6 +119,17 @@ stop that arrives while the presenter is still waiting for Full Space.
   app window in stereo mode* (an opaque panel in front of the quad would hide it), then the
   `screen placed at` / `recommended pose` log lines tell where it went.
 
+### Root cause of the invisible screen (fork.4–fork.11)
+
+`SurfaceEntity.create()` without a `parent` argument creates an entity that is **not attached to the
+scene graph** (the KDoc says so: "If null, the entity is created but not attached to the scene graph,
+meaning it will be invisible"). All the short `create` overloads default `parent` to null. The entity
+received every frame (fork.9 proved the pixels), `setPose(..., Space.ACTIVITY)` threw
+"non-AndroidXrEntity parent" because there was no parent, the recommended pose was the identity, and no
+producer (GL or Canvas) could ever make it show. fork.12 creates the entity with
+`scene.getActivitySpace()` as parent (the 7-argument overload). Both working reference projects parent
+their entity (SchoenMon to a root entity, Chromium under its panel).
+
 ## Known gaps and what to verify on the headset
 
 1. **Does the entity appear and in stereo?** Start a 3D render mode; the app should jump to Full
