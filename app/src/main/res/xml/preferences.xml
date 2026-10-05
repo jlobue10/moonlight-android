@@ -194,7 +194,7 @@
             android:title="@string/title_xr_screen_width"
             app:iconSpaceReserved="false" />
         <CheckBoxPreference
-            android:defaultValue="false"
+            android:defaultValue="true"
             android:key="checkbox_xr_hide_main_panel"
             android:summary="@string/summary_xr_hide_main_panel"
             android:title="@string/title_xr_hide_main_panel"
