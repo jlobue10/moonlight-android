@@ -34,6 +34,8 @@ original conversation. Everything below is either in this repository, in
 | **v20.3.0-fork.10 released** (versionCode 67, run 37244248312, signed) | GitHub Releases | published |
 | fork.10 A/B: SBS black, mono black, canvas → **no separate floating screen** ⇒ the entity is never visible with any producer (placement). PR **#30**: recommended pose logged, not applied; quad stays 2 m ahead; actual pose logged. PR **#29**: logcat dump 40000 lines, Stereo3DRenderer/AiTask silenced | merged (9db0b9fe, a689ca8a) | done |
 | **v20.3.0-fork.11 released** (versionCode 68, run 37246110266, signed) | GitHub Releases | published |
+| fork.11: still no screen anywhere; recommended pose was the identity. **Root cause found in SceneCore KDoc: `SurfaceEntity.create()` without `parent` is not attached to the scene graph → invisible.** PR **#31**: parent = `scene.getActivitySpace()` (7-arg overload), panel hide also sets alpha 0 | merged (76f6f362) | done |
+| **v20.3.0-fork.12 released** (versionCode 69, run 37247662456, signed) | GitHub Releases | published |
 
 ## 2. Where it stopped, and the next steps
 
@@ -43,12 +45,10 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.11** (PRs #29–#30, bump cef37205) is the current release; no PR is open. Headset test:
-   *Stereo screen content* = side-by-side, launch; if no second screen, enable *Hide the app window in
-   stereo mode* and retry; then share logs and read `XR stereo: screen placed at t=(…)` and
-   `XR stereo: system recommended pose t=(…) scale=…`. If the quad is still invisible at a sane pose,
-   next suspects: the entity needs a parent/subspace (SchoenMon parents to a root entity inside a
-   Compose Subspace; Chromium parents under its panel), or the quad is behind the main panel. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.12** (PR #31, bump fde07682) is the current release; no PR is open. It carries the
+   real fix for the invisible stereo screen (entity never parented). Headset test: side-by-side mode; if
+   the screen appears, check upright (fork.10 added a y-flip for the XR host) and depth. Lesson for all
+   SceneCore work: ALWAYS pass a parent to entity create(). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
