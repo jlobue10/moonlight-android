@@ -615,7 +615,7 @@
     <string name="xr_stereo_layout_mono">Mono (both halves flat)</string>
     <string name="xr_stereo_layout_canvas">Canvas test pattern</string>
     <string name="xr_stereo_fallback_toast">Stereo screen unavailable (%1$s). Showing the side-by-side frame flat.</string>
-    <string name="summary_xr_hide_main_panel">Hide the flat app window while the stereo screen is shown. Leave it visible if you need its on-screen controls or if input stops working.</string>
+    <string name="summary_xr_hide_main_panel">Hide the flat app window while the stereo screen is shown (recommended; the window otherwise sits in front of the stereo screen). Turn off if you need its on-screen controls.</string>
     <string name="mouse_mode_absolute_touch">Absolute touch</string>
     <string name="mouse_mode_track_pad_natural">Track pad(Natural/Double tap to drag)</string>
     <string name="mouse_mode_track_pad_gaming">Track pad(Gaming/Long press to drag)</string>

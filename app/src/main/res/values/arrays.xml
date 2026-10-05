@@ -189,6 +189,8 @@
         <item>2.5 m</item>
         <item>3.0 m</item>
         <item>4.0 m</item>
+        <item>5.0 m</item>
+        <item>6.0 m</item>
     </string-array>
     <string-array name="xr_stereo_layout_names">
         <item>@string/xr_stereo_layout_sbs</item>
@@ -217,6 +219,8 @@
         <item>2.5</item>
         <item>3.0</item>
         <item>4.0</item>
+        <item>5.0</item>
+        <item>6.0</item>
     </string-array>
     <string-array name="mouse_mode_names">
         <item>@string/mouse_mode_multi_touch</item>

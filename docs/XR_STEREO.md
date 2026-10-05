@@ -130,6 +130,14 @@ producer (GL or Canvas) could ever make it show. fork.12 creates the entity with
 `scene.getActivitySpace()` as parent (the 7-argument overload). Both working reference projects parent
 their entity (SchoenMon to a root entity, Chromium under its panel).
 
+### Seen on the headset (fork.12) — IT WORKS
+
+- With the entity parented to the activity space the stereo screen appears and shows the game in
+  stereo. *Hide the app window in stereo mode* is the right setting (now default on): the flat window
+  otherwise sits in front of the quad.
+- The picture was upside down: the fork.10 vertical flip (taken from a CustomMesh project's note) is
+  wrong for a Quad, which is sampled like a window surface. fork.13 removes the flip.
+
 ## Known gaps and what to verify on the headset
 
 1. **Does the entity appear and in stereo?** Start a 3D render mode; the app should jump to Full

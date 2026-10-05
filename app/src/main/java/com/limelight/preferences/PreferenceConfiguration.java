@@ -925,7 +925,7 @@ private static int getFramePacingValue(Context context) {
         config.depthModel = prefs.getString(DepthModel.PREF_KEY, DepthModel.DEFAULT.prefValue);
         config.depthGuidedUpsampling = prefs.getBoolean(CHECKBOX_DEPTH_GUIDED_UPSAMPLING, true);
         config.xrStereo = prefs.getBoolean(CHECKBOX_XR_STEREO, true);
-        config.xrHideMainPanel = prefs.getBoolean(CHECKBOX_XR_HIDE_MAIN_PANEL, false);
+        config.xrHideMainPanel = prefs.getBoolean(CHECKBOX_XR_HIDE_MAIN_PANEL, true);
         config.xrStereoLayout = prefs.getString(XR_STEREO_LAYOUT, "sbs");
         try {
             config.xrScreenWidthMeters = Float.parseFloat(prefs.getString(XR_STEREO_SCREEN_WIDTH, "2.0"));

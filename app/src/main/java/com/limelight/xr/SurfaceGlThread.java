@@ -100,13 +100,13 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
     }
 
     /**
-     * The XR compositor samples a SurfaceEntity's buffers top-down without the GL producer's
-     * vertical flip (observed on the Galaxy XR by another GL-into-SurfaceEntity project), so the
-     * renderer must draw its output upside down relative to a window to appear upright.
+     * fork.10 flipped the eye pass on the assumption (from a CustomMesh project) that the compositor
+     * samples GL buffers top-down; on a Quad SurfaceEntity the picture then showed upside down
+     * (Galaxy XR, fork.12). A quad is sampled like a window surface, so no flip.
      */
     @Override
     public boolean flipOutputVertically() {
-        return true;
+        return false;
     }
 
     @Override
