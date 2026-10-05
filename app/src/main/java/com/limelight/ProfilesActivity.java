@@ -25,6 +25,13 @@ public class ProfilesActivity extends AppCompatActivity implements ProfilesManag
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_profiles);
 
+        androidx.appcompat.widget.Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            getSupportActionBar().setTitle(R.string.profile_manager_title);
+        }
+
         // Setup RecyclerView
         recyclerView = findViewById(R.id.profilesRecyclerView);
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
@@ -71,5 +78,14 @@ public class ProfilesActivity extends AppCompatActivity implements ProfilesManag
             emptyState.setVisibility(View.GONE);
         }
         adapter.notifyDataSetChanged();
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(android.view.MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 }
