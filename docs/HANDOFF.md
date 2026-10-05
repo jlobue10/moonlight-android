@@ -47,14 +47,24 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.13** (PR #32, bump cf7761ba) is the current release; no PR is open. XR stereo is
-   confirmed working on the Galaxy XR (upright expected from fork.13 on). User decisions: VRR port
-   dropped; Steam Controller host-side work (Vibepollo: map LI_CTYPE_STEAM to DualSense in
-   `vhf_desired_profile()`, needs `#ifndef LI_CTYPE_STEAM` because Vibepollo's pinned common-c lacks it)
-   deferred until Vibepollo 2.0.0 runs on the user's Windows host. Vibepollo fork: `jlobue10/Vibepollo`
-   branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow). To diagnose the 2.0.0 startup crash the
-   user must provide `C:/Program Files/Vibepollo/config/sunshine.log` and the Event Viewer
-   "Application Error" entry (faulting module), plus Windows build and installer options. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.13** (PR #32, bump cf7761ba) is the current release. Everything is confirmed
+   working on the Galaxy XR (stereo upright, app window hidden, Steam Controller over BLE). A later
+   "stereo broke after changing the width" report was a false alarm: the user had unticked
+   "Stereo screen on Android XR" (the gates are silent by design). **PR #33 `fix/profiles-toolbar`
+   is open, CI green** (run 37253253930): the Profiles screen had no toolbar, so no back button;
+   `EditProfileActivity` already had one. Still toolbar-less and unreported: `AddComputerManually`,
+   `DebugInfoActivity`, `HelpActivity`. User decision: VRR port dropped.
+   Vibepollo 2.0.0 now runs on the user's Windows host (the startup "crash" was the pairing-state
+   refusal in `nvhttp.cpp`; recovery = move `config\sunshine_state.json(.bak)` and `config\credentials\`
+   away, restart, re-pair). Remaining user item: the host shows the Steam Controller as a DS4 and they
+   want a DualSense. In 2.0.0 `gamepad=auto` prefers ViGEm whenever ViGEmBus is installed
+   (`vhf_gamepad_policy.h::select_automatic_backend`), and ViGEm only has x360/ds4; the Vibepollo VHF
+   driver has `dualsense`. So the fix is a host setting, not code: set the gamepad option to `vhf_ds5`
+   (forced) or `vhf` (auto: motion/touchpad capabilities map to DualSense in `vhf_desired_profile()`).
+   A `LI_CTYPE_STEAM` mapping PR to Vibepollo is therefore unnecessary. Known 2.0.0 DualSense bugs:
+   Nonary/Vibepollo #538 (duplicate "DualSense Wireless Controller" + "PS5 Controller" through
+   GameInput; fix in Nonary/libvirtualgamepad PR #3, needs a driver rebuild) and #480. Vibepollo fork:
+   `jlobue10/Vibepollo` branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).

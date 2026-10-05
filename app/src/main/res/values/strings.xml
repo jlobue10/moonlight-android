@@ -742,6 +742,7 @@
     <string name="title_checkbox_enable_perf_overlay_bottom">Move overlay to bottom</string>
     <string name="summary_checkbox_enable_perf_overlay_bottom">Useful when Display in Top Center and Lite mode are enabled during non-native resolution streaming.</string>
     <string name="title_edit_profile">Edit Profile</string>
+    <string name="profile_manager_title">Settings profiles</string>
     <string name="profile_manager_new_profile">New Profile</string>
     <string name="profile_manager_profile_not_found">Profile not found</string>
     <string name="profile_manager_edit_profile">"Edit Profile: "</string>
