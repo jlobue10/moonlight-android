@@ -246,6 +246,13 @@
     <string name="steam_controller_grips_paddles">Paddles 1–4 (Xbox Elite style)</string>
     <string name="steam_controller_grips_ds4">DualShock extras: L4 Share, R4 touchpad click, L5 L3, R5 R3</string>
     <string name="steam_controller_grips_off">Off</string>
+    <string name="title_steam_controller_rumble_hold">Rumble hold limit</string>
+    <string name="summary_steam_controller_rumble_hold">How long a rumble keeps going when the host never sends \"motors off\". Some hosts drop that event for Steam\'s menu haptics on a DualSense, which left the pads buzzing until the next event. A game that holds one steady rumble longer than this is cut short.</string>
+    <string name="steam_controller_rumble_hold_250">0.25 s</string>
+    <string name="steam_controller_rumble_hold_500">0.5 s (default)</string>
+    <string name="steam_controller_rumble_hold_1000">1 s</string>
+    <string name="steam_controller_rumble_hold_2000">2 s</string>
+    <string name="steam_controller_rumble_hold_unlimited">Until the host says stop</string>
     <string name="toast_steam_controller_permission">Bluetooth permission is needed for the Steam Controller driver. Enable it in the stream settings.</string>
     <string name="title_checkbox_usb_bind_all">Override native Xbox gamepad support</string>
     <string name="summary_checkbox_usb_bind_all">Use Artemis\'s USB driver for all supported gamepads, even if native Xbox/Nintendo Pro controller support is present</string>

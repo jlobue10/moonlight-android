@@ -32,8 +32,10 @@ later (ACL connected broadcast). Each driver:
    USB offset is one less) into Moonlight's `ControllerPacket` flags, triggers, sticks, two
    touchpads (`LiSendControllerTouchEvent2`, pads 0 and 1), gyro/accel and battery;
 4. announces itself as `LI_CTYPE_STEAM` with `ANALOG_TRIGGERS | RUMBLE | TOUCHPAD | DUAL_TOUCHPAD |
-   BATTERY_STATE` (+ `GYRO | ACCEL`); rumble is done with `ID_TRIGGER_HAPTIC_PULSE` (0x8F) pulses on
-   the left (low) and right (high) side;
+   BATTERY_STATE` (+ `GYRO | ACCEL`); rumble is done with `ID_TRIGGER_HAPTIC_PULSE` (0x8F) pulse
+   trains (~160 Hz, magnitude as duty cycle; firmware side 1 = left/low, 0 = right/high) that are
+   re-issued every 100 ms while the host's rumble is non-zero, the way Steam and the kernel driver
+   drive this controller, and stopped by a zero-repeat pulse;
 5. on stop restores the default digital mappings and settings so the controller works as a
    keyboard/mouse for the rest of the system again.
 
@@ -100,5 +102,12 @@ original; these were used as documentation.
 - Battery charge-state semantics (byte 0 of the battery characteristic; non-zero is treated as
   charging).
 - Rumble feel; stop is an explicit zero-repeat pulse.
+- Rumble hold limit (fork.14): Vibepollo 2.0.0 presenting the controller as a DualSense forwards
+  Steam's menu haptics as rumble but was observed never to send the matching "motors off" (stream
+  log: `Rumble on gamepad 0: 6600 6600`, `7300 8000`, ... and no `0000 0000`), which with an
+  unbounded pulse train left the pads buzzing until the next event. Settings → Input → "Rumble hold
+  limit" (default 0.5 s, or "Until the host says stop" for the old behaviour) bounds how long one
+  host event may rumble. The host-side cause is still open (driver `apply_ds5_output` ignores
+  `HAPTICS_SELECT`-only reports? Steam's stop path?); narrowing test = compare `vhf_ds4` and `ds4`.
 - Whether the IMU setting takes effect over BLE (otherwise motion stays at zero; turn the motion
   setting off).

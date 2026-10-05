@@ -12,6 +12,7 @@ import android.content.Context;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import com.limelight.LimeLog;
 import com.limelight.binding.input.driver.AbstractController;
@@ -74,6 +75,16 @@ public class SteamControllerBle extends AbstractController {
     private static final int MAX_RECONNECT_ATTEMPTS = 5;
     /** Haptic pulse period (~160 Hz); magnitude is expressed as duty cycle. */
     private static final int RUMBLE_PERIOD_US = 6250;
+    /**
+     * Rumble is driven the way Steam and the kernel drive this controller: short pulse trains that
+     * are re-issued while the host's rumble stays non-zero, so a lost "motors off" event can only
+     * ever leave the pads buzzing for one train. Each train outlives the refresh interval slightly
+     * so the drive is continuous.
+     */
+    private static final int RUMBLE_REFRESH_MS = 100;
+    private static final int RUMBLE_TRAIN_MS = 150;
+    /** Hold limit of 0 means "until the host says stop" (the pre-fork.14 behaviour). */
+    public static final int RUMBLE_HOLD_UNLIMITED = 0;
 
     // Button bit indices inside the 32-bit field at report bytes 2..5 (bit = (byte - 2) * 8 + n)
     private static final int BTN_A = 0, BTN_B = 1, BTN_X = 2, BTN_Y = 3, BTN_QUICK_ACCESS = 4,
@@ -106,6 +117,7 @@ public class SteamControllerBle extends AbstractController {
     public static final int GRIPS_DS4 = 1;       // extras a DualShock host can use: Share, touchpad click, L3, R3
     public static final int GRIPS_OFF = 2;
     private final int gripsMode;
+    private final int rumbleHoldMs;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private BluetoothGatt gatt;
@@ -120,7 +132,10 @@ public class SteamControllerBle extends AbstractController {
     private int reconnectAttempts;
     private boolean everConnected;
     private boolean leftPadTouched, rightPadTouched;
-    private short lastLowFreq = -1, lastHighFreq = -1;
+    // Rumble state; only touched on the handler thread.
+    private float rumbleLow, rumbleHigh;
+    private boolean rumbleActive;
+    private long rumbleDeadline;
 
     private final Runnable keepAlive = new Runnable() {
         @Override
@@ -134,13 +149,15 @@ public class SteamControllerBle extends AbstractController {
     };
 
     public SteamControllerBle(int deviceId, UsbDriverListener listener, Context context,
-                              BluetoothDevice device, boolean motionEnabled, boolean splitPads, int gripsMode) {
+                              BluetoothDevice device, boolean motionEnabled, boolean splitPads, int gripsMode,
+                              int rumbleHoldMs) {
         super(deviceId, listener, VENDOR_ID_VALVE, PRODUCT_ID_IBEX_BLE);
         this.context = context.getApplicationContext();
         this.device = device;
         this.motionEnabled = motionEnabled;
         this.splitPads = splitPads;
         this.gripsMode = gripsMode;
+        this.rumbleHoldMs = Math.max(0, rumbleHoldMs);
         this.type = MoonBridge.LI_CTYPE_STEAM;
         this.capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
                 | MoonBridge.LI_CCAP_TOUCHPAD | (splitPads ? 0 : MoonBridge.LI_CCAP_DUAL_TOUCHPAD)
@@ -471,23 +488,65 @@ public class SteamControllerBle extends AbstractController {
 
     @Override
     public void rumble(short lowFreqMotor, short highFreqMotor) {
-        if (lowFreqMotor == lastLowFreq && highFreqMotor == lastHighFreq) {
-            return;
-        }
-        lastLowFreq = lowFreqMotor;
-        lastHighFreq = highFreqMotor;
-        enqueueWrite(hapticPulse((byte) 0, (lowFreqMotor & 0xFFFF) / 65535f));
-        enqueueWrite(hapticPulse((byte) 1, (highFreqMotor & 0xFFFF) / 65535f));
+        final float low = (lowFreqMotor & 0xFFFF) / 65535f;
+        final float high = (highFreqMotor & 0xFFFF) / 65535f;
+        handler.post(() -> {
+            rumbleLow = low;
+            rumbleHigh = high;
+            handler.removeCallbacks(rumbleRefresh);
+            if (low <= 0.01f && high <= 0.01f) {
+                if (rumbleActive) {
+                    rumbleActive = false;
+                    enqueueWrite(hapticPulse(SIDE_LEFT, 0f, 0));
+                    enqueueWrite(hapticPulse(SIDE_RIGHT, 0f, 0));
+                }
+                return;
+            }
+            // Every host update, even a repeat of the same value, restarts the hold window. Hosts
+            // that forward Steam's UI haptics on a DualSense have been seen to never send the
+            // matching "motors off", so without a limit the pads would buzz until the next event.
+            rumbleDeadline = rumbleHoldMs == RUMBLE_HOLD_UNLIMITED
+                    ? Long.MAX_VALUE : SystemClock.uptimeMillis() + rumbleHoldMs;
+            rumbleActive = true;
+            rumbleRefresh.run();
+        });
     }
 
-    /** ID_TRIGGER_HAPTIC_PULSE: side, on_us, off_us, repeat (0xFFFF = until replaced, 0 = stop). */
-    private static byte[] hapticPulse(byte side, float magnitude) {
-        int onUs = 0, offUs = 0, repeat = 0;
-        if (magnitude > 0.01f) {
+    private final Runnable rumbleRefresh = new Runnable() {
+        @Override
+        public void run() {
+            if (!rumbleActive || stopped) {
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (now >= rumbleDeadline) {
+                rumbleActive = false;
+                enqueueWrite(hapticPulse(SIDE_LEFT, 0f, 0));
+                enqueueWrite(hapticPulse(SIDE_RIGHT, 0f, 0));
+                return;
+            }
+            // Bound the train to the hold window so the last one ends on time by itself.
+            int trainMs = (int) Math.min(RUMBLE_TRAIN_MS, Math.max(1, rumbleDeadline - now));
+            int repeat = Math.max(1, trainMs * 1000 / RUMBLE_PERIOD_US);
+            enqueueWrite(hapticPulse(SIDE_LEFT, rumbleLow, repeat));
+            enqueueWrite(hapticPulse(SIDE_RIGHT, rumbleHigh, repeat));
+            handler.postDelayed(this, Math.min(RUMBLE_REFRESH_MS, Math.max(1, rumbleDeadline - now)));
+        }
+    };
+
+    /** Pulse side ids; the firmware numbers them the other way round from the kernel's pad ids. */
+    private static final byte SIDE_RIGHT = 0;
+    private static final byte SIDE_LEFT = 1;
+
+    /** ID_TRIGGER_HAPTIC_PULSE: side, on_us, off_us, repeat count (0 = stop the running train). */
+    private static byte[] hapticPulse(byte side, float magnitude, int repeat) {
+        int onUs = 0, offUs = 0;
+        if (magnitude > 0.01f && repeat > 0) {
             float duty = 0.25f + 0.72f * Math.min(1f, magnitude);
             onUs = (int) (RUMBLE_PERIOD_US * duty);
             offUs = RUMBLE_PERIOD_US - onUs;
-            repeat = 0xFFFF;
+        } else {
+            repeat = 0;
         }
         return new byte[]{
                 ID_TRIGGER_HAPTIC_PULSE, side,
