@@ -14,6 +14,7 @@ import androidx.xr.runtime.math.FloatSize2d;
 import androidx.xr.runtime.math.IntSize2d;
 import androidx.xr.runtime.math.Pose;
 import androidx.xr.runtime.math.Vector3;
+import androidx.xr.scenecore.Entity;
 import androidx.xr.scenecore.Scene;
 import androidx.xr.scenecore.SessionExt;
 import androidx.xr.scenecore.Space;
@@ -156,11 +157,16 @@ public final class XrStereoPresenter {
         float aspect = mono ? (float) frameWidthPx / frameHeightPx : (frameWidthPx / 2f) / frameHeightPx;
         FloatSize2d extents = new FloatSize2d(screenWidthMeters, screenWidthMeters / aspect);
         Pose pose = new Pose(new Vector3(0f, 0f, -SCREEN_DISTANCE_METERS));
-        // Explicit SuperSampling.NONE / SurfaceProtection.NONE: the one project known to feed a
-        // SurfaceEntity from OpenGL on this device (SM-I610) passes exactly these.
+        // THE PARENT MATTERS. SceneCore's SurfaceEntity.create() documents: "parent ... Defaults to
+        // null. If null, the entity is created but not attached to the scene graph, meaning it will be
+        // invisible." The short overloads used in fork.4–fork.11 did exactly that: the entity received
+        // every frame and was never part of the scene (and setPose in the activity space threw
+        // "non-AndroidXrEntity parent"). Attach it to the activity space explicitly.
+        Entity parent = scene.getActivitySpace();
         entity = SurfaceEntity.create(session, pose, new SurfaceEntity.Shape.Quad(extents),
                 mono ? SurfaceEntity.StereoMode.MONO : SurfaceEntity.StereoMode.SIDE_BY_SIDE,
-                SurfaceEntity.SuperSampling.NONE, SurfaceEntity.SurfaceProtection.NONE);
+                SurfaceEntity.SuperSampling.NONE, SurfaceEntity.SurfaceProtection.NONE, parent);
+        LimeLog.info("XR stereo: entity parented to " + parent + " (parent now " + entity.getParent() + ")");
         entity.setSurfacePixelDimensions(new IntSize2d(frameWidthPx, frameHeightPx));
         Surface probe = entity.getSurface();
         LimeLog.info("XR stereo: entity surface " + probe + " valid=" + (probe != null && probe.isValid())
@@ -204,8 +210,15 @@ public final class XrStereoPresenter {
                 + placed.getTranslation().getY() + "," + placed.getTranslation().getZ() + ") in the parent space");
 
         if (hideMainPanel && scene.getMainPanelEntity() != null) {
+            // setEnabled(false) alone showed no effect on the Galaxy XR (fork.11); also fade it out.
             scene.getMainPanelEntity().setEnabled(false);
+            try {
+                scene.getMainPanelEntity().setAlpha(0f);
+            } catch (RuntimeException e) {
+                LimeLog.warning("XR stereo: main panel alpha not applied: " + e.getMessage());
+            }
             mainPanelHidden = true;
+            LimeLog.info("XR stereo: main panel hidden (enabled=" + scene.getMainPanelEntity().isEnabled() + ")");
         }
         LimeLog.info("XR stereo: " + (mono ? "MONO" : "SIDE_BY_SIDE") + " SurfaceEntity " + frameWidthPx + "x" + frameHeightPx
                 + " px on a " + extents.getWidth() + "x" + extents.getHeight() + " m quad");
@@ -234,6 +247,10 @@ public final class XrStereoPresenter {
                 }
                 if (mainPanelHidden && scene.getMainPanelEntity() != null) {
                     scene.getMainPanelEntity().setEnabled(true);
+                    try {
+                        scene.getMainPanelEntity().setAlpha(1f);
+                    } catch (RuntimeException ignored) {
+                    }
                     mainPanelHidden = false;
                 }
             }
