@@ -69,8 +69,10 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    **NEXT PROJECT (user decision 2026-10-05): a genuine Steam Controller 2026 profile** in the
    Vibepollo VHF driver (fork `jlobue10/libvirtualgamepad`, clone `~/GitHub/libvirtualgamepad`,
    upstream HEAD 9edbce1) plus the Vibepollo mapping, developed and test-signed on the user's
-   Windows host, then offered to Nonary as PRs. Research so far is in the session memory; the
-   plan goes into `docs/STEAM_CONTROLLER_HOST.md` of the driver fork. 
+   Windows host, then offered to Nonary as PRs. First implementation pass is DONE on both forks
+   (branches `feat/steam-controller-profile`; driver profile gated behind a provisional
+   descriptor, fork CI green incl. WDK build). The self-contained handoff for the Windows capture
+   and test phase is `docs/STEAM_CONTROLLER_PROFILE.md` §7 in the driver fork. 
 3. Install on the Galaxy XR via Obtainium: source `https://github.com/jlobue10/moonlight-android`,
    APK filter `arm64-v8a`.
 4. Device testing on the Galaxy XR has not happened yet for anything in this series: the render
