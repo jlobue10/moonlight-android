@@ -185,23 +185,23 @@ public final class XrStereoPresenter {
             LimeLog.warning("XR stereo: colour metadata not applied: " + e.getMessage());
         }
 
-        // When the system (re)enters Full Space it recommends where content should sit. The listener
-        // fires immediately on registration. Setting the pose in Space.ACTIVITY threw
-        // "Cannot get pose in Activity Space with a non-AndroidXrEntity parent" and killed the process
-        // (Galaxy XR, fork.7), so apply it in the entity's parent space, which is the activity space
-        // for a top-level entity, and never let a positioning hint take the stream down.
+        // The system's "recommended pose" for Full Space content is logged but NOT applied any more.
+        // fork.8–fork.10 on the Galaxy XR: the quad was moved there twice right after creation and was
+        // never visible with any producer (GL, Canvas), while our frames were provably fine. A pose at
+        // or near the viewer's origin puts a plane through the head, which shows nothing. The screen
+        // stays where we put it: SCREEN_DISTANCE_METERS straight ahead of the activity space origin.
         modeListener = event -> {
-            if (entity == null || event.getRecommendedPose() == null) {
-                return;
-            }
-            try {
-                entity.setPose(event.getRecommendedPose(), Space.PARENT);
-                LimeLog.info("XR stereo: moved the screen to the system's recommended pose");
-            } catch (RuntimeException e) {
-                LimeLog.warning("XR stereo: recommended pose not applied: " + e.getMessage());
+            Pose p = event.getRecommendedPose();
+            if (p != null) {
+                LimeLog.info("XR stereo: system recommended pose t=(" + p.getTranslation().getX() + ","
+                        + p.getTranslation().getY() + "," + p.getTranslation().getZ() + ") scale="
+                        + event.getRecommendedScale() + " (ignored; screen stays at z=-" + SCREEN_DISTANCE_METERS + ")");
             }
         };
         scene.setSpatialModeChangedListener(modeListener);
+        Pose placed = entity.getPose(Space.PARENT);
+        LimeLog.info("XR stereo: screen placed at t=(" + placed.getTranslation().getX() + ","
+                + placed.getTranslation().getY() + "," + placed.getTranslation().getZ() + ") in the parent space");
 
         if (hideMainPanel && scene.getMainPanelEntity() != null) {
             scene.getMainPanelEntity().setEnabled(false);
