@@ -36,6 +36,8 @@ original conversation. Everything below is either in this repository, in
 | **v20.3.0-fork.11 released** (versionCode 68, run 37246110266, signed) | GitHub Releases | published |
 | fork.11: still no screen anywhere; recommended pose was the identity. **Root cause found in SceneCore KDoc: `SurfaceEntity.create()` without `parent` is not attached to the scene graph → invisible.** PR **#31**: parent = `scene.getActivitySpace()` (7-arg overload), panel hide also sets alpha 0 | merged (76f6f362) | done |
 | **v20.3.0-fork.12 released** (versionCode 69, run 37247662456, signed) | GitHub Releases | published |
+| fork.12 on device: **stereo screen works** (game in stereo), *Hide the app window* confirmed as the right mode, picture upside down. PR **#32**: fork.10 eye-pass flip removed (wrong for a Quad), hide default on, 5 m / 6 m widths | merged (850bd618) | done |
+| **v20.3.0-fork.13 released** (versionCode 70, run 37249915391, signed) | GitHub Releases | published |
 
 ## 2. Where it stopped, and the next steps
 
@@ -45,10 +47,14 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.12** (PR #31, bump fde07682) is the current release; no PR is open. It carries the
-   real fix for the invisible stereo screen (entity never parented). Headset test: side-by-side mode; if
-   the screen appears, check upright (fork.10 added a y-flip for the XR host) and depth. Lesson for all
-   SceneCore work: ALWAYS pass a parent to entity create(). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
+2. **v20.3.0-fork.13** (PR #32, bump cf7761ba) is the current release; no PR is open. XR stereo is
+   confirmed working on the Galaxy XR (upright expected from fork.13 on). User decisions: VRR port
+   dropped; Steam Controller host-side work (Vibepollo: map LI_CTYPE_STEAM to DualSense in
+   `vhf_desired_profile()`, needs `#ifndef LI_CTYPE_STEAM` because Vibepollo's pinned common-c lacks it)
+   deferred until Vibepollo 2.0.0 runs on the user's Windows host. Vibepollo fork: `jlobue10/Vibepollo`
+   branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow). To diagnose the 2.0.0 startup crash the
+   user must provide `C:/Program Files/Vibepollo/config/sunshine.log` and the Event Viewer
+   "Application Error" entry (faulting module), plus Windows build and installer options. Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
    publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
    Claude Code session was not allowed to download third-party model binaries to re-host them. A
    mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
@@ -87,6 +93,7 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
 
 Verify against `docs/audit/2026-10-04/MOONLIGHT_FORK_AUDIT.md` (§2–§4 ids) before starting:
 
+- **XR stereo** (not in the audit): working since fork.12/13; design + history in `docs/XR_STEREO.md`.
 - **Q8** SBS-3D path: addressed in `feat/3d-depth-quality` (highp shaders, async PBO readback,
   100 ms bound on the synced-mode wait, no wait when the model failed to load). Still SDR-only
   (8-bit GLSurfaceView + SurfaceTexture), by design.
