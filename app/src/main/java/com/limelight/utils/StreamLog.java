@@ -31,6 +31,7 @@ public final class StreamLog {
     private static final String FILE = "stream.log";
     private static final String LOGCAT_FILE = "logcat.txt";
     private static final int LIMIT_BYTES = 2 * 1024 * 1024;
+    private static final int LOGCAT_LIMIT_BYTES = 6 * 1024 * 1024;
 
     private static FileHandler handler;
 
@@ -87,12 +88,15 @@ public final class StreamLog {
         File out = new File(dir, LOGCAT_FILE);
         Process process = null;
         try {
-            process = new ProcessBuilder("logcat", "-d", "-v", "time", "-t", "4000").redirectErrorStream(true).start();
+            // Silence the per-frame debug chatter of the 3D renderer (hundreds of lines per second)
+            // so the dump covers minutes rather than seconds; everything else at its normal level.
+            process = new ProcessBuilder("logcat", "-d", "-v", "time", "-t", "40000",
+                    "Stereo3DRenderer:S", "AiTask:S", "*:V").redirectErrorStream(true).start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
                  Writer writer = new OutputStreamWriter(new FileOutputStream(out), StandardCharsets.UTF_8)) {
                 String line;
                 long written = 0;
-                while ((line = reader.readLine()) != null && written < LIMIT_BYTES) {
+                while ((line = reader.readLine()) != null && written < LOGCAT_LIMIT_BYTES) {
                     writer.write(line);
                     writer.write('\n');
                     written += line.length() + 1;
