@@ -212,6 +212,20 @@
         <item>ds4</item>
         <item>off</item>
     </string-array>
+    <string-array name="steam_controller_rumble_hold_names">
+        <item>@string/steam_controller_rumble_hold_250</item>
+        <item>@string/steam_controller_rumble_hold_500</item>
+        <item>@string/steam_controller_rumble_hold_1000</item>
+        <item>@string/steam_controller_rumble_hold_2000</item>
+        <item>@string/steam_controller_rumble_hold_unlimited</item>
+    </string-array>
+    <string-array name="steam_controller_rumble_hold_values" translatable="false">
+        <item>250</item>
+        <item>500</item>
+        <item>1000</item>
+        <item>2000</item>
+        <item>0</item>
+    </string-array>
     <string-array name="xr_screen_width_values" translatable="false">
         <item>1.0</item>
         <item>1.5</item>
