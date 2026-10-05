@@ -47,27 +47,30 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.13** (PR #32, bump cf7761ba) is the current release. Everything is confirmed
-   working on the Galaxy XR (stereo upright, app window hidden, Steam Controller over BLE). A later
-   "stereo broke after changing the width" report was a false alarm: the user had unticked
-   "Stereo screen on Android XR" (the gates are silent by design). **PR #33 `fix/profiles-toolbar`
-   is open, CI green** (run 37253253930): the Profiles screen had no toolbar, so no back button;
-   `EditProfileActivity` already had one. Still toolbar-less and unreported: `AddComputerManually`,
-   `DebugInfoActivity`, `HelpActivity`. User decision: VRR port dropped.
-   Vibepollo 2.0.0 now runs on the user's Windows host (the startup "crash" was the pairing-state
+2. **v20.3.0-fork.14** (PRs #33 + #34) is the current release; no PR is open. Everything is
+   confirmed working on the Galaxy XR (stereo upright, app window hidden, Steam Controller over
+   BLE). A "stereo broke after changing the width" report was a false alarm (the user had unticked
+   "Stereo screen on Android XR"; the gates are silent by design). fork.14 = Profiles screen
+   toolbar/back button (#33; `AddComputerManually`, `DebugInfoActivity`, `HelpActivity` still have
+   none, unreported) + Steam Controller rumble as refreshed, bounded pulse trains with the new
+   "Rumble hold limit" preference (#34, default 0.5 s): with Vibepollo 2.0.0 presenting the pad as
+   a DualSense the host forwards Steam's menu haptics as rumble but never sends "motors off"
+   (stream_7 log), so the old unbounded train buzzed until the next event. Host-side root cause
+   still open (see docs/STEAM_CONTROLLER.md; narrowing test = `vhf_ds4` vs `ds4`). User decision:
+   VRR port dropped.
+   Vibepollo 2.0.0 runs on the user's Windows host (the startup "crash" was the pairing-state
    refusal in `nvhttp.cpp`; recovery = move `config\sunshine_state.json(.bak)` and `config\credentials\`
-   away, restart, re-pair). Remaining user item: the host shows the Steam Controller as a DS4 and they
-   want a DualSense. In 2.0.0 `gamepad=auto` prefers ViGEm whenever ViGEmBus is installed
-   (`vhf_gamepad_policy.h::select_automatic_backend`), and ViGEm only has x360/ds4; the Vibepollo VHF
-   driver has `dualsense`. So the fix is a host setting, not code: set the gamepad option to `vhf_ds5`
-   (forced) or `vhf` (auto: motion/touchpad capabilities map to DualSense in `vhf_desired_profile()`).
-   A `LI_CTYPE_STEAM` mapping PR to Vibepollo is therefore unnecessary. Known 2.0.0 DualSense bugs:
-   Nonary/Vibepollo #538 (duplicate "DualSense Wireless Controller" + "PS5 Controller" through
-   GameInput; fix in Nonary/libvirtualgamepad PR #3, needs a driver rebuild) and #480. Vibepollo fork:
-   `jlobue10/Vibepollo` branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow). Deviation from the agreed plan: the Depth Anything files are downloaded by the app **from the
-   publishers' GitHub releases** (SHA-256 pinned), not from a mirror in this repository, because the
-   Claude Code session was not allowed to download third-party model binaries to re-host them. A
-   mirror remains optional; the doc says how (pre-release in this repo, keep NOTICE/LICENSE).
+   away, restart, re-pair). In 2.0.0 `gamepad=auto` prefers ViGEm whenever ViGEmBus is installed
+   (`vhf_gamepad_policy.h::select_automatic_backend`, x360/ds4 only); the Vibepollo VHF driver has
+   `dualsense`, so the host setting `vhf_ds5` or `vhf` gives a DualSense without code changes. Known
+   2.0.0 DualSense bugs: Nonary/Vibepollo #538 (duplicate pad through GameInput; fix in
+   Nonary/libvirtualgamepad PR #3, now merged upstream) and #480. Vibepollo fork:
+   `jlobue10/Vibepollo` branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow).
+   **NEXT PROJECT (user decision 2026-10-05): a genuine Steam Controller 2026 profile** in the
+   Vibepollo VHF driver (fork `jlobue10/libvirtualgamepad`, clone `~/GitHub/libvirtualgamepad`,
+   upstream HEAD 9edbce1) plus the Vibepollo mapping, developed and test-signed on the user's
+   Windows host, then offered to Nonary as PRs. Research so far is in the session memory; the
+   plan goes into `docs/STEAM_CONTROLLER_HOST.md` of the driver fork. 
 3. Install on the Galaxy XR via Obtainium: source `https://github.com/jlobue10/moonlight-android`,
    APK filter `arm64-v8a`.
 4. Device testing on the Galaxy XR has not happened yet for anything in this series: the render
