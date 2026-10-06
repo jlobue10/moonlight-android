@@ -47,7 +47,8 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.14** (PRs #33 + #34) is the current release; no PR is open. Everything is
+2. **v20.3.0-fork.15** (PR #35: opt-in PyroWave Vulkan decode, see `docs/PYROWAVE.md`; untested on
+   device at release time) is the current release; no PR is open. fork.14 = PRs #33 + #34. Everything is
    confirmed working on the Galaxy XR (stereo upright, app window hidden, Steam Controller over
    BLE). A "stereo broke after changing the width" report was a false alarm (the user had unticked
    "Stereo screen on Android XR"; the gates are silent by design). fork.14 = Profiles screen
@@ -66,9 +67,9 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    2.0.0 DualSense bugs: Nonary/Vibepollo #538 (duplicate pad through GameInput; fix in
    Nonary/libvirtualgamepad PR #3, now merged upstream) and #480. Vibepollo fork:
    `jlobue10/Vibepollo` branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow).
-   **PyroWave (branch `feat/pyrowave`, 2026-10-05):** opt-in PyroWave decode ported from
+   **PyroWave (PR #35, released in fork.15):** opt-in PyroWave decode ported from
    joemossjr16/artemis-android-pyrowave; design, provenance and test plan in `docs/PYROWAVE.md`.
-   Protocol lives in the common-c submodule branch `pyrowave`. Untested on device until CI builds.
+   Protocol lives in the common-c submodule branch `pyrowave`. First device test pending.
    **NEXT PROJECT (user decision 2026-10-05): a genuine Steam Controller 2026 profile** in the
    Vibepollo VHF driver (fork `jlobue10/libvirtualgamepad`, clone `~/GitHub/libvirtualgamepad`,
    upstream HEAD 9edbce1) plus the Vibepollo mapping, developed and test-signed on the user's
