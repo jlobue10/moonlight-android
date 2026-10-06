@@ -66,6 +66,9 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    2.0.0 DualSense bugs: Nonary/Vibepollo #538 (duplicate pad through GameInput; fix in
    Nonary/libvirtualgamepad PR #3, now merged upstream) and #480. Vibepollo fork:
    `jlobue10/Vibepollo` branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow).
+   **PyroWave (branch `feat/pyrowave`, 2026-10-05):** opt-in PyroWave decode ported from
+   joemossjr16/artemis-android-pyrowave; design, provenance and test plan in `docs/PYROWAVE.md`.
+   Protocol lives in the common-c submodule branch `pyrowave`. Untested on device until CI builds.
    **NEXT PROJECT (user decision 2026-10-05): a genuine Steam Controller 2026 profile** in the
    Vibepollo VHF driver (fork `jlobue10/libvirtualgamepad`, clone `~/GitHub/libvirtualgamepad`,
    upstream HEAD 9edbce1) plus the Vibepollo mapping, developed and test-signed on the user's

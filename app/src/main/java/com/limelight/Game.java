@@ -84,6 +84,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.PersistableBundle;
+import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.util.Rational;
@@ -725,6 +726,34 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             }
         }
 
+        // PyroWave is opt-in and SDR only. The host selects it only if it offers PyroWave
+        // too; otherwise the stream uses one of the codecs above.
+        boolean offerPyroWave = prefConfig.enablePyroWave && !willStreamHdr && decoderRenderer.isPyroWaveSupported();
+        if (offerPyroWave) {
+            supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_PYROWAVE;
+            if (prefConfig.enablePyroWave444) {
+                // Full-resolution chroma; hosts without PyroWave 4:4:4 fall back to 4:2:0.
+                supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_PYROWAVE_444;
+            }
+        }
+        else if (prefConfig.enablePyroWave && willStreamHdr) {
+            Toast.makeText(this, "PyroWave is enabled but not offered: it's SDR-only and this stream is HDR", Toast.LENGTH_LONG).show();
+        }
+        else if (prefConfig.enablePyroWave) {
+            Toast.makeText(this, "This device cannot decode PyroWave (needs a 64-bit Vulkan 1.3 GPU)", Toast.LENGTH_LONG).show();
+        }
+        decoderRenderer.setPyroWaveOffered(offerPyroWave);
+
+        if (offerPyroWave && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            // PyroWave decodes on the GPU every frame, so ask for a stable sustained clock
+            // instead of the boost-then-throttle behaviour OEM governors use for short bursts.
+            PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (powerManager != null && powerManager.isSustainedPerformanceModeSupported()) {
+                getWindow().setSustainedPerformanceMode(true);
+                LimeLog.info("Sustained performance mode enabled for PyroWave");
+            }
+        }
+
         int gamepadMask = ControllerHandler.getAttachedControllerMask(this);
         if (!prefConfig.multiController) {
             // Always set gamepad 1 present for when multi-controller is
@@ -798,6 +827,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 .setApp(app)
                 .setEnableUltraLowLatency(prefConfig.enableUltraLowLatency)
                 .setBitrate(bitrateKbps)
+                .setPyroWaveQuality(prefConfig.pyroWaveBppX100, prefConfig.pyroWaveMaxMbps)
                 .setEnableSops(prefConfig.enableSops)
                 .enableLocalAudioPlayback(prefConfig.playHostAudio)
                 .setMaxPacketSize(1392)
@@ -806,8 +836,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 .setAttachedGamepadMask(gamepadMask)
                 .setClientRefreshRateX100((int)(displayRefreshRate * 100))
                 .setAudioConfiguration(prefConfig.audioConfiguration)
-                .setColorSpace(decoderRenderer.getPreferredColorSpace())
-                .setColorRange(decoderRenderer.getPreferredColorRange())
+                // The PyroWave renderer converts limited-range BT.709, so request that
+                // whenever PyroWave may be negotiated.
+                .setColorSpace(offerPyroWave ? MoonBridge.COLORSPACE_REC_709 : decoderRenderer.getPreferredColorSpace())
+                .setColorRange(offerPyroWave ? MoonBridge.COLOR_RANGE_LIMITED : decoderRenderer.getPreferredColorRange())
                 .setPersistGamepadsAfterDisconnect(!prefConfig.multiController)
                 .build();
 
