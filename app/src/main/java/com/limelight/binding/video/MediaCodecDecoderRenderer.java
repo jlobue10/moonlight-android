@@ -75,6 +75,13 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private int initialWidth, initialHeight;
     private int videoFormat;
     private Surface renderTarget;
+
+    // Set when the stream negotiated PyroWave, which is decoded with Vulkan instead of MediaCodec.
+    private PyroWaveDecoderRenderer pyroWaveRenderer;
+    // Sub-millisecond PyroWave decode time carried between frames (stats are in whole ms).
+    private long pyroWaveDecodeUsRemainder;
+    // Set before the connection starts when the client offers PyroWave.
+    private boolean pyroWaveOffered;
     private volatile boolean stopping;
     private CrashListener crashListener;
     private boolean reportedCrash;
@@ -447,6 +454,14 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         return false;
     }
 
+    public boolean isPyroWaveSupported() {
+        return PyroWaveDecoderRenderer.isAvailable();
+    }
+
+    public void setPyroWaveOffered(boolean offered) {
+        pyroWaveOffered = offered;
+    }
+
     public boolean isAv1Supported() {
         return av1Decoder != null;
     }
@@ -773,6 +788,19 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         this.initialHeight = height;
         this.videoFormat = format;
         this.refreshRate = redrawRate;
+
+        if ((format & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
+            pyroWaveRenderer = new PyroWaveDecoderRenderer();
+            boolean chroma444 = (format & MoonBridge.VIDEO_FORMAT_PYROWAVE_444) != 0;
+            if (!pyroWaveRenderer.setup(renderTarget, width, height, redrawRate, chroma444)) {
+                LimeLog.severe("PyroWave renderer initialization failed");
+                pyroWaveRenderer.cleanup();
+                pyroWaveRenderer = null;
+                return -1;
+            }
+            LimeLog.info("Using PyroWave Vulkan renderer for " + width + "x" + height + (chroma444 ? " 4:4:4" : " 4:2:0"));
+            return 0;
+        }
 
         return initializeDecoder(false);
     }
@@ -1284,6 +1312,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     @Override
     public void start() {
+        if (pyroWaveRenderer != null) {
+            // Frames are decoded and presented on the submitting thread.
+            return;
+        }
         startRendererThread();
         startChoreographerThread();
     }
@@ -1324,6 +1356,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         // May be called already, but we'll call it now to be safe
         prepareForStop();
 
+        if (pyroWaveRenderer != null) {
+            return;
+        }
+
         // Wait for the Choreographer looper to shut down (if we have one)
         if (choreographerHandlerThread != null) {
             try {
@@ -1353,11 +1389,20 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     @Override
     public void cleanup() {
+        if (pyroWaveRenderer != null) {
+            pyroWaveRenderer.cleanup();
+            pyroWaveRenderer = null;
+            return;
+        }
         videoDecoder.release();
     }
 
     @Override
     public void setHdrMode(boolean enabled, byte[] hdrMetadata) {
+        if (pyroWaveRenderer != null) {
+            // PyroWave streams are SDR only.
+            return;
+        }
         // HDR metadata is only supported in Android 7.0 and later, so don't bother
         // restarting the codec on anything earlier than that.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -1491,6 +1536,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                     decoder = hevcDecoder.getName();
                 } else if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_AV1) != 0) {
                     decoder = av1Decoder.getName();
+                } else if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
+                    decoder = (videoFormat & MoonBridge.VIDEO_FORMAT_PYROWAVE_444) != 0 ?
+                            "PyroWave 4:4:4 (Vulkan)" : "PyroWave (Vulkan)";
                 } else {
                     decoder = "(unknown)";
                 }
@@ -1597,6 +1645,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             lastWindowVideoStats.copy(activeWindowVideoStats);
             activeWindowVideoStats.clear();
             activeWindowVideoStats.measurementStartTimestamp = SystemClock.uptimeMillis();
+        }
+
+        if (pyroWaveRenderer != null) {
+            return submitPyroWaveFrame(decodeUnitData, decodeUnitLength, frameHostProcessingLatency,
+                    receiveTimeUs, enqueueTimeUs);
         }
 
         boolean csdSubmittedForThisFrame = false;
@@ -1914,6 +1967,43 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         return queueNextInputBuffer(0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
     }
 
+    private int submitPyroWaveFrame(byte[] decodeUnitData, int decodeUnitLength, char frameHostProcessingLatency,
+                                    long receiveTimeUs, long enqueueTimeUs) {
+        if (frameHostProcessingLatency != 0) {
+            if (activeWindowVideoStats.minHostProcessingLatency != 0) {
+                activeWindowVideoStats.minHostProcessingLatency = (char) Math.min(activeWindowVideoStats.minHostProcessingLatency, frameHostProcessingLatency);
+            } else {
+                activeWindowVideoStats.minHostProcessingLatency = frameHostProcessingLatency;
+            }
+            activeWindowVideoStats.framesWithHostProcessingLatency += 1;
+        }
+        activeWindowVideoStats.maxHostProcessingLatency = (char) Math.max(activeWindowVideoStats.maxHostProcessingLatency, frameHostProcessingLatency);
+        activeWindowVideoStats.totalHostProcessingLatency += frameHostProcessingLatency;
+        activeWindowVideoStats.totalFramesReceived++;
+        activeWindowVideoStats.totalFrames++;
+
+        long submitStartUs = SystemClock.elapsedRealtimeNanos() / 1000;
+        int result = pyroWaveRenderer.submitFrame(decodeUnitData, decodeUnitLength);
+        long submitEndUs = SystemClock.elapsedRealtimeNanos() / 1000;
+        if (result == MoonBridge.DR_OK) {
+            // Report the GPU decode time (of the last completed frame) as decoder time.
+            // Wall time would include waiting for the display, which is not decoding.
+            long decodeUs = pyroWaveRenderer.getLastGpuDecodeUs();
+            if (decodeUs <= 0) {
+                decodeUs = submitEndUs - submitStartUs;
+            }
+            decodeUs += pyroWaveDecodeUsRemainder;
+            long decodeMs = decodeUs / 1000;
+            pyroWaveDecodeUsRemainder = decodeUs % 1000;
+            activeWindowVideoStats.decoderTimeMs += decodeMs;
+            if (!FRAME_RENDER_TIME_ONLY) {
+                activeWindowVideoStats.totalTimeMs += (enqueueTimeUs - receiveTimeUs) / 1000 + decodeMs;
+            }
+            activeWindowVideoStats.totalFramesRendered++;
+        }
+        return result;
+    }
+
     @Override
     public int getCapabilities() {
         int capabilities = 0;
@@ -1932,8 +2022,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             capabilities |= MoonBridge.CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
         }
 
-        // Enable direct submit on supported hardware
-        if (directSubmit) {
+        // Enable direct submit on supported hardware. Not when PyroWave may be negotiated:
+        // direct submit decodes on the network receive thread, and at PyroWave's packet
+        // rates that thread must do nothing but drain the socket.
+        if (directSubmit && !pyroWaveOffered) {
             capabilities |= MoonBridge.CAPABILITY_DIRECT_SUBMIT;
         }
 

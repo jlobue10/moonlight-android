@@ -150,6 +150,73 @@ android {
         }
     }
 
+
+// PyroWave codec library: built with CMake from the vendored source
+// (src/main/jni/pyrowave-renderer/pyrowave, the host's exact revision) for the
+// 64-bit ABIs before ndk-build runs; pyrowave-renderer/Android.mk picks it up
+// as a prebuilt. Only cmake (system or SDK) and the NDK are needed.
+def pyroWaveDir = file("src/main/jni/pyrowave-renderer")
+def pyroWaveAbis = ["arm64-v8a", "x86_64"]
+def findCMake = {
+    def onPath = System.getenv("PATH")?.split(File.pathSeparator)
+            ?.collect { new File(it, "cmake") }?.find { it.canExecute() }
+    if (onPath != null) return onPath.absolutePath
+    def sdkDir = android.sdkComponents.sdkDirectory.get().asFile
+    def sdkCMake = new File(sdkDir, "cmake").listFiles()
+            ?.collect { new File(it, "bin/cmake") }?.find { it.canExecute() }
+    if (sdkCMake != null) return sdkCMake.absolutePath
+    throw new GradleException("cmake not found: install cmake or the SDK 'cmake' package")
+}
+def findNdk = {
+    def candidates = []
+    try { candidates << android.sdkComponents.ndkDirectory.get().asFile } catch (Exception ignored) { }
+    def env = System.getenv("ANDROID_NDK_HOME") ?: System.getenv("ANDROID_NDK_ROOT")
+    if (env) candidates << new File(env)
+    try {
+        def sdkDir = android.sdkComponents.sdkDirectory.get().asFile
+        candidates << new File(sdkDir, "ndk/${android.ndkVersion}")
+    } catch (Exception ignored) { }
+    def found = candidates.find { new File(it, "build/cmake/android.toolchain.cmake").isFile() }
+    if (found == null) throw new GradleException("NDK with build/cmake/android.toolchain.cmake not found (tried ${candidates})")
+    return found
+}
+def runCommand = { List<String> command, File workDir ->
+    def process = new ProcessBuilder(command).directory(workDir).inheritIO().start()
+    def code = process.waitFor()
+    if (code != 0) throw new GradleException("Command failed (${code}): ${command.join(' ')}")
+}
+tasks.register("buildPyroWave") {
+    description = "Builds libpyrowave-shared.so from the vendored PyroWave source"
+    inputs.dir(new File(pyroWaveDir, "pyrowave"))
+    inputs.file(new File(pyroWaveDir, "CMakeLists.txt"))
+    pyroWaveAbis.each { abi -> outputs.file(new File(pyroWaveDir, "prebuilt/${abi}/libpyrowave-shared.so")) }
+    doLast {
+        def cmake = findCMake()
+        def toolchain = new File(findNdk(), "build/cmake/android.toolchain.cmake")
+        pyroWaveAbis.each { abi ->
+            def buildDir = layout.buildDirectory.dir("pyrowave/${abi}").get().asFile
+            buildDir.mkdirs()
+            runCommand([cmake, "-S", pyroWaveDir.absolutePath, "-B", buildDir.absolutePath,
+                        "-DCMAKE_TOOLCHAIN_FILE=${toolchain.absolutePath}".toString(),
+                        "-DANDROID_ABI=${abi}".toString(), "-DANDROID_PLATFORM=android-26",
+                        "-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release"], buildDir)
+            runCommand([cmake, "--build", buildDir.absolutePath, "--target", "pyrowave-shared",
+                        "--parallel", "${Runtime.runtime.availableProcessors()}".toString()], buildDir)
+            def built = new File(buildDir, "libpyrowave-shared.so")
+            if (!built.isFile()) throw new GradleException("PyroWave build produced no library for ${abi}")
+            def out = new File(pyroWaveDir, "prebuilt/${abi}/libpyrowave-shared.so")
+            out.parentFile.mkdirs()
+            out.bytes = built.bytes
+        }
+    }
+}
+tasks.configureEach { t ->
+    if (t.name.startsWith("configureNdkBuild") || t.name.startsWith("buildNdkBuild") ||
+            t.name.startsWith("externalNativeBuild") || t.name == "preBuild") {
+        t.dependsOn("buildPyroWave")
+    }
+}
+
     externalNativeBuild {
         ndkBuild {
             path "src/main/jni/Android.mk"
