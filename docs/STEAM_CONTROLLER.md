@@ -122,3 +122,13 @@ announces them with `LI_CCAP_GRIP_SENSE` (0x200). Sunshine-family hosts receive 
 Controller profile forwards them to the virtual device, where Steam reads them as the real
 grip sensors ("gyro on grip"). Hosts without the extension fall back to the driver's own
 guess (grips held while motion is streaming).
+
+## Stick extent diagnostics (fork.20)
+
+Steam's "move the left stick in a full circle" calibration step stalls on the virtual
+controller (beta.104). The client passes the raw stick through (`s16 / 32767`, a 5 % centre
+dead zone, no rescaling), so to see what the controller itself delivers over BLE the driver
+now logs, every 10 s while a stick is away from centre, each stick's peak magnitude and how
+many of 16 angular sectors it visited: `Steam Controller BLE: stick extents: left max 0.98 in
+16/16 sectors, ...`. A peak well under 1.0 or missing sectors means the BLE report never
+reaches the rim and Steam's step cannot complete through any host.
