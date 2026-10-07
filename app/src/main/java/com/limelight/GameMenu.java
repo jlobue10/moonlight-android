@@ -322,6 +322,11 @@ public class GameMenu implements Game.GameMenuCallbacks {
         options.add(new MenuOption(getString(game.isZoomModeEnabled() ? R.string.game_menu_disable_zoom_mode : R.string.game_menu_enable_zoom_mode), true,
                 game::toggleZoomMode));
 
+        if (game.isXrStereoActive()) {
+            options.add(new MenuOption(getString(R.string.game_menu_recenter_xr_screen), true,
+                    game::recenterXrScreen));
+        }
+
         if (dialogScreenContext == game) {
             options.add(new MenuOption(getString(R.string.game_menu_rotate_screen), true,
                     game::rotateScreen));

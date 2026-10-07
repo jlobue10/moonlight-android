@@ -12,8 +12,8 @@ android {
         minSdk 24
         targetSdk 36
 
-        versionName "20.3.0-fork.16"
-        versionCode = 73
+        versionName "20.3.0-fork.17"
+        versionCode = 74
 
         // Generate native debug symbols to allow Google Play to symbolicate our native crashes
         ndk.debugSymbolLevel = 'FULL'
@@ -259,6 +259,9 @@ dependencies {
     // Only loaded at runtime on devices that declare android.software.xr.api.spatial.
     implementation 'androidx.xr.scenecore:scenecore:1.0.0-rc01'
     implementation 'androidx.xr.runtime:runtime:1.0.0-rc01'
+    // Head pose (RenderViewpoint) for "Recenter stereo screen"; scenecore already pulls it in
+    // transitively, the explicit entry only makes it visible at compile time.
+    implementation 'androidx.xr.arcore:arcore:1.0.0-rc01'
     // Compile-time stubs of the device-side com.android.extensions.xr library. REQUIRED with R8:
     // without them R8 desugars the Jetpack XR callbacks that implement platform interfaces without
     // their bridge methods and the process dies with AbstractMethodError

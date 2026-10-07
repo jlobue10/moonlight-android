@@ -138,6 +138,33 @@ their entity (SchoenMon to a root entity, Chromium under its panel).
 - The picture was upside down: the fork.10 vertical flip (taken from a CustomMesh project's note) is
   wrong for a Quad, which is sampled like a window surface. fork.13 removes the flip.
 
+## Moving and recentering the screen (fork.17)
+
+Until fork.16 the quad sat 2 m ahead of the activity space origin with no way to move it, and a
+headset recenter only moved it implicitly (the activity space moves, the child entity follows).
+fork.17 adds:
+
+- **Movable stereo screen** (setting, 3D section, default on): a `MovableComponent.createSystemMovable`
+  on the entity, sized to the quad, so the system draws its usual grab bar and the user drags the
+  screen around Full Space like any other window. Turn it off if the handle gets in the way.
+- **Recenter stereo screen** (in-game menu, shown only while the stereo screen is up): puts the quad
+  2 m in front of the viewer's current head pose, at head height, turned to face them (yaw only).
+  The head pose is ARCore's `RenderViewpoint.mono(session)` state, which reports in the perception
+  space; `PerceptionSpace.getScenePoseFromPerceptionPose(pose).getPoseInActivitySpace()` converts it
+  into the entity's space. If the viewpoint is unavailable the screen goes back to the default pose
+  (2 m ahead of the activity space origin). SceneCore 1.0.0-rc01 has no `SpatialUser`/`Head` API;
+  the ARCore render viewpoint is the only head pose exposed, hence the explicit `androidx.xr.arcore`
+  dependency.
+- **After a system recenter** (`ActivitySpace.addOriginChangedListener`) the same `recenter()` runs,
+  so a dragged-away screen comes back in front of the viewer rather than staying wherever it was
+  relative to the new origin.
+
+To verify on the headset: the grab bar appears under the stereo screen and dragging works; the
+menu item moves the screen in front of you after turning away; a headset recenter does the same;
+the stream log has `XR stereo: screen is movable` and `screen recentered at ... from head pose`
+(or `from default pose` plus a `head pose unavailable` warning, which means the viewpoint state
+was empty and the fallback was used).
+
 ## Known gaps and what to verify on the headset
 
 1. **Does the entity appear and in stereo?** Start a 3D render mode; the app should jump to Full

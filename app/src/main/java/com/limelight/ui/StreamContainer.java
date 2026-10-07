@@ -148,7 +148,7 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         xrPresenter.setLayout("mono".equals(prefConfig.xrStereoLayout) || canvasTest
                 ? XrStereoPresenter.LAYOUT_MONO : XrStereoPresenter.LAYOUT_SBS);
         xrPresenter.start(frameWidth, frameHeight, prefConfig.xrScreenWidthMeters, prefConfig.xrHideMainPanel,
-                new XrStereoPresenter.Listener() {
+                prefConfig.xrMovableScreen, new XrStereoPresenter.Listener() {
             @Override
             public void onStereoSurfaceReady(Surface surface, int widthPx, int heightPx) {
                 if (xrGlThread != null || xrTestPattern != null) {
@@ -186,6 +186,18 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
                 post(() -> fallBackToFlatStereo(reason));
             }
         });
+    }
+
+    /** True while the stream is shown on the Android XR stereo screen. */
+    public boolean isXrStereoActive() {
+        return xrStereo && xrPresenter != null && xrPresenter.isShowing();
+    }
+
+    /** Brings the Android XR stereo screen back in front of the viewer (no-op elsewhere). */
+    public void recenterXrScreen() {
+        if (isXrStereoActive()) {
+            xrPresenter.recenter();
+        }
     }
 
     /** The EGL thread could not start on the entity's surface: tear the XR path down and go flat. */
