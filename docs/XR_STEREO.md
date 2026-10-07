@@ -159,6 +159,15 @@ fork.17 adds:
   so a dragged-away screen comes back in front of the viewer rather than staying wherever it was
   relative to the new origin.
 
+fork.17 on the Galaxy XR: the grab bar worked, but every viewpoint was "not available" (the session
+is created with device tracking off; fork.18 configures `DeviceTrackingMode.LAST_KNOWN` and falls
+back from the mono viewpoint to the left/right eyes), pushing the screen away did not appear to
+move it (`createSystemMovable` scales in Z by default to keep the angular size; fork.18 passes
+`scaleInZ=false`), and a 3D PyroWave stream showed a flat grey quad: the `SurfaceTexture` the
+decoder renders into had its 1x1 default buffer size, which a Vulkan swapchain takes as its extent
+(MediaCodec sets its own); `Stereo3DRenderer` now calls `setDefaultBufferSize(stream size)` and the
+renderer refuses an extent under 16 px with a clear log line.
+
 To verify on the headset: the grab bar appears under the stereo screen and dragging works; the
 menu item moves the screen in front of you after turning away; a headset recenter does the same;
 the stream log has `XR stereo: screen is movable` and `screen recentered at ... from head pose`

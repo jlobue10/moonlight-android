@@ -650,6 +650,13 @@ namespace {
                 LOGW("Surface has no extent yet");
                 return false;
             }
+            if (caps.currentExtent.width < 16 || caps.currentExtent.height < 16) {
+                // A SurfaceTexture that was never given a default buffer size reports 1x1:
+                // the stream would be decoded into a single pixel. The Java side sizes it.
+                LOGE("Surface extent %ux%u is too small for a %ux%u stream (unsized SurfaceTexture?)",
+                     caps.currentExtent.width, caps.currentExtent.height, width, height);
+                return false;
+            }
 
             if (swapchainFormat == VK_FORMAT_UNDEFINED) {
                 uint32_t formatCount = 0;
@@ -738,6 +745,7 @@ namespace {
             }
             swapchain = newSwapchain;
             swapchainExtent = caps.currentExtent;
+            LOGI("Swapchain %ux%u for a %ux%u stream", swapchainExtent.width, swapchainExtent.height, width, height);
 
             uint32_t count = 0;
             vk.GetSwapchainImagesKHR(device, swapchain, &count, nullptr);
