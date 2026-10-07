@@ -25,11 +25,15 @@ public class MoonBridge {
     public static final int VIDEO_FORMAT_MASK_H264 = 0x000F;
     public static final int VIDEO_FORMAT_MASK_H265 = 0x0F00;
     public static final int VIDEO_FORMAT_MASK_AV1 = 0xF000;
-    public static final int VIDEO_FORMAT_PYROWAVE = 0x10000; // PyroWave intra-only wavelet codec (Moonlight extension)
-    public static final int VIDEO_FORMAT_PYROWAVE_444 = 0x20000; // PyroWave with full-resolution chroma
-    public static final int VIDEO_FORMAT_MASK_PYROWAVE = VIDEO_FORMAT_PYROWAVE | VIDEO_FORMAT_PYROWAVE_444;
-    public static final int VIDEO_FORMAT_MASK_10BIT = 0xAA00;
-    public static final int VIDEO_FORMAT_MASK_YUV444 = 0xCC04;
+    // PyroWave profiles (Moonlight extension, see Limelight.h): the 10-bit ones mean HDR10 on an
+    // HDR host display and 10-bit SDR otherwise, told apart by the host's HDR mode message.
+    public static final int VIDEO_FORMAT_PYROWAVE = 0x10000; // PyroWave 8-bit 4:2:0
+    public static final int VIDEO_FORMAT_PYROWAVE_444 = 0x20000; // PyroWave 8-bit 4:4:4
+    public static final int VIDEO_FORMAT_PYROWAVE_HDR10 = 0x40000; // PyroWave 10-bit 4:2:0
+    public static final int VIDEO_FORMAT_PYROWAVE_HDR10_444 = 0x80000; // PyroWave 10-bit 4:4:4
+    public static final int VIDEO_FORMAT_MASK_PYROWAVE = 0xF0000;
+    public static final int VIDEO_FORMAT_MASK_10BIT = 0xCAA00;
+    public static final int VIDEO_FORMAT_MASK_YUV444 = 0xACC04;
 
     public static final int BUFFER_TYPE_PICDATA = 0;
     public static final int BUFFER_TYPE_SPS = 1;

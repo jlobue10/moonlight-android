@@ -44,13 +44,28 @@ public class PyroWaveDecoderRenderer {
         return LIBRARY_LOADED && nativeIsAvailable();
     }
 
-    public boolean setup(Surface surface, int width, int height, int frameRate, boolean chroma444) {
+    /**
+     * @param tenBit a 10-bit profile was negotiated: the planes hold 10-bit code values and the
+     *               host's HDR mode message decides between HDR10 (BT.2020 PQ) and 10-bit SDR
+     */
+    public boolean setup(Surface surface, int width, int height, int frameRate, boolean chroma444, boolean tenBit) {
         cleanup();
         if (!LIBRARY_LOADED || surface == null || !surface.isValid()) {
             return false;
         }
-        handle = nativeCreate(surface, width, height, frameRate, chroma444);
+        handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
         return handle != 0;
+    }
+
+    /**
+     * The host's HDR mode for a 10-bit stream. On an HDR10-capable surface the picture is
+     * presented as PQ; elsewhere the renderer tone-maps it to SDR using peakNits (MaxCLL or
+     * the mastering display peak, 0 for the default).
+     */
+    public void setHdrMode(boolean enabled, float peakNits) {
+        if (handle != 0) {
+            nativeSetHdrMode(handle, enabled, peakNits);
+        }
     }
 
     public int submitFrame(byte[] data, int length) {
@@ -77,7 +92,8 @@ public class PyroWaveDecoderRenderer {
     }
 
     private static native boolean nativeIsAvailable();
-    private static native long nativeCreate(Surface surface, int width, int height, int frameRate, boolean chroma444);
+    private static native long nativeCreate(Surface surface, int width, int height, int frameRate, boolean chroma444, boolean tenBit);
+    private static native void nativeSetHdrMode(long handle, boolean enabled, float peakNits);
     private static native int nativeSubmitFrame(long handle, byte[] data, int length);
     private static native int nativeGetLastGpuDecodeUs(long handle);
     private static native void nativeDestroy(long handle);

@@ -5,6 +5,11 @@
 // stream's Surface, lends the device to PyroWave, decodes each frame into three
 // Y/Cb/Cr plane images and converts them to RGB in a fragment shader.
 //
+// 10-bit profiles (PyroWave HDR10 / 10-bit SDR, see Vibepollo's docs/pyrowave-protocol.md)
+// decode into R16_UNORM planes. The host's HDR mode message (setHdrMode) says whether the
+// samples are PQ-encoded BT.2020; the swapchain is created with the HDR10 (ST 2084) colour
+// space when the surface offers it, otherwise the shader tone-maps HDR to SDR.
+//
 // Vulkan is loaded at runtime (libvulkan.so is not available on every Android
 // version this app supports), so this library links neither libvulkan nor any
 // Vulkan prototypes.
@@ -23,6 +28,7 @@
 #include <jni.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
@@ -70,6 +76,7 @@ namespace {
 
 #define VK_GLOBAL_FUNCTIONS(X) \
     X(CreateInstance) \
+    X(EnumerateInstanceExtensionProperties) \
     X(EnumerateInstanceVersion)
 
 #define VK_INSTANCE_FUNCTIONS(X) \
@@ -132,6 +139,7 @@ namespace {
     X(CmdSetViewport) \
     X(CmdSetScissor) \
     X(CmdDraw) \
+    X(CmdPushConstants) \
     X(CreateFence) \
     X(DestroyFence) \
     X(WaitForFences) \
@@ -265,6 +273,33 @@ namespace {
         return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
     }
 
+    // Push constants of planar_csc.frag (std430: two vec2, three int, two float).
+    struct CscParams {
+        float yScale, yOffset;
+        float cScale, cOffset;
+        int32_t matrix;       // 0 = BT.709, 1 = BT.2020 NCL
+        int32_t contentPq;    // samples are PQ-encoded BT.2020 (HDR10)
+        int32_t outputPq;     // swapchain colour space is HDR10 ST 2084
+        float peakNits;
+        float sdrWhiteNits;
+    };
+    static_assert(sizeof(CscParams) == 36, "CscParams must match the shader's push constant block");
+
+    // SDR reference white on the PQ scale (ITU-R BT.2408).
+    constexpr float SDR_WHITE_NITS = 203.0f;
+    constexpr float DEFAULT_PEAK_NITS = 1000.0f;
+
+    const char *colorSpaceName(VkColorSpaceKHR space) {
+        switch (space) {
+            case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR: return "sRGB";
+            case VK_COLOR_SPACE_HDR10_ST2084_EXT: return "HDR10 ST2084";
+            case VK_COLOR_SPACE_BT2020_LINEAR_EXT: return "BT.2020 linear";
+            case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT: return "extended sRGB linear";
+            case VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT: return "Display P3";
+            default: return "other";
+        }
+    }
+
     struct Plane {
         VkImage image = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -279,15 +314,32 @@ namespace {
             destroy();
         }
 
-        bool create(ANativeWindow *nativeWindow, int streamWidth, int streamHeight, int frameRate, bool fullChroma) {
+        bool create(ANativeWindow *nativeWindow, int streamWidth, int streamHeight, int frameRate, bool fullChroma,
+                    bool tenBitPlanes) {
             window = nativeWindow;
             chroma444 = fullChroma;
+            tenBit = tenBitPlanes;
             frameRateHz = frameRate > 0 ? frameRate : 60;
             width = uint32_t(streamWidth);
             height = uint32_t(streamHeight);
             return apiVersionSupported() && createInstanceAndSurface() && createDevice() &&
                    createDecoder() && createPlanes() && createSwapchain() && createPipeline() &&
                    createFrameResources();
+        }
+
+        // The host's HDR mode: the 10-bit samples are PQ-encoded BT.2020 (true) or 10-bit SDR
+        // (false). Called from the control stream thread; present() reads it per frame.
+        void setHdrMode(bool enabled, float peakNits) {
+            if (!tenBit && enabled) {
+                LOGW("HDR mode requested on an 8-bit PyroWave stream; ignored");
+                return;
+            }
+            const bool was = contentPq.exchange(enabled);
+            peakNitsAtomic.store(peakNits > 0.0f ? peakNits : DEFAULT_PEAK_NITS);
+            if (was != enabled) {
+                LOGI("HDR mode %s (peak %.0f nits, swapchain %s)", enabled ? "on: BT.2020 PQ" : "off: 10-bit SDR",
+                     peakNitsAtomic.load(), outputPq ? "HDR10" : "SDR");
+            }
         }
 
         int submit(const uint8_t *data, size_t length) {
@@ -331,10 +383,35 @@ namespace {
             appInfo = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
             appInfo.pApplicationName = "Moonlight";
             appInfo.apiVersion = VK_API_VERSION_1_3;
+            instanceExtensions.assign(std::begin(INSTANCE_EXTENSIONS), std::end(INSTANCE_EXTENSIONS));
+            // Debug override for the HDR output path: `adb shell setprop debug.pyrowave.hdr_output sdr`
+            // (always tone-map to an SDR swapchain) or `hdr` (ask for an HDR10 swapchain even for
+            // 8-bit streams, which then get SDR-to-PQ). Default: HDR10 swapchain for 10-bit streams.
+            char hdrOutput[PROP_VALUE_MAX] = {};
+            if (__system_property_get("debug.pyrowave.hdr_output", hdrOutput) > 0) {
+                LOGI("PyroWave HDR output override: %s", hdrOutput);
+            }
+            wantHdrSwapchain = strcmp(hdrOutput, "sdr") != 0 && (tenBit || strcmp(hdrOutput, "hdr") == 0);
+            if (wantHdrSwapchain) {
+                // VK_EXT_swapchain_colorspace exposes the HDR10 colour space; without it only sRGB exists.
+                uint32_t extCount = 0;
+                vk.EnumerateInstanceExtensionProperties(nullptr, &extCount, nullptr);
+                std::vector<VkExtensionProperties> exts(extCount);
+                vk.EnumerateInstanceExtensionProperties(nullptr, &extCount, exts.data());
+                const bool colorSpaceExt = std::any_of(exts.begin(), exts.end(), [](const VkExtensionProperties &e) {
+                    return strcmp(e.extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME) == 0;
+                });
+                if (colorSpaceExt) {
+                    instanceExtensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+                } else {
+                    LOGI("No VK_EXT_swapchain_colorspace; HDR will be tone-mapped to SDR");
+                    wantHdrSwapchain = false;
+                }
+            }
             instanceInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
             instanceInfo.pApplicationInfo = &appInfo;
-            instanceInfo.enabledExtensionCount = uint32_t(std::size(INSTANCE_EXTENSIONS));
-            instanceInfo.ppEnabledExtensionNames = INSTANCE_EXTENSIONS;
+            instanceInfo.enabledExtensionCount = uint32_t(instanceExtensions.size());
+            instanceInfo.ppEnabledExtensionNames = instanceExtensions.data();
             if (!check(vk.CreateInstance(&instanceInfo, nullptr, &instance), "vkCreateInstance")) {
                 return false;
             }
@@ -503,7 +580,7 @@ namespace {
 
             VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             imageInfo.imageType = VK_IMAGE_TYPE_2D;
-            imageInfo.format = VK_FORMAT_R8_UNORM;
+            imageInfo.format = planeFormat();
             imageInfo.extent = {planeWidth, planeHeight, 1};
             imageInfo.mipLevels = 1;
             imageInfo.arrayLayers = 1;
@@ -544,9 +621,14 @@ namespace {
             VkImageViewCreateInfo viewInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             viewInfo.image = plane.image;
             viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            viewInfo.format = VK_FORMAT_R8_UNORM;
+            viewInfo.format = planeFormat();
             viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             return check(vk.CreateImageView(device, &viewInfo, nullptr, &plane.view), "vkCreateImageView");
+        }
+
+        // 10-bit code values need more than 8 bits per sample; PyroWave writes any UNORM format.
+        VkFormat planeFormat() const {
+            return tenBit ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
         }
 
         bool createPlanes() {
@@ -578,16 +660,41 @@ namespace {
                     LOGE("Surface reports no formats");
                     return false;
                 }
-                // UNORM, not sRGB: the shader already outputs gamma-encoded BT.709 values.
+                // UNORM, not sRGB: the shader already outputs display-encoded values (gamma BT.709
+                // for an sRGB swapchain, PQ BT.2020 for an HDR10 one). An HDR10 swapchain is only
+                // offered by surfaces that reach an HDR-capable display, so 10-bit streams try it
+                // first; otherwise the shader tone-maps.
                 auto chosen = formats[0];
-                for (const auto &format : formats) {
-                    if (format.format == VK_FORMAT_R8G8B8A8_UNORM || format.format == VK_FORMAT_B8G8R8A8_UNORM) {
-                        chosen = format;
-                        break;
+                bool found = false;
+                if (wantHdrSwapchain) {
+                    for (const auto &format : formats) {
+                        if (format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+                            (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                             format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 ||
+                             format.format == VK_FORMAT_R16G16B16A16_SFLOAT)) {
+                            chosen = format;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        LOGI("Surface offers no HDR10 swapchain; HDR will be tone-mapped to SDR");
+                    }
+                }
+                if (!found) {
+                    for (const auto &format : formats) {
+                        if (format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
+                            (format.format == VK_FORMAT_R8G8B8A8_UNORM || format.format == VK_FORMAT_B8G8R8A8_UNORM)) {
+                            chosen = format;
+                            break;
+                        }
                     }
                 }
                 swapchainFormat = chosen.format;
                 swapchainColorSpace = chosen.colorSpace;
+                outputPq = swapchainColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT;
+                LOGI("Swapchain format %d, colour space %s%s", int(swapchainFormat), colorSpaceName(swapchainColorSpace),
+                     outputPq ? " (HDR10 output)" : "");
 
                 uint32_t modeCount = 0;
                 vk.GetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &modeCount, nullptr);
@@ -779,9 +886,12 @@ namespace {
             if (!check(vk.CreateDescriptorSetLayout(device, &layoutInfo, nullptr, &setLayout), "vkCreateDescriptorSetLayout")) {
                 return false;
             }
+            VkPushConstantRange pushRange = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(CscParams)};
             VkPipelineLayoutCreateInfo plInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             plInfo.setLayoutCount = 1;
             plInfo.pSetLayouts = &setLayout;
+            plInfo.pushConstantRangeCount = 1;
+            plInfo.pPushConstantRanges = &pushRange;
             if (!check(vk.CreatePipelineLayout(device, &plInfo, nullptr, &pipelineLayout), "vkCreatePipelineLayout")) {
                 return false;
             }
@@ -1099,8 +1209,8 @@ namespace {
                 view.image = planes[i].image;
                 view.width = planes[i].width;
                 view.height = planes[i].height;
-                view.image_format = VK_FORMAT_R8_UNORM;
-                view.view_format = VK_FORMAT_R8_UNORM;
+                view.image_format = planeFormat();
+                view.view_format = planeFormat();
                 view.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
                 view.swizzle = VK_COMPONENT_SWIZZLE_IDENTITY;
                 view.layout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1174,6 +1284,8 @@ namespace {
             vk.CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             vk.CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
                                      &descriptorSet, 0, nullptr);
+            const CscParams csc = cscParams();
+            vk.CmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(csc), &csc);
             vk.CmdDraw(commandBuffer, 3, 1, 0, 0);
             vk.CmdEndRenderPass(commandBuffer);
             if (queryPool != VK_NULL_HANDLE) {
@@ -1223,6 +1335,27 @@ namespace {
                 return recreateSwapchain();
             }
             return presented == VK_SUBOPTIMAL_KHR || check(presented, "vkQueuePresentKHR");
+        }
+
+        // Range, matrix and transfer handling for this frame. The host always gets limited
+        // range from this client (Game.java requests it), at 8 or 10 bits; the Y'CbCr matrix is
+        // BT.2020 NCL for HDR10 and BT.709 otherwise (the host's SDR matrix for 10-bit SDR).
+        CscParams cscParams() const {
+            CscParams c = {};
+            const float maxCode = tenBit ? 1023.0f : 255.0f;
+            const float lumaRange = tenBit ? 876.0f : 219.0f;
+            const float chromaRange = tenBit ? 896.0f : 224.0f;
+            c.yScale = maxCode / lumaRange;
+            c.yOffset = (tenBit ? 64.0f : 16.0f) / maxCode;
+            c.cScale = maxCode / chromaRange;
+            c.cOffset = (tenBit ? 512.0f : 128.0f) / maxCode;
+            const bool pq = tenBit && contentPq.load();
+            c.matrix = pq ? 1 : 0;
+            c.contentPq = pq ? 1 : 0;
+            c.outputPq = outputPq ? 1 : 0;
+            c.peakNits = peakNitsAtomic.load();
+            c.sdrWhiteNits = SDR_WHITE_NITS;
+            return c;
         }
 
         void destroy() {
@@ -1275,9 +1408,15 @@ namespace {
         uint32_t width = 0;
         uint32_t height = 0;
         bool chroma444 = false;
+        bool tenBit = false;
+        bool wantHdrSwapchain = false;
+        bool outputPq = false;
+        std::atomic<bool> contentPq {false};
+        std::atomic<float> peakNitsAtomic {DEFAULT_PEAK_NITS};
 
         // Kept alive for PyroWave, which reads the create infos after device creation.
         VkApplicationInfo appInfo = {};
+        std::vector<const char *> instanceExtensions;
         VkInstanceCreateInfo instanceInfo = {};
         float queuePriority = 1.0f;
         VkDeviceQueueCreateInfo queueInfo = {};
@@ -1455,7 +1594,7 @@ Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeIsAvailable(JNIEn
 JNIEXPORT jlong JNICALL
 Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeCreate(JNIEnv *env, jclass, jobject surface,
                                                                       jint width, jint height, jint frameRate,
-                                                                      jboolean chroma444) {
+                                                                      jboolean chroma444, jboolean tenBit) {
     if (surface == nullptr || width <= 0 || height <= 0 || (!chroma444 && ((width & 1) || (height & 1)))) {
         LOGE("PyroWave needs a surface and positive dimensions, even for 4:2:0 (%dx%d)", width, height);
         return 0;
@@ -1465,11 +1604,20 @@ Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeCreate(JNIEnv *en
         return 0;
     }
     auto renderer = std::make_unique<Renderer>();
-    if (!renderer->create(window, width, height, frameRate, chroma444)) {
+    if (!renderer->create(window, width, height, frameRate, chroma444, tenBit)) {
         return 0;  // The renderer releases the window.
     }
-    LOGI("PyroWave renderer ready for %dx%d %s", width, height, chroma444 ? "4:4:4" : "4:2:0");
+    LOGI("PyroWave renderer ready for %dx%d %s %d-bit", width, height, chroma444 ? "4:4:4" : "4:2:0", tenBit ? 10 : 8);
     return reinterpret_cast<jlong>(renderer.release());
+}
+
+JNIEXPORT void JNICALL
+Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeSetHdrMode(JNIEnv *, jclass, jlong handle,
+                                                                          jboolean enabled, jfloat peakNits) {
+    auto *renderer = reinterpret_cast<Renderer *>(handle);
+    if (renderer != nullptr) {
+        renderer->setHdrMode(enabled, peakNits);
+    }
 }
 
 JNIEXPORT jint JNICALL
