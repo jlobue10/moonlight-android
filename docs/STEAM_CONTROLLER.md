@@ -111,3 +111,14 @@ original; these were used as documentation.
   `HAPTICS_SELECT`-only reports? Steam's stop path?); narrowing test = compare `vhf_ds4` and `ds4`.
 - Whether the IMU setting takes effect over BLE (otherwise motion stays at zero; turn the motion
   setting off).
+
+## Grip sense (fork.19)
+
+The controller's capacitive grip sensors arrive as bits 28 (right) and 29 (left) of the
+button word. Moonlight has no event for "held", so this fork carries them as two extension
+button flags, `LEFT_GRIP_TOUCH_FLAG` 0x400000 and `RIGHT_GRIP_TOUCH_FLAG` 0x800000, and
+announces them with `LI_CCAP_GRIP_SENSE` (0x200). Sunshine-family hosts receive the upper
+16 flag bits (`buttonFlags2`) and ignore ones they do not know; Vibepollo with the Steam
+Controller profile forwards them to the virtual device, where Steam reads them as the real
+grip sensors ("gyro on grip"). Hosts without the extension fall back to the driver's own
+guess (grips held while motion is streaming).

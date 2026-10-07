@@ -24,4 +24,8 @@ public class ControllerPacket {
     public static final int PADDLE4_FLAG  = 0x080000;
     public static final int TOUCHPAD_FLAG = 0x100000; // Touchpad buttons on Sony controllers
     public static final int MISC_FLAG     = 0x200000; // Share/Mic/Capture/Mute buttons on various controllers
+    // Moonlight extension (Vibepollo hosts): capacitive grip sensors of the Steam Controller (2026),
+    // sent only with LI_CCAP_GRIP_SENSE
+    public static final int LEFT_GRIP_TOUCH_FLAG  = 0x400000;
+    public static final int RIGHT_GRIP_TOUCH_FLAG = 0x800000;
 }

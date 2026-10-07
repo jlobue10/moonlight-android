@@ -93,7 +93,8 @@ public class SteamControllerBle extends AbstractController {
             BTN_DPAD_LEFT = 12, BTN_DPAD_UP = 13, BTN_VIEW = 14, BTN_LSTICK_CLICK = 15,
             BTN_STEAM = 16, BTN_GRIP_L_TOP = 17, BTN_GRIP_L_BOTTOM = 18, BTN_LB = 19,
             BTN_RSTICK_TOUCH = 20, BTN_RPAD_TOUCH = 21, BTN_RPAD_CLICK = 22, BTN_RT_FULL = 23,
-            BTN_LSTICK_TOUCH = 24, BTN_LPAD_TOUCH = 25, BTN_LPAD_CLICK = 26, BTN_LT_FULL = 27;
+            BTN_LSTICK_TOUCH = 24, BTN_LPAD_TOUCH = 25, BTN_LPAD_CLICK = 26, BTN_LT_FULL = 27,
+            BTN_GRIP_R_TOUCH = 28, BTN_GRIP_L_TOUCH = 29;   // capacitive grip sensors
 
     private static final int SUPPORTED_BUTTONS =
             ControllerPacket.A_FLAG | ControllerPacket.B_FLAG | ControllerPacket.X_FLAG | ControllerPacket.Y_FLAG |
@@ -101,7 +102,8 @@ public class SteamControllerBle extends AbstractController {
             ControllerPacket.LB_FLAG | ControllerPacket.RB_FLAG | ControllerPacket.PLAY_FLAG | ControllerPacket.BACK_FLAG |
             ControllerPacket.LS_CLK_FLAG | ControllerPacket.RS_CLK_FLAG | ControllerPacket.SPECIAL_BUTTON_FLAG |
             ControllerPacket.PADDLE1_FLAG | ControllerPacket.PADDLE2_FLAG | ControllerPacket.PADDLE3_FLAG | ControllerPacket.PADDLE4_FLAG |
-            ControllerPacket.TOUCHPAD_FLAG | ControllerPacket.MISC_FLAG;
+            ControllerPacket.TOUCHPAD_FLAG | ControllerPacket.MISC_FLAG |
+            ControllerPacket.LEFT_GRIP_TOUCH_FLAG | ControllerPacket.RIGHT_GRIP_TOUCH_FLAG;
 
     private final Context context;
     private final BluetoothDevice device;
@@ -161,7 +163,7 @@ public class SteamControllerBle extends AbstractController {
         this.type = MoonBridge.LI_CTYPE_STEAM;
         this.capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
                 | MoonBridge.LI_CCAP_TOUCHPAD | (splitPads ? 0 : MoonBridge.LI_CCAP_DUAL_TOUCHPAD)
-                | MoonBridge.LI_CCAP_BATTERY_STATE
+                | MoonBridge.LI_CCAP_BATTERY_STATE | MoonBridge.LI_CCAP_GRIP_SENSE
                 | (motionEnabled ? (MoonBridge.LI_CCAP_GYRO | MoonBridge.LI_CCAP_ACCEL) : 0));
         this.supportedButtonFlags = SUPPORTED_BUTTONS;
     }
@@ -607,6 +609,11 @@ public class SteamControllerBle extends AbstractController {
                 break;
         }
         if (bit(buttons, BTN_LPAD_CLICK) || bit(buttons, BTN_RPAD_CLICK)) flags |= ControllerPacket.TOUCHPAD_FLAG;
+        // Grip sense (held, not pressed): a Vibepollo host with the Steam Controller profile
+        // puts these back on the virtual device so Steam's "gyro on grip" works; other hosts
+        // ignore the two extension bits.
+        if (bit(buttons, BTN_GRIP_L_TOUCH)) flags |= ControllerPacket.LEFT_GRIP_TOUCH_FLAG;
+        if (bit(buttons, BTN_GRIP_R_TOUCH)) flags |= ControllerPacket.RIGHT_GRIP_TOUCH_FLAG;
         buttonFlags = flags;
 
         // Triggers: 0..32767 (SDL maps value*2-32768 onto the full axis)

@@ -126,6 +126,7 @@ public class MoonBridge {
     public static final short LI_CCAP_BATTERY_STATE   = 0x40;
     public static final short LI_CCAP_RGB_LED         = 0x80;
     public static final short LI_CCAP_DUAL_TOUCHPAD   = 0x100;
+    public static final short LI_CCAP_GRIP_SENSE      = 0x200; // Vibepollo extension: grip touch as button flags
 
     public static final byte LI_MOTION_TYPE_ACCEL = 0x01;
     public static final byte LI_MOTION_TYPE_GYRO  = 0x02;
