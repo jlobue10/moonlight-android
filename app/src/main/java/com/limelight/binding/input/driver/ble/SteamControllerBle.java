@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.os.Build;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.os.Looper;
 import android.os.SystemClock;
 
@@ -133,6 +134,10 @@ public class SteamControllerBle extends AbstractController {
     private volatile boolean stopped;
     private int reconnectAttempts;
     private boolean everConnected;
+    // Stick extent diagnostics (stream log, every 10 s while a stick is away from centre)
+    private float stickLogLeftMax, stickLogRightMax;
+    private int stickLogLeftSectors, stickLogRightSectors;
+    private long stickLogDueMs;
     private boolean leftPadTouched, rightPadTouched;
     // Rumble state; only touched on the handler thread.
     private float rumbleLow, rumbleHigh;
@@ -626,6 +631,7 @@ public class SteamControllerBle extends AbstractController {
         leftStickY = -s16(p, 11) / 32767f;
         rightStickX = s16(p, 13) / 32767f;
         rightStickY = -s16(p, 15) / 32767f;
+        trackStickExtents();
         reportInput();
 
         // Touchpads: normalised 0..1 with (0,0) top-left, as SDL does; pressure 0..1
@@ -685,6 +691,43 @@ public class SteamControllerBle extends AbstractController {
     }
 
     // ----- helpers -----
+
+    /**
+     * Diagnostics for Steam's "move the stick in a full circle" calibration step, which stalled on
+     * the virtual Steam Controller: logs each stick's peak magnitude and how many of 16 angular
+     * sectors it visited, so the raw BLE range can be compared with what the host device reports.
+     */
+    private void trackStickExtents() {
+        float lm = (float) Math.hypot(leftStickX, leftStickY);
+        float rm = (float) Math.hypot(rightStickX, rightStickY);
+        if (lm > 0.5f) {
+            stickLogLeftMax = Math.max(stickLogLeftMax, lm);
+            stickLogLeftSectors |= 1 << sector(leftStickX, leftStickY);
+        }
+        if (rm > 0.5f) {
+            stickLogRightMax = Math.max(stickLogRightMax, rm);
+            stickLogRightSectors |= 1 << sector(rightStickX, rightStickY);
+        }
+        if ((stickLogLeftSectors | stickLogRightSectors) == 0) {
+            return;
+        }
+        long now = SystemClock.uptimeMillis();
+        if (now < stickLogDueMs) {
+            return;
+        }
+        LimeLog.info(String.format(Locale.ROOT,
+                "Steam Controller BLE: stick extents: left max %.3f in %d/16 sectors, right max %.3f in %d/16 sectors",
+                stickLogLeftMax, Integer.bitCount(stickLogLeftSectors), stickLogRightMax, Integer.bitCount(stickLogRightSectors)));
+        stickLogDueMs = now + 10_000;
+        stickLogLeftMax = stickLogRightMax = 0;
+        stickLogLeftSectors = stickLogRightSectors = 0;
+    }
+
+    private static int sector(float x, float y) {
+        double a = Math.atan2(y, x);   // -pi..pi
+        int sector = (int) Math.floor((a + Math.PI) / (2 * Math.PI) * 16);
+        return Math.min(15, Math.max(0, sector));
+    }
 
     private static boolean bit(int field, int index) {
         return (field & (1 << index)) != 0;
