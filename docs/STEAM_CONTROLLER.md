@@ -132,3 +132,26 @@ now logs, every 10 s while a stick is away from centre, each stick's peak magnit
 many of 16 angular sectors it visited: `Steam Controller BLE: stick extents: left max 0.98 in
 16/16 sectors, ...`. A peak well under 1.0 or missing sectors means the BLE report never
 reaches the rim and Steam's step cannot complete through any host.
+
+## Stick rim calibration (fork.21)
+
+The fork.20 diagnostics settled where the stall is. Steam's whole controller test passes
+against the virtual device alone (`probe_sc26_usb --hold` drives every step, 2026-10-07), the
+host forwards the four stick values untouched, and the client only applies a centre dead
+zone, so the only thing that differs over the stream is the stick data the controller sends
+over BLE. On hardware it peaked at a magnitude of 1.18 across all 16 sectors: the BLE stick is
+not shaped like the wired report (it overshoots the unit circle on diagonals, so it cannot
+reach the rim evenly in every direction), and Steam's "full circle" step waits for a rim it
+never sees.
+
+`Scale sticks to the rim` (on by default, under the Steam Controller settings) divides each
+axis by the largest deflection seen on it (floor 0.75, so a full push reaches the rim in every
+direction after the first circle), clamps the result to the unit circle, and remembers the
+learned extents per controller address. The 10 s diagnostics line now reports the raw values
+per axis and per compass point, plus the learned extents, so the BLE stick's real shape is
+visible in the stream log:
+
+```
+Steam Controller BLE: stick extents (raw): left max 1.167 (|x| 0.83 |y| 0.84) in 16/16 sectors,
+  peaks W 0.83 NW 1.17 N 0.84 ..., right ...; rim calibration on, extents left 0.830/0.840 right ...
+```

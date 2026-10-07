@@ -39,18 +39,20 @@ public final class SteamControllerBleManager {
     private final boolean splitPads;
     private final int gripsMode;
     private final int rumbleHoldMs;
+    private final boolean stickRim;
     private final Map<String, SteamControllerBle> drivers = new HashMap<>();
     private int nextDeviceId = BASE_DEVICE_ID;
     private BroadcastReceiver aclReceiver;
 
     public SteamControllerBleManager(Context context, UsbDriverListener listener, boolean motionEnabled,
-                                     boolean splitPads, int gripsMode, int rumbleHoldMs) {
+                                     boolean splitPads, int gripsMode, int rumbleHoldMs, boolean stickRim) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.motionEnabled = motionEnabled;
         this.splitPads = splitPads;
         this.gripsMode = gripsMode;
         this.rumbleHoldMs = rumbleHoldMs;
+        this.stickRim = stickRim;
     }
 
     /** Maps the steam_controller_rumble_hold preference value (milliseconds, "0" = unlimited). */
@@ -156,7 +158,7 @@ public final class SteamControllerBleManager {
             }
             return;
         }
-        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs);
+        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, stickRim);
         drivers.put(address, driver);
         if (!driver.start()) {
             drivers.remove(address);

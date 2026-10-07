@@ -9,6 +9,7 @@ import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothProfile;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Handler;
 import android.os.SystemClock;
@@ -121,6 +122,7 @@ public class SteamControllerBle extends AbstractController {
     public static final int GRIPS_OFF = 2;
     private final int gripsMode;
     private final int rumbleHoldMs;
+    private final boolean stickRim;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private BluetoothGatt gatt;
@@ -134,10 +136,23 @@ public class SteamControllerBle extends AbstractController {
     private volatile boolean stopped;
     private int reconnectAttempts;
     private boolean everConnected;
-    // Stick extent diagnostics (stream log, every 10 s while a stick is away from centre)
+    // Stick extent diagnostics (stream log, every 10 s while a stick is away from centre).
+    // All of it is measured on the raw BLE values, before the rim calibration below.
     private float stickLogLeftMax, stickLogRightMax;
+    private float stickLogLeftAxisX, stickLogLeftAxisY, stickLogRightAxisX, stickLogRightAxisY;
+    private final float[] stickLogLeftSectorPeak = new float[16], stickLogRightSectorPeak = new float[16];
     private int stickLogLeftSectors, stickLogRightSectors;
     private long stickLogDueMs;
+    // Stick rim calibration: the BLE report's stick is not shaped like the wired report (its
+    // magnitude passed 1.18 on diagonals on hardware, 2026-10-07, while Steam's "full circle"
+    // calibration step never completed). Each axis is divided by the largest deflection seen
+    // on it, so a full push reaches the rim in every direction, and the result is clamped to
+    // the unit circle. Extents start at a floor and only grow, and persist per controller.
+    private static final float STICK_EXTENT_FLOOR = 0.75f;
+    private static final String STICK_EXTENT_PREFS = "steam_controller_ble_sticks";
+    private float leftExtentX = STICK_EXTENT_FLOOR, leftExtentY = STICK_EXTENT_FLOOR;
+    private float rightExtentX = STICK_EXTENT_FLOOR, rightExtentY = STICK_EXTENT_FLOOR;
+    private boolean extentsDirty;
     private boolean leftPadTouched, rightPadTouched;
     // Rumble state; only touched on the handler thread.
     private float rumbleLow, rumbleHigh;
@@ -157,7 +172,7 @@ public class SteamControllerBle extends AbstractController {
 
     public SteamControllerBle(int deviceId, UsbDriverListener listener, Context context,
                               BluetoothDevice device, boolean motionEnabled, boolean splitPads, int gripsMode,
-                              int rumbleHoldMs) {
+                              int rumbleHoldMs, boolean stickRim) {
         super(deviceId, listener, VENDOR_ID_VALVE, PRODUCT_ID_IBEX_BLE);
         this.context = context.getApplicationContext();
         this.device = device;
@@ -165,6 +180,8 @@ public class SteamControllerBle extends AbstractController {
         this.splitPads = splitPads;
         this.gripsMode = gripsMode;
         this.rumbleHoldMs = Math.max(0, rumbleHoldMs);
+        this.stickRim = stickRim;
+        loadStickExtents();
         this.type = MoonBridge.LI_CTYPE_STEAM;
         this.capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
                 | MoonBridge.LI_CCAP_TOUCHPAD | (splitPads ? 0 : MoonBridge.LI_CCAP_DUAL_TOUCHPAD)
@@ -207,6 +224,7 @@ public class SteamControllerBle extends AbstractController {
     public void stop() {
         stopped = true;
         handler.removeCallbacksAndMessages(null);
+        saveStickExtents();
         BluetoothGatt g = gatt;
         gatt = null;
         if (g != null) {
@@ -632,6 +650,9 @@ public class SteamControllerBle extends AbstractController {
         rightStickX = s16(p, 13) / 32767f;
         rightStickY = -s16(p, 15) / 32767f;
         trackStickExtents();
+        if (stickRim) {
+            calibrateSticks();
+        }
         reportInput();
 
         // Touchpads: normalised 0..1 with (0,0) top-left, as SDL does; pressure 0..1
@@ -702,11 +723,19 @@ public class SteamControllerBle extends AbstractController {
         float rm = (float) Math.hypot(rightStickX, rightStickY);
         if (lm > 0.5f) {
             stickLogLeftMax = Math.max(stickLogLeftMax, lm);
-            stickLogLeftSectors |= 1 << sector(leftStickX, leftStickY);
+            stickLogLeftAxisX = Math.max(stickLogLeftAxisX, Math.abs(leftStickX));
+            stickLogLeftAxisY = Math.max(stickLogLeftAxisY, Math.abs(leftStickY));
+            int sec = sector(leftStickX, leftStickY);
+            stickLogLeftSectors |= 1 << sec;
+            stickLogLeftSectorPeak[sec] = Math.max(stickLogLeftSectorPeak[sec], lm);
         }
         if (rm > 0.5f) {
             stickLogRightMax = Math.max(stickLogRightMax, rm);
-            stickLogRightSectors |= 1 << sector(rightStickX, rightStickY);
+            stickLogRightAxisX = Math.max(stickLogRightAxisX, Math.abs(rightStickX));
+            stickLogRightAxisY = Math.max(stickLogRightAxisY, Math.abs(rightStickY));
+            int sec = sector(rightStickX, rightStickY);
+            stickLogRightSectors |= 1 << sec;
+            stickLogRightSectorPeak[sec] = Math.max(stickLogRightSectorPeak[sec], rm);
         }
         if ((stickLogLeftSectors | stickLogRightSectors) == 0) {
             return;
@@ -715,12 +744,85 @@ public class SteamControllerBle extends AbstractController {
         if (now < stickLogDueMs) {
             return;
         }
-        LimeLog.info(String.format(Locale.ROOT,
-                "Steam Controller BLE: stick extents: left max %.3f in %d/16 sectors, right max %.3f in %d/16 sectors",
-                stickLogLeftMax, Integer.bitCount(stickLogLeftSectors), stickLogRightMax, Integer.bitCount(stickLogRightSectors)));
+        LimeLog.info("Steam Controller BLE: stick extents (raw): left "
+                + describeStick(stickLogLeftMax, stickLogLeftAxisX, stickLogLeftAxisY, stickLogLeftSectors, stickLogLeftSectorPeak)
+                + ", right "
+                + describeStick(stickLogRightMax, stickLogRightAxisX, stickLogRightAxisY, stickLogRightSectors, stickLogRightSectorPeak)
+                + String.format(Locale.ROOT, "; rim calibration %s, extents left %.3f/%.3f right %.3f/%.3f",
+                        stickRim ? "on" : "off", leftExtentX, leftExtentY, rightExtentX, rightExtentY));
         stickLogDueMs = now + 10_000;
         stickLogLeftMax = stickLogRightMax = 0;
+        stickLogLeftAxisX = stickLogLeftAxisY = stickLogRightAxisX = stickLogRightAxisY = 0;
         stickLogLeftSectors = stickLogRightSectors = 0;
+        java.util.Arrays.fill(stickLogLeftSectorPeak, 0);
+        java.util.Arrays.fill(stickLogRightSectorPeak, 0);
+    }
+
+    /** "max 1.167 (|x| 0.83 |y| 0.84) in 16/16 sectors, sector peaks E 0.83 NE 1.17 N 0.84 ..." */
+    private static String describeStick(float max, float axisX, float axisY, int sectors, float[] sectorPeak) {
+        StringBuilder sb = new StringBuilder(String.format(Locale.ROOT, "max %.3f (|x| %.2f |y| %.2f) in %d/16 sectors",
+                max, axisX, axisY, Integer.bitCount(sectors)));
+        if (sectors != 0) {
+            // Sectors are 22.5 deg wide starting at -180 deg (atan2 of the down-positive Y used here);
+            // report the eight compass points as the peak of the two sectors around each.
+            final String[] names = {"W", "NW", "N", "NE", "E", "SE", "S", "SW"};
+            sb.append(", peaks");
+            for (int i = 0; i < 8; i++) {
+                int a = (2 * i + 15) % 16, b = (2 * i) % 16;
+                float peak = Math.max(sectorPeak[a], sectorPeak[b]);
+                sb.append(' ').append(names[i]).append(' ').append(String.format(Locale.ROOT, "%.2f", peak));
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Rescales both sticks to the rim: see the field comment on STICK_EXTENT_FLOOR. */
+    private void calibrateSticks() {
+        float lx = Math.abs(leftStickX), ly = Math.abs(leftStickY);
+        float rx = Math.abs(rightStickX), ry = Math.abs(rightStickY);
+        if (lx > leftExtentX) { leftExtentX = lx; extentsDirty = true; }
+        if (ly > leftExtentY) { leftExtentY = ly; extentsDirty = true; }
+        if (rx > rightExtentX) { rightExtentX = rx; extentsDirty = true; }
+        if (ry > rightExtentY) { rightExtentY = ry; extentsDirty = true; }
+        float x = leftStickX / leftExtentX, y = leftStickY / leftExtentY;
+        float m = (float) Math.hypot(x, y);
+        if (m > 1f) { x /= m; y /= m; }
+        leftStickX = x; leftStickY = y;
+        x = rightStickX / rightExtentX; y = rightStickY / rightExtentY;
+        m = (float) Math.hypot(x, y);
+        if (m > 1f) { x /= m; y /= m; }
+        rightStickX = x; rightStickY = y;
+    }
+
+    private void loadStickExtents() {
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(STICK_EXTENT_PREFS, Context.MODE_PRIVATE);
+            String key = device.getAddress();
+            leftExtentX = Math.max(STICK_EXTENT_FLOOR, Math.min(1f, prefs.getFloat(key + ".lx", STICK_EXTENT_FLOOR)));
+            leftExtentY = Math.max(STICK_EXTENT_FLOOR, Math.min(1f, prefs.getFloat(key + ".ly", STICK_EXTENT_FLOOR)));
+            rightExtentX = Math.max(STICK_EXTENT_FLOOR, Math.min(1f, prefs.getFloat(key + ".rx", STICK_EXTENT_FLOOR)));
+            rightExtentY = Math.max(STICK_EXTENT_FLOOR, Math.min(1f, prefs.getFloat(key + ".ry", STICK_EXTENT_FLOOR)));
+        } catch (RuntimeException e) {
+            LimeLog.warning("Steam Controller BLE: stick extents not loaded: " + e);
+        }
+    }
+
+    private void saveStickExtents() {
+        if (!extentsDirty) {
+            return;
+        }
+        extentsDirty = false;
+        try {
+            String key = device.getAddress();
+            context.getSharedPreferences(STICK_EXTENT_PREFS, Context.MODE_PRIVATE).edit()
+                    .putFloat(key + ".lx", leftExtentX).putFloat(key + ".ly", leftExtentY)
+                    .putFloat(key + ".rx", rightExtentX).putFloat(key + ".ry", rightExtentY)
+                    .apply();
+            LimeLog.info(String.format(Locale.ROOT, "Steam Controller BLE: stick extents saved: left %.3f/%.3f right %.3f/%.3f",
+                    leftExtentX, leftExtentY, rightExtentX, rightExtentY));
+        } catch (RuntimeException e) {
+            LimeLog.warning("Steam Controller BLE: stick extents not saved: " + e);
+        }
     }
 
     private static int sector(float x, float y) {
