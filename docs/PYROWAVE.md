@@ -17,7 +17,17 @@ link in the same room. The host side is Vibepollo 2.0.0 and newer (never auto-se
   must stay on the same commit; the host advertises it as `a=x-ss-pyrowave.bitstream:186f0393`.
 - **Renderer:** `pyrowave_renderer.cpp` (from joemossjr16/artemis-android-pyrowave) loads
   libvulkan at runtime, probes for a Vulkan 1.3 device with the needed features, decodes with
-  the codec's compute path and presents through a swapchain created on the stream Surface.
+  the codec's compute path (fragment path on Adreno) and presents through a swapchain created
+  on the stream Surface.
+- **Frame framing:** Vibepollo does not use Pyrollo's `PYRW` container. It sends either
+  *record framing* (the PyroWave sequence header followed by block records and in-band padding
+  records, chosen when the client announces `x-ss-video[0].pyrowaveFeatures=1`, which this fork
+  does so the frame's coarsest level gets FEC parity) or *length-prefixed framing* (little-endian
+  packet count and lengths) for clients that announce nothing. The renderer detects the container
+  per frame and accepts all three; fork.15 only knew `PYRW` and dropped every frame ("Dropping
+  frame without a valid PYRW header" in logcat, audio but a black picture). The decoder is cleared
+  before every frame, as the host's protocol document prescribes, so a run of lost frames cannot
+  trip PyroWave's 3-bit sequence counter. See Vibepollo's `docs/pyrowave-protocol.md`.
 - **Java:** `PyroWaveDecoderRenderer` plus a branch in `MediaCodecDecoderRenderer.setup()`:
   when the negotiated format is PyroWave the MediaCodec path is bypassed and frames are decoded
   and presented synchronously on the submitting thread. Direct submit is disabled while PyroWave
@@ -31,7 +41,9 @@ In the XR and flat-stereo modes the decoder's render target is the `Surface` of 
 `Stereo3DRenderer`'s `SurfaceTexture` (handed over by `onStereo3DSurfaceReady`). The PyroWave
 renderer creates its Vulkan swapchain on that same Surface, so the GL stereo/depth pipeline and
 the SurfaceEntity path are untouched; the cost is one extra copy through the SurfaceTexture.
-Untested on the Galaxy XR until a build runs there.
+On the Galaxy XR (fork.15, 2026-10-07) the Vulkan device, swapchain (MAILBOX) and fragment decode
+path all came up on this Surface; the picture stayed black only because of the framing mismatch
+above.
 
 ## Testing
 1. Host: Vibepollo 2.0.0+, wired Ethernet on the host side; optionally run its bandwidth probe.

@@ -47,8 +47,16 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
    keystore must never be committed, `*.jks` is now in `.gitignore`). From here on releases install
    over each other; fork.1 and the official Artemis build still have to be uninstalled once.
-2. **v20.3.0-fork.15** (PR #35: opt-in PyroWave Vulkan decode, see `docs/PYROWAVE.md`; untested on
-   device at release time) is the current release; no PR is open. fork.14 = PRs #33 + #34. Everything is
+2. **v20.3.0-fork.15** (PR #35: opt-in PyroWave Vulkan decode, see `docs/PYROWAVE.md`) is the current
+   release. **PR #36 (`fix/pyrowave-framing`, fork.16) is open:** the first device test of fork.15
+   (2026-10-07) gave audio and a black picture because Vibepollo frames PyroWave as length-prefixed
+   packets or records, not the `PYRW` container the ported renderer expected; the renderer now parses
+   all three and the common-c submodule announces record framing. PR #36's CI build (run
+   37596853444) is green; **to ship it:** merge the PR, then `gh workflow run release.yml -R
+   jlobue10/moonlight-android --ref moonlight-noir -f release_tag=v20.3.0-fork.16` (versionName is
+   already fork.16 / versionCode 73 on the branch), verify the release, install via Obtainium, and
+   the device test is: PyroWave on, 720p60, stats overlay "PyroWave (Vulkan)", picture visible, logcat
+   shows `PyroWave` fps lines and no "Dropping ... frame" warnings. fork.14 = PRs #33 + #34. Everything is
    confirmed working on the Galaxy XR (stereo upright, app window hidden, Steam Controller over
    BLE). A "stereo broke after changing the width" report was a false alarm (the user had unticked
    "Stereo screen on Android XR"; the gates are silent by design). fork.14 = Profiles screen
@@ -69,14 +77,21 @@ Check the live state first (`gh pr list`, the Actions tab); this section is a sn
    `jlobue10/Vibepollo` branch `fork/2.0.0` (clone `~/GitHub/Vibepollo`, shallow).
    **PyroWave (PR #35, released in fork.15):** opt-in PyroWave decode ported from
    joemossjr16/artemis-android-pyrowave; design, provenance and test plan in `docs/PYROWAVE.md`.
-   Protocol lives in the common-c submodule branch `pyrowave`. First device test pending.
+   Protocol lives in the common-c submodule branch `pyrowave`. First device test (fork.15, 2026-10-07):
+   negotiation, Vulkan device, swapchain on the stereo SurfaceTexture surface and the fragment decode
+   path all came up; every frame was dropped for its framing (fixed in PR #36, see `docs/PYROWAVE.md`).
    **NEXT PROJECT (user decision 2026-10-05): a genuine Steam Controller 2026 profile** in the
    Vibepollo VHF driver (fork `jlobue10/libvirtualgamepad`, clone `~/GitHub/libvirtualgamepad`,
    upstream HEAD 9edbce1) plus the Vibepollo mapping, developed and test-signed on the user's
    Windows host, then offered to Nonary as PRs. First implementation pass is DONE on both forks
    (branches `feat/steam-controller-profile`; driver profile gated behind a provisional
    descriptor, fork CI green incl. WDK build). The self-contained handoff for the Windows capture
-   and test phase is `docs/STEAM_CONTROLLER_PROFILE.md` §7 in the driver fork. 
+   and test phase is `docs/STEAM_CONTROLLER_PROFILE.md` §7 in the driver fork. **2026-10-07:** the
+   profile is enabled from real captures and WORKS from the headset (Steam shows the user's own
+   Steam Controller); the first stream's bugs (both pads on the left pad, right pad click, View/Menu
+   swapped) are fixed in driver prerelease v0.1.0-beta.102 + Vibepollo fork 55383c1/accb4f5; the kit
+   rebuild and next host steps are §7.8/§8 of that doc. Client side nothing changed: with the Steam
+   profile both "Trackpads as DualShock touchpad halves" settings now work (the host splits by half).
 3. Install on the Galaxy XR via Obtainium: source `https://github.com/jlobue10/moonlight-android`,
    APK filter `arm64-v8a`.
 4. Device testing on the Galaxy XR has not happened yet for anything in this series: the render
