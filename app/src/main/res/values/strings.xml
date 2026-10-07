@@ -625,6 +625,9 @@
     <string name="title_xr_screen_width">Stereo screen width</string>
     <string name="summary_xr_screen_width">Physical width of the floating stereo screen, placed about 2 m in front of you.</string>
     <string name="title_xr_hide_main_panel">Hide the app window in stereo mode</string>
+    <string name="title_xr_movable_screen">Movable stereo screen</string>
+    <string name="summary_xr_movable_screen">Give the floating stereo screen the system move handle so you can drag it around in Full Space, like any other window. The in-game menu also offers \"Recenter stereo screen\", and the screen moves back in front of you after a headset recenter.</string>
+    <string name="game_menu_recenter_xr_screen">Recenter stereo screen</string>
     <string name="title_xr_stereo_layout">Stereo screen content (diagnostics)</string>
     <string name="summary_xr_stereo_layout">Side-by-side stereo is the normal mode. Mono shows the whole side-by-side frame flat on the screen. Canvas test pattern paints red/green halves with a moving bar instead of the game (the game then shows in the flat window), to tell an OpenGL problem from a screen problem.</string>
     <string name="xr_stereo_layout_sbs">Side-by-side stereo (normal)</string>

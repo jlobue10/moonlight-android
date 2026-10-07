@@ -10,12 +10,17 @@ import android.view.Surface;
 import androidx.xr.runtime.Session;
 import androidx.xr.runtime.SessionCreateResult;
 import androidx.xr.runtime.SessionCreateSuccess;
+import androidx.xr.arcore.RenderViewpoint;
 import androidx.xr.runtime.math.FloatSize2d;
+import androidx.xr.runtime.math.FloatSize3d;
 import androidx.xr.runtime.math.IntSize2d;
 import androidx.xr.runtime.math.Pose;
+import androidx.xr.runtime.math.Quaternion;
 import androidx.xr.runtime.math.Vector3;
 import androidx.xr.scenecore.Entity;
+import androidx.xr.scenecore.MovableComponent;
 import androidx.xr.scenecore.Scene;
+import androidx.xr.scenecore.ScenePose;
 import androidx.xr.scenecore.SessionExt;
 import androidx.xr.scenecore.Space;
 import androidx.xr.scenecore.SpatialCapability;
@@ -63,6 +68,8 @@ public final class XrStereoPresenter {
     private Session session;
     private Scene scene;
     private SurfaceEntity entity;
+    private MovableComponent movable;
+    private Runnable originListener;
     private Listener listener;
     private Consumer<Set<SpatialCapability>> capabilitiesListener;
     private Consumer<SpatialModeChangeEvent> modeListener;
@@ -73,7 +80,9 @@ public final class XrStereoPresenter {
     private int frameWidthPx;
     private int frameHeightPx;
     private float screenWidthMeters;
+    private float screenHeightMeters;
     private boolean hideMainPanel;
+    private boolean movableScreen;
     private boolean mainPanelHidden;
     private volatile boolean waitingForFullSpace;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -97,16 +106,20 @@ public final class XrStereoPresenter {
      * @param frameHeightPx height of the frame
      * @param screenWidthMeters physical width of the floating screen
      * @param hideMainPanel hide the activity's flat window while the stereo screen shows
+     * @param movableScreen give the screen the system's move affordance (grab bar) so the user
+     *                      can drag it around, like any other panel in Full Space
      */
     public void setLayout(int layout) {
         this.layout = layout;
     }
 
-    public void start(int frameWidthPx, int frameHeightPx, float screenWidthMeters, boolean hideMainPanel, Listener listener) {
+    public void start(int frameWidthPx, int frameHeightPx, float screenWidthMeters, boolean hideMainPanel,
+                      boolean movableScreen, Listener listener) {
         this.frameWidthPx = frameWidthPx;
         this.frameHeightPx = frameHeightPx;
         this.screenWidthMeters = screenWidthMeters;
         this.hideMainPanel = hideMainPanel;
+        this.movableScreen = movableScreen;
         this.listener = listener;
         try {
             SessionCreateResult result = Session.create(activity);
@@ -155,8 +168,9 @@ public final class XrStereoPresenter {
         // the whole side-by-side frame is shown flat, so the quad takes the full frame's aspect.
         boolean mono = layout == LAYOUT_MONO;
         float aspect = mono ? (float) frameWidthPx / frameHeightPx : (frameWidthPx / 2f) / frameHeightPx;
-        FloatSize2d extents = new FloatSize2d(screenWidthMeters, screenWidthMeters / aspect);
-        Pose pose = new Pose(new Vector3(0f, 0f, -SCREEN_DISTANCE_METERS));
+        screenHeightMeters = screenWidthMeters / aspect;
+        FloatSize2d extents = new FloatSize2d(screenWidthMeters, screenHeightMeters);
+        Pose pose = defaultPose();
         // THE PARENT MATTERS. SceneCore's SurfaceEntity.create() documents: "parent ... Defaults to
         // null. If null, the entity is created but not attached to the scene graph, meaning it will be
         // invisible." The short overloads used in fork.4–fork.11 did exactly that: the entity received
@@ -209,6 +223,36 @@ public final class XrStereoPresenter {
         LimeLog.info("XR stereo: screen placed at t=(" + placed.getTranslation().getX() + ","
                 + placed.getTranslation().getY() + "," + placed.getTranslation().getZ() + ") in the parent space");
 
+        // The screen is a child of the activity space, so it already follows the system recenter
+        // gesture (which moves the activity space origin). What it lacked: a way to move it by hand
+        // and a way to bring it back in front of the viewer. MovableComponent gives it the system's
+        // own grab affordance; recenter() does the rest (menu item, and after a system recenter).
+        if (movableScreen) {
+            try {
+                movable = MovableComponent.createSystemMovable(session);
+                movable.setSize(new FloatSize3d(screenWidthMeters, screenHeightMeters, 0.01f));
+                if (entity.addComponent(movable)) {
+                    LimeLog.info("XR stereo: screen is movable (system move affordance)");
+                } else {
+                    LimeLog.warning("XR stereo: MovableComponent was not accepted by the entity");
+                    movable = null;
+                }
+            } catch (Throwable t) {
+                LimeLog.warning("XR stereo: movable screen not available: " + t);
+                movable = null;
+            }
+        }
+        try {
+            originListener = () -> {
+                LimeLog.info("XR stereo: activity space origin changed (system recenter); re-placing the screen");
+                recenter();
+            };
+            scene.getActivitySpace().addOriginChangedListener(originListener);
+        } catch (Throwable t) {
+            LimeLog.warning("XR stereo: origin-changed listener not registered: " + t);
+            originListener = null;
+        }
+
         if (hideMainPanel && scene.getMainPanelEntity() != null) {
             // setEnabled(false) alone showed no effect on the Galaxy XR (fork.11); also fade it out.
             scene.getMainPanelEntity().setEnabled(false);
@@ -225,6 +269,75 @@ public final class XrStereoPresenter {
         listener.onStereoSurfaceReady(entity.getSurface(), frameWidthPx, frameHeightPx);
     }
 
+    /** Where the screen goes without any head information: straight ahead of the activity space origin. */
+    private static Pose defaultPose() {
+        return new Pose(new Vector3(0f, 0f, -SCREEN_DISTANCE_METERS), Quaternion.Identity);
+    }
+
+    /** True once the stereo screen exists (so a recenter request has something to move). */
+    public boolean isShowing() {
+        return entity != null;
+    }
+
+    /**
+     * Puts the screen {@value #SCREEN_DISTANCE_METERS} m in front of the viewer's current head
+     * pose, upright and facing them (yaw only, so a tilted head never tilts the screen). The head
+     * pose comes from ARCore's mono render viewpoint, converted from the perception space into
+     * the activity space the entity lives in; when that is unavailable (tracking off, old
+     * runtime) the screen returns to its default place ahead of the activity space origin.
+     * Main thread only.
+     */
+    public void recenter() {
+        if (entity == null || scene == null) {
+            return;
+        }
+        Pose target = defaultPose();
+        String how = "default pose";
+        try {
+            Pose head = headPoseInActivitySpace();
+            if (head != null) {
+                Vector3 fwd = head.getForward();
+                float fx = fwd.getX(), fz = fwd.getZ();
+                float len = (float) Math.sqrt(fx * fx + fz * fz);
+                if (len > 0.05f) {
+                    // Horizontal look direction: ignore pitch so the screen stays level.
+                    fx /= len;
+                    fz /= len;
+                    Vector3 t = head.getTranslation();
+                    Vector3 position = new Vector3(t.getX() + fx * SCREEN_DISTANCE_METERS, t.getY(),
+                            t.getZ() + fz * SCREEN_DISTANCE_METERS);
+                    // The quad faces +Z in its own frame; fromLookTowards points its -Z along the
+                    // look direction, i.e. the quad turns to face the viewer.
+                    Quaternion rotation = Quaternion.fromLookTowards(new Vector3(fx, 0f, fz), new Vector3(0f, 1f, 0f));
+                    target = new Pose(position, rotation);
+                    how = "head pose t=(" + t.getX() + "," + t.getY() + "," + t.getZ() + ")";
+                }
+            }
+        } catch (Throwable e) {
+            LimeLog.warning("XR stereo: head pose unavailable (" + e + "); using the default pose");
+        }
+        try {
+            entity.setPose(target, Space.PARENT);
+            Vector3 p = target.getTranslation();
+            LimeLog.info("XR stereo: screen recentered at t=(" + p.getX() + "," + p.getY() + "," + p.getZ() + ") from " + how);
+        } catch (RuntimeException e) {
+            LimeLog.warning("XR stereo: recenter failed: " + e);
+        }
+    }
+
+    /** The viewer's head pose in the activity space, or null when the runtime cannot provide it. */
+    private Pose headPoseInActivitySpace() {
+        // RenderViewpoint reports in the perception (ARCore) space; the entity is placed in the
+        // activity space, so go through a ScenePose at that perception pose.
+        RenderViewpoint.State state = RenderViewpoint.mono(session).getState().getValue();
+        if (state == null) {
+            return null;
+        }
+        Pose perception = state.getPose();
+        ScenePose scenePose = scene.getPerceptionSpace().getScenePoseFromPerceptionPose(perception);
+        return scenePose.getPoseInActivitySpace();
+    }
+
     private void fail(String reason) {
         LimeLog.warning("XR stereo unavailable: " + reason);
         stop();
@@ -237,6 +350,13 @@ public final class XrStereoPresenter {
         mainHandler.removeCallbacks(fullSpaceTimeout);
         try {
             if (scene != null) {
+                if (originListener != null) {
+                    try {
+                        scene.getActivitySpace().removeOriginChangedListener(originListener);
+                    } catch (RuntimeException ignored) {
+                    }
+                    originListener = null;
+                }
                 if (capabilitiesListener != null) {
                     scene.removeSpatialCapabilitiesChangedListener(capabilitiesListener);
                     capabilitiesListener = null;
@@ -255,6 +375,13 @@ public final class XrStereoPresenter {
                 }
             }
             if (entity != null) {
+                if (movable != null) {
+                    try {
+                        entity.removeComponent(movable);
+                    } catch (RuntimeException ignored) {
+                    }
+                    movable = null;
+                }
                 entity.dispose();
                 entity = null;
             }

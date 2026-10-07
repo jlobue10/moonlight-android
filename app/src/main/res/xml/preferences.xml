@@ -199,6 +199,13 @@
             android:summary="@string/summary_xr_hide_main_panel"
             android:title="@string/title_xr_hide_main_panel"
             app:iconSpaceReserved="false" />
+        <CheckBoxPreference
+            android:defaultValue="true"
+            android:dependency="checkbox_xr_stereo"
+            android:key="checkbox_xr_movable_screen"
+            android:summary="@string/summary_xr_movable_screen"
+            android:title="@string/title_xr_movable_screen"
+            app:iconSpaceReserved="false" />
         <ListPreference
             android:defaultValue="sbs"
             android:dependency="checkbox_xr_stereo"

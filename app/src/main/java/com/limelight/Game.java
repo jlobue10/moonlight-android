@@ -4315,6 +4315,18 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         updateZoomButtonAppearance();
     }
 
+    /** Android XR: the stream is on the floating stereo screen (docs/XR_STEREO.md). */
+    public boolean isXrStereoActive() {
+        return streamContainer != null && streamContainer.isXrStereoActive();
+    }
+
+    /** Android XR: move the stereo screen back in front of the viewer. */
+    public void recenterXrScreen() {
+        if (streamContainer != null) {
+            streamContainer.recenterXrScreen();
+        }
+    }
+
     public void toggleHUD() {
         prefConfig.enablePerfOverlay = !prefConfig.enablePerfOverlay;
         if (prefConfig.enablePerfOverlay) {
