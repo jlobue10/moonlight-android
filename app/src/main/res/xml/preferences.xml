@@ -384,6 +384,13 @@
             android:title="@string/title_steam_controller_rumble_hold"
             app:iconSpaceReserved="false" />
         <CheckBoxPreference
+            android:defaultValue="true"
+            android:dependency="checkbox_steam_controller_ble"
+            android:key="checkbox_steam_controller_stick_rim"
+            android:summary="@string/summary_checkbox_steam_controller_stick_rim"
+            android:title="@string/title_checkbox_steam_controller_stick_rim"
+            app:iconSpaceReserved="false" />
+        <CheckBoxPreference
             android:defaultValue="false"
             android:dependency="checkbox_usb_driver"
             android:key="checkbox_usb_bind_all"

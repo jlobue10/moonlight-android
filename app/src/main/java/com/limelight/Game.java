@@ -1809,7 +1809,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         if (steamControllerBle == null) {
             steamControllerBle = new SteamControllerBleManager(this, controllerHandler, prefConfig.steamControllerMotion,
                     prefConfig.steamControllerSplitPads, SteamControllerBleManager.gripsModeFromPref(prefConfig.steamControllerGrips),
-                    SteamControllerBleManager.rumbleHoldFromPref(prefConfig.steamControllerRumbleHold));
+                    SteamControllerBleManager.rumbleHoldFromPref(prefConfig.steamControllerRumbleHold),
+                    prefConfig.steamControllerStickRim);
             steamControllerBle.start();
         }
     }
