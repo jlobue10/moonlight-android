@@ -293,6 +293,13 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         videoTextureId = createExternalOESTexture();
         videoSurfaceTexture = new SurfaceTexture(videoTextureId);
+        // A SurfaceTexture's default buffer size is 1x1. MediaCodec sets its own buffer
+        // dimensions, but a Vulkan swapchain (PyroWave) takes the surface's current extent,
+        // which is this default size: every 3D PyroWave frame was decoded into one pixel and
+        // the quad showed a flat grey (fork.17 on the Galaxy XR). Size it to the stream.
+        if (prefConfig != null && prefConfig.width > 0 && prefConfig.height > 0) {
+            videoSurfaceTexture.setDefaultBufferSize(prefConfig.width, prefConfig.height);
+        }
         videoSurfaceTexture.setOnFrameAvailableListener(this);
         videoSurface = new Surface(videoSurfaceTexture);
 

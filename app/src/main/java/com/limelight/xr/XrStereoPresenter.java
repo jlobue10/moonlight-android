@@ -7,7 +7,11 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Surface;
 
+import androidx.xr.runtime.Config;
+import androidx.xr.runtime.DeviceTrackingMode;
 import androidx.xr.runtime.Session;
+import androidx.xr.runtime.SessionConfigureResult;
+import androidx.xr.runtime.SessionConfigureSuccess;
 import androidx.xr.runtime.SessionCreateResult;
 import androidx.xr.runtime.SessionCreateSuccess;
 import androidx.xr.arcore.RenderViewpoint;
@@ -129,6 +133,7 @@ public final class XrStereoPresenter {
             }
             session = ((SessionCreateSuccess) result).getSession();
             scene = SessionExt.getScene(session);
+            enableDeviceTracking();
 
             if (scene.getSpatialCapabilities().contains(SpatialCapability.SPATIAL_3D_CONTENT)) {
                 createEntity();
@@ -229,7 +234,9 @@ public final class XrStereoPresenter {
         // own grab affordance; recenter() does the rest (menu item, and after a system recenter).
         if (movableScreen) {
             try {
-                movable = MovableComponent.createSystemMovable(session);
+                // scaleInZ=false: the system otherwise grows the screen as it is pushed away
+                // so it keeps its angular size, which reads as "it will not move further away".
+                movable = MovableComponent.createSystemMovable(session, false);
                 movable.setSize(new FloatSize3d(screenWidthMeters, screenHeightMeters, 0.01f));
                 if (entity.addComponent(movable)) {
                     LimeLog.info("XR stereo: screen is movable (system move affordance)");
@@ -267,6 +274,29 @@ public final class XrStereoPresenter {
         LimeLog.info("XR stereo: " + (mono ? "MONO" : "SIDE_BY_SIDE") + " SurfaceEntity " + frameWidthPx + "x" + frameHeightPx
                 + " px on a " + extents.getWidth() + "x" + extents.getHeight() + " m quad");
         listener.onStereoSurfaceReady(entity.getSurface(), frameWidthPx, frameHeightPx);
+    }
+
+    /**
+     * The session is created with device (head) tracking off, and then every render viewpoint
+     * is "not available" (fork.17 on the Galaxy XR). LAST_KNOWN needs no permission and is
+     * enough for a recenter.
+     */
+    private void enableDeviceTracking() {
+        try {
+            Config config = session.getConfig();
+            if (config.getDeviceTracking() != DeviceTrackingMode.DISABLED) {
+                LimeLog.info("XR stereo: device tracking already " + config.getDeviceTracking());
+                return;
+            }
+            SessionConfigureResult result = session.configure(
+                    config.copy(config.getPlaneTracking(), config.getHandTracking(), DeviceTrackingMode.LAST_KNOWN));
+            LimeLog.info("XR stereo: device tracking LAST_KNOWN -> " + result.getClass().getSimpleName());
+            if (!(result instanceof SessionConfigureSuccess)) {
+                LimeLog.warning("XR stereo: head pose will be unavailable; recenter uses the default pose");
+            }
+        } catch (Throwable t) {
+            LimeLog.warning("XR stereo: device tracking not configured: " + t);
+        }
     }
 
     /** Where the screen goes without any head information: straight ahead of the activity space origin. */
@@ -328,14 +358,38 @@ public final class XrStereoPresenter {
     /** The viewer's head pose in the activity space, or null when the runtime cannot provide it. */
     private Pose headPoseInActivitySpace() {
         // RenderViewpoint reports in the perception (ARCore) space; the entity is placed in the
-        // activity space, so go through a ScenePose at that perception pose.
-        RenderViewpoint.State state = RenderViewpoint.mono(session).getState().getValue();
-        if (state == null) {
+        // activity space, so go through a ScenePose at that perception pose. A headset may offer
+        // only the left/right viewpoints ("Mono render viewpoint is not available" on the Galaxy
+        // XR), so try mono first and fall back to the eyes.
+        Pose perception = viewpointPose("mono");
+        if (perception == null) {
+            Pose left = viewpointPose("left");
+            Pose right = viewpointPose("right");
+            if (left != null && right != null) {
+                Vector3 l = left.getTranslation(), r = right.getTranslation();
+                perception = new Pose(new Vector3((l.getX() + r.getX()) / 2f, (l.getY() + r.getY()) / 2f,
+                        (l.getZ() + r.getZ()) / 2f), left.getRotation());
+            } else {
+                perception = left != null ? left : right;
+            }
+        }
+        if (perception == null) {
             return null;
         }
-        Pose perception = state.getPose();
         ScenePose scenePose = scene.getPerceptionSpace().getScenePoseFromPerceptionPose(perception);
         return scenePose.getPoseInActivitySpace();
+    }
+
+    private Pose viewpointPose(String which) {
+        try {
+            RenderViewpoint viewpoint = "left".equals(which) ? RenderViewpoint.left(session)
+                    : "right".equals(which) ? RenderViewpoint.right(session) : RenderViewpoint.mono(session);
+            RenderViewpoint.State state = viewpoint.getState().getValue();
+            return state != null ? state.getPose() : null;
+        } catch (RuntimeException e) {
+            LimeLog.info("XR stereo: " + which + " render viewpoint unavailable: " + e.getMessage());
+            return null;
+        }
     }
 
     private void fail(String reason) {
