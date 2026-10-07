@@ -46,10 +46,19 @@ namespace {
     constexpr uint64_t ACQUIRE_TIMEOUT_NS = 250'000'000;
     constexpr uint64_t FENCE_TIMEOUT_NS = 2'000'000'000;
 
-    // Moonlight frame container: "PYRW", version, big-endian u16 packet count,
-    // reserved byte, then per packet a big-endian u32 length and the packet bytes.
+    // Frame containers, told apart by their first four bytes:
+    //  - "PYRW" (Pyrollo hosts): version, big-endian u16 packet count, reserved
+    //    byte, then per packet a big-endian u32 length and the packet bytes.
+    //  - Vibepollo record framing (first little-endian word has bit 31 set): the
+    //    PyroWave sequence header, then block records and padding records
+    //    (0xFFFFFFFF, word count N, N zero words) in any order; the padding is
+    //    stripped and the records pushed as one buffer.
+    //  - Vibepollo length-prefixed framing: little-endian u32 packet count, then
+    //    per packet a little-endian u32 length and the packet bytes.
+    // See Vibepollo's docs/pyrowave-protocol.md.
     constexpr size_t FRAME_HEADER_SIZE = 8;
     constexpr uint8_t FRAME_VERSION = 1;
+    constexpr uint32_t PADDING_MAGIC = 0xFFFFFFFFu;
 
     const char *const INSTANCE_EXTENSIONS[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
@@ -282,6 +291,11 @@ namespace {
         }
 
         int submit(const uint8_t *data, size_t length) {
+            // Every frame is complete and independent, so start each one from a
+            // cleared decoder. This also sidesteps PyroWave's 3-bit sequence
+            // counter, which would treat the first frame after four or more
+            // consecutive network drops as stale and silently skip it.
+            pyrowave_decoder_clear(decoder);
             if (!pushFrame(data, length)) {
                 pyrowave_decoder_clear(decoder);
                 return SUBMIT_SKIPPED;
@@ -895,10 +909,27 @@ namespace {
                    check(vk.CreateSemaphore(device, &semInfo, nullptr, &acquireSemaphore), "vkCreateSemaphore");
         }
 
+        static uint32_t readLe32(const uint8_t *p) {
+            return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
+        }
+
         bool pushFrame(const uint8_t *data, size_t length) {
-            if (length < FRAME_HEADER_SIZE || std::memcmp(data, "PYRW", 4) != 0 ||
-                data[4] != FRAME_VERSION || data[7] != 0) {
-                LOGW("Dropping frame without a valid PYRW header");
+            if (length < 8) {
+                warnFraming("Dropping a frame shorter than any container header");
+                return false;
+            }
+            if (std::memcmp(data, "PYRW", 4) == 0) {
+                return pushPyrwFrame(data, length);
+            }
+            if ((readLe32(data) & 0x80000000u) != 0) {
+                return pushRecordFrame(data, length);
+            }
+            return pushLengthPrefixedFrame(data, length);
+        }
+
+        bool pushPyrwFrame(const uint8_t *data, size_t length) {
+            if (data[4] != FRAME_VERSION || data[7] != 0) {
+                warnFraming("Dropping frame with an unknown PYRW header version");
                 return false;
             }
             const size_t packetCount = (size_t(data[5]) << 8) | data[6];
@@ -917,6 +948,99 @@ namespace {
             }
             return packetCount > 0 && offset == length;
         }
+
+        bool pushLengthPrefixedFrame(const uint8_t *data, size_t length) {
+            const uint32_t packetCount = readLe32(data);
+            size_t offset = 4;
+            for (uint32_t i = 0; i < packetCount; ++i) {
+                if (length - offset < 4) {
+                    warnFraming("Dropping length-prefixed frame: truncated packet length");
+                    return false;
+                }
+                const uint32_t packetSize = readLe32(data + offset);
+                offset += 4;
+                if (packetSize == 0 || packetSize > length - offset) {
+                    warnFraming("Dropping length-prefixed frame: packet runs past the frame");
+                    return false;
+                }
+                if (pyrowave_decoder_push_packet(decoder, data + offset, packetSize) != PYROWAVE_SUCCESS) {
+                    return false;
+                }
+                offset += packetSize;
+            }
+            return packetCount > 0 && offset == length;
+        }
+
+        // Record framing: walk the 8-byte record headers, drop padding records,
+        // and hand the remaining records to the decoder in one piece (it parses
+        // consecutive headers itself).
+        bool pushRecordFrame(const uint8_t *data, size_t length) {
+            recordScratch.clear();
+            recordScratch.reserve(length);
+            size_t offset = 0;
+            bool sawSequenceHeader = false;
+            while (length - offset >= 8) {
+                const uint32_t word0 = readLe32(data + offset);
+                if (word0 == PADDING_MAGIC) {
+                    const size_t zeroWords = readLe32(data + offset + 4);
+                    const size_t recordSize = 8 + zeroWords * 4;
+                    if (recordSize > length - offset) {
+                        warnFraming("Dropping record frame: padding runs past the frame");
+                        return false;
+                    }
+                    offset += recordSize;
+                    continue;
+                }
+                size_t recordSize;
+                if ((word0 & 0x80000000u) != 0) {
+                    // Sequence header: two words, must come first and only once.
+                    if (sawSequenceHeader) {
+                        warnFraming("Dropping record frame: second sequence header");
+                        return false;
+                    }
+                    sawSequenceHeader = true;
+                    recordSize = 8;
+                } else {
+                    if (!sawSequenceHeader) {
+                        warnFraming("Dropping record frame: block before the sequence header");
+                        return false;
+                    }
+                    // payload_words (12 bits above the 16-bit ballot) counts the header too.
+                    const size_t payloadWords = (word0 >> 16) & 0xFFFu;
+                    if (payloadWords < 2) {
+                        warnFraming("Dropping record frame: block shorter than its header");
+                        return false;
+                    }
+                    recordSize = payloadWords * 4;
+                }
+                if (recordSize > length - offset) {
+                    warnFraming("Dropping record frame: record runs past the frame");
+                    return false;
+                }
+                recordScratch.insert(recordScratch.end(), data + offset, data + offset + recordSize);
+                offset += recordSize;
+            }
+            if (offset != length) {
+                warnFraming("Dropping record frame: trailing bytes");
+                return false;
+            }
+            return sawSequenceHeader && !recordScratch.empty() &&
+                   pyrowave_decoder_push_packet(decoder, recordScratch.data(), recordScratch.size()) == PYROWAVE_SUCCESS;
+        }
+
+        // Framing problems repeat every frame; log the first few and then one per second.
+        void warnFraming(const char *message) {
+            const uint64_t now = nowUs();
+            if (framingWarnings < 5 || now - lastFramingWarningUs >= 1'000'000) {
+                LOGW("%s", message);
+                lastFramingWarningUs = now;
+            }
+            framingWarnings++;
+        }
+
+        std::vector<uint8_t> recordScratch;
+        uint32_t framingWarnings = 0;
+        uint64_t lastFramingWarningUs = 0;
 
         // Where the decoder writes the planes: compute storage writes, or colour
         // attachment writes for the fragment path.
