@@ -791,14 +791,16 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         if ((format & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
             pyroWaveRenderer = new PyroWaveDecoderRenderer();
-            boolean chroma444 = (format & MoonBridge.VIDEO_FORMAT_PYROWAVE_444) != 0;
-            if (!pyroWaveRenderer.setup(renderTarget, width, height, redrawRate, chroma444)) {
+            boolean chroma444 = (format & MoonBridge.VIDEO_FORMAT_MASK_YUV444) != 0;
+            boolean tenBit = (format & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0;
+            if (!pyroWaveRenderer.setup(renderTarget, width, height, redrawRate, chroma444, tenBit)) {
                 LimeLog.severe("PyroWave renderer initialization failed");
                 pyroWaveRenderer.cleanup();
                 pyroWaveRenderer = null;
                 return -1;
             }
-            LimeLog.info("Using PyroWave Vulkan renderer for " + width + "x" + height + (chroma444 ? " 4:4:4" : " 4:2:0"));
+            LimeLog.info("Using PyroWave Vulkan renderer for " + width + "x" + height + (chroma444 ? " 4:4:4" : " 4:2:0")
+                    + (tenBit ? " 10-bit" : " 8-bit"));
             return 0;
         }
 
@@ -1400,7 +1402,17 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     @Override
     public void setHdrMode(boolean enabled, byte[] hdrMetadata) {
         if (pyroWaveRenderer != null) {
-            // PyroWave streams are SDR only.
+            // PyroWave carries no HDR signalling in its bitstream: this message decides whether a
+            // 10-bit stream is BT.2020 PQ or 10-bit SDR. The renderer does its own tone mapping,
+            // so only the content peak is taken from the metadata (SS_HDR_METADATA, little-endian:
+            // maxContentLightLevel at offset 20, maxDisplayLuminance at 16).
+            float peakNits = 0;
+            if (enabled && hdrMetadata != null && hdrMetadata.length >= 22) {
+                int maxCll = (hdrMetadata[20] & 0xFF) | ((hdrMetadata[21] & 0xFF) << 8);
+                int maxDisplay = (hdrMetadata[16] & 0xFF) | ((hdrMetadata[17] & 0xFF) << 8);
+                peakNits = maxCll > 0 ? maxCll : maxDisplay;
+            }
+            pyroWaveRenderer.setHdrMode(enabled, peakNits);
             return;
         }
         // HDR metadata is only supported in Android 7.0 and later, so don't bother
@@ -1537,8 +1549,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 } else if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_AV1) != 0) {
                     decoder = av1Decoder.getName();
                 } else if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
-                    decoder = (videoFormat & MoonBridge.VIDEO_FORMAT_PYROWAVE_444) != 0 ?
-                            "PyroWave 4:4:4 (Vulkan)" : "PyroWave (Vulkan)";
+                    decoder = "PyroWave"
+                            + ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0 ? " 10-bit" : "")
+                            + ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_YUV444) != 0 ? " 4:4:4" : "")
+                            + " (Vulkan)";
                 } else {
                     decoder = "(unknown)";
                 }

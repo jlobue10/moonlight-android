@@ -726,18 +726,27 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             }
         }
 
-        // PyroWave is opt-in and SDR only. The host selects it only if it offers PyroWave
-        // too; otherwise the stream uses one of the codecs above.
-        boolean offerPyroWave = prefConfig.enablePyroWave && !willStreamHdr && decoderRenderer.isPyroWaveSupported();
+        // PyroWave is opt-in. The host selects it only if it offers PyroWave too; otherwise the
+        // stream uses one of the codecs above. With HDR enabled the 10-bit profiles are offered
+        // as well: the PyroWave renderer presents HDR10 natively when the surface can take it and
+        // tone-maps to SDR otherwise, so unlike the MediaCodec path this does not need an
+        // HDR10-capable display (the host then keeps its HDR output instead of switching to SDR).
+        boolean offerPyroWave = prefConfig.enablePyroWave && decoderRenderer.isPyroWaveSupported();
         if (offerPyroWave) {
             supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_PYROWAVE;
             if (prefConfig.enablePyroWave444) {
                 // Full-resolution chroma; hosts without PyroWave 4:4:4 fall back to 4:2:0.
                 supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_PYROWAVE_444;
             }
-        }
-        else if (prefConfig.enablePyroWave && willStreamHdr) {
-            Toast.makeText(this, "PyroWave is enabled but not offered: it's SDR-only and this stream is HDR", Toast.LENGTH_LONG).show();
+            if (prefConfig.enableHdr) {
+                supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10;
+                if (prefConfig.enablePyroWave444) {
+                    supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10_444;
+                }
+                if (!willStreamHdr) {
+                    Toast.makeText(this, "PyroWave HDR will be tone-mapped: this display has no HDR10 mode", Toast.LENGTH_LONG).show();
+                }
+            }
         }
         else if (prefConfig.enablePyroWave) {
             Toast.makeText(this, "This device cannot decode PyroWave (needs a 64-bit Vulkan 1.3 GPU)", Toast.LENGTH_LONG).show();

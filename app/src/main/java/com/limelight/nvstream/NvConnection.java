@@ -227,15 +227,29 @@ public class NvConnection {
     private int getNegotiatedBitrate() {
         StreamConfiguration config = context.streamConfig;
         int formats = config.getSupportedVideoFormats();
-        boolean pyrowave420 = (formats & MoonBridge.VIDEO_FORMAT_PYROWAVE) != 0;
-        boolean pyrowave444 = (formats & MoonBridge.VIDEO_FORMAT_PYROWAVE_444) != 0;
-        if ((!pyrowave420 && !pyrowave444) || (context.serverCodecModeSupport & 0x00800000) == 0) {
+        if ((formats & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) == 0 || (context.serverCodecModeSupport & 0x00800000) == 0) {
             return config.getBitrate();
         }
 
-        boolean use444 = pyrowave444 && (context.serverCodecModeSupport & 0x01000000) != 0;
+        // Mirror moonlight-common-c's profile choice (SCM_PYROWAVE_* bits: 0x01000000 4:4:4,
+        // 0x02000000 10-bit, 0x04000000 10-bit 4:4:4) so the budget matches what will stream.
+        boolean serverHdr444 = (context.serverCodecModeSupport & 0x04000000) != 0;
+        boolean serverHdr = (context.serverCodecModeSupport & 0x02000000) != 0;
+        boolean server444 = (context.serverCodecModeSupport & 0x01000000) != 0;
+        boolean use444, use10Bit;
+        if ((formats & MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10_444) != 0 && serverHdr444) {
+            use444 = true;
+            use10Bit = true;
+        } else if ((formats & MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10) != 0 && serverHdr) {
+            use444 = false;
+            use10Bit = true;
+        } else {
+            use444 = (formats & MoonBridge.VIDEO_FORMAT_PYROWAVE_444) != 0 && server444;
+            use10Bit = false;
+        }
         double bpp = Math.max(0.25, Math.min(4.0, config.getPyroWaveBppX100() / 100.0));
         if (use444) bpp *= 1.625;
+        if (use10Bit) bpp *= 1.25;   // the extra precision costs about a quarter more at equal quality
         int fps = config.getRefreshRate();
         if (fps > 1000) {
             fps = Math.round(fps / 1000.0f);

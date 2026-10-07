@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regenerates shaders_spv.h from the GLSL sources (needs glslangValidator).
+# Regenerates shaders_spv.h from the GLSL sources (needs glslang; set GLSLANG to point at it).
 set -e
 cd "$(dirname "$0")"
 out=../shaders_spv.h
@@ -9,7 +9,7 @@ out=../shaders_spv.h
   echo "#include <cstdint>"
   for s in fullscreen.vert planar_csc.frag; do
     name=$(echo "$s" | tr '.' '_')
-    glslangValidator -V --quiet "$s" -o "/tmp/$name.spv"
+    "${GLSLANG:-$(command -v glslang || command -v glslangValidator)}" -V --quiet "$s" -o "/tmp/$name.spv"
     echo "static const uint32_t ${name}_spv[] = {"
     od -An -v -t x4 -w16 "/tmp/$name.spv" | sed 's/ \([0-9a-f]\{8\}\)/ 0x\1,/g'
     echo "};"
