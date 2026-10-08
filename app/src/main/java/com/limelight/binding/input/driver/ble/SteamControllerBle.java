@@ -143,6 +143,8 @@ public class SteamControllerBle extends AbstractController {
     private final float[] stickLogLeftSectorPeak = new float[16], stickLogRightSectorPeak = new float[16];
     private int stickLogLeftSectors, stickLogRightSectors;
     private long stickLogDueMs;
+    /** OR of every raw 32-bit button word seen since the last extents line: shows which bits this firmware sends over BLE. */
+    private int stickLogButtonsSeen;
     // Stick rim calibration: the BLE report's stick is not shaped like the wired report (its
     // magnitude passed 1.18 on diagonals on hardware, 2026-10-07, while Steam's "full circle"
     // calibration step never completed). Each axis is divided by the largest deflection seen
@@ -596,6 +598,7 @@ public class SteamControllerBle extends AbstractController {
             return;
         }
         int buttons = u32(p, 1);
+        stickLogButtonsSeen |= buttons;
         int flags = 0;
         if (bit(buttons, BTN_A)) flags |= ControllerPacket.A_FLAG;
         if (bit(buttons, BTN_B)) flags |= ControllerPacket.B_FLAG;
@@ -737,7 +740,8 @@ public class SteamControllerBle extends AbstractController {
             stickLogRightSectors |= 1 << sec;
             stickLogRightSectorPeak[sec] = Math.max(stickLogRightSectorPeak[sec], rm);
         }
-        if ((stickLogLeftSectors | stickLogRightSectors) == 0) {
+        int gripBits = (1 << BTN_GRIP_L_TOUCH) | (1 << BTN_GRIP_R_TOUCH);
+        if ((stickLogLeftSectors | stickLogRightSectors) == 0 && (stickLogButtonsSeen & gripBits) == 0) {
             return;
         }
         long now = SystemClock.uptimeMillis();
@@ -749,8 +753,12 @@ public class SteamControllerBle extends AbstractController {
                 + ", right "
                 + describeStick(stickLogRightMax, stickLogRightAxisX, stickLogRightAxisY, stickLogRightSectors, stickLogRightSectorPeak)
                 + String.format(Locale.ROOT, "; rim calibration %s, extents left %.3f/%.3f right %.3f/%.3f",
-                        stickRim ? "on" : "off", leftExtentX, leftExtentY, rightExtentX, rightExtentY));
+                        stickRim ? "on" : "off", leftExtentX, leftExtentY, rightExtentX, rightExtentY)
+                + String.format(Locale.ROOT, "; raw buttons seen 0x%08x (grip touch L %s R %s)", stickLogButtonsSeen,
+                        bit(stickLogButtonsSeen, BTN_GRIP_L_TOUCH) ? "yes" : "no",
+                        bit(stickLogButtonsSeen, BTN_GRIP_R_TOUCH) ? "yes" : "no"));
         stickLogDueMs = now + 10_000;
+        stickLogButtonsSeen = 0;
         stickLogLeftMax = stickLogRightMax = 0;
         stickLogLeftAxisX = stickLogLeftAxisY = stickLogRightAxisX = stickLogRightAxisY = 0;
         stickLogLeftSectors = stickLogRightSectors = 0;
