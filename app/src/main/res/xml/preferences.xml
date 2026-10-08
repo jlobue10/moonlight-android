@@ -384,9 +384,9 @@
             android:title="@string/title_steam_controller_rumble_hold"
             app:iconSpaceReserved="false" />
         <CheckBoxPreference
-            android:defaultValue="true"
+            android:defaultValue="false"
             android:dependency="checkbox_steam_controller_ble"
-            android:key="checkbox_steam_controller_stick_rim"
+            android:key="checkbox_steam_controller_stick_stretch"
             android:summary="@string/summary_checkbox_steam_controller_stick_rim"
             android:title="@string/title_checkbox_steam_controller_stick_rim"
             app:iconSpaceReserved="false" />

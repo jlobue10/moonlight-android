@@ -145,11 +145,13 @@ public class SteamControllerBle extends AbstractController {
     private long stickLogDueMs;
     /** OR of every raw 32-bit button word seen since the last extents line: shows which bits this firmware sends over BLE. */
     private int stickLogButtonsSeen;
-    // Stick rim calibration: the BLE report's stick is not shaped like the wired report (its
-    // magnitude passed 1.18 on diagonals on hardware, 2026-10-07, while Steam's "full circle"
-    // calibration step never completed). Each axis is divided by the largest deflection seen
-    // on it, so a full push reaches the rim in every direction, and the result is clamped to
-    // the unit circle. Extents start at a floor and only grow, and persist per controller.
+    // Stick stretch (off by default since fork.23): each axis is divided by the largest
+    // deflection seen on it and the result is clamped to the unit circle. Extents start at a
+    // floor and only grow, and persist per controller. Added in fork.21 because the BLE stick
+    // passed a magnitude of 1.18 on diagonals; retired as a default on 2026-10-08 when the host
+    // probe showed that Steam's "full circle" step accepts the wired unit's rounded square
+    // (each axis parked at full deflection, per-axis clip) and stalls on a perfect circle
+    // delivered at 250 reports/s, which is exactly what this stretch produced over a stream.
     private static final float STICK_EXTENT_FLOOR = 0.75f;
     private static final String STICK_EXTENT_PREFS = "steam_controller_ble_sticks";
     private float leftExtentX = STICK_EXTENT_FLOOR, leftExtentY = STICK_EXTENT_FLOOR;

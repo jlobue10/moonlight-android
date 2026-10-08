@@ -253,8 +253,8 @@
     <string name="steam_controller_rumble_hold_1000">1 s</string>
     <string name="steam_controller_rumble_hold_2000">2 s</string>
     <string name="steam_controller_rumble_hold_unlimited">Until the host says stop</string>
-    <string name="title_checkbox_steam_controller_stick_rim">Scale sticks to the rim</string>
-    <string name="summary_checkbox_steam_controller_stick_rim">Over Bluetooth the sticks do not reach the edge evenly in every direction, which keeps Steam\'s \"move the stick in a full circle\" test from completing. This learns each stick\'s range from your pushes and stretches it to a full circle. Turn off if the sticks feel wrong.</string>
+    <string name="title_checkbox_steam_controller_stick_rim">Stretch sticks to a full circle</string>
+    <string name="summary_checkbox_steam_controller_stick_rim">Learns each stick range from your pushes and stretches it to a perfect circle. Off by default: the wired Steam Controller reports a rounded square, with each axis parked at full deflection, and the Steam controller test accepts that shape but keeps waiting on a perfect circle delivered at 250 reports per second. Turn on only if a stick cannot reach the edge in some direction.</string>
     <string name="toast_steam_controller_permission">Bluetooth permission is needed for the Steam Controller driver. Enable it in the stream settings.</string>
     <string name="title_checkbox_usb_bind_all">Override native Xbox gamepad support</string>
     <string name="summary_checkbox_usb_bind_all">Use Artemis\'s USB driver for all supported gamepads, even if native Xbox/Nintendo Pro controller support is present</string>
