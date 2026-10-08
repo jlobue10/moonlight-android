@@ -68,7 +68,7 @@ public class PreferenceConfiguration {
     private static final String STEAM_CONTROLLER_SPLIT_PADS_PREF_STRING = "checkbox_steam_controller_split_pads";
     private static final String STEAM_CONTROLLER_GRIPS_PREF_STRING = "steam_controller_grips";
     private static final String STEAM_CONTROLLER_RUMBLE_HOLD_PREF_STRING = "steam_controller_rumble_hold";
-    private static final String STEAM_CONTROLLER_STICK_RIM_PREF_STRING = "checkbox_steam_controller_stick_rim";
+    private static final String STEAM_CONTROLLER_STICK_RIM_PREF_STRING = "checkbox_steam_controller_stick_stretch";
     private static final String VIDEO_FORMAT_PREF_STRING = "video_format";
     private static final String ONSCREEN_CONTROLLER_PREF_STRING = "checkbox_show_onscreen_controls";
     private static final String CHECKBOX_HIDE_OSC_WHEN_HAS_GAMEPAD = "checkbox_hide_osc_when_has_gamepad";
@@ -933,7 +933,7 @@ private static int getFramePacingValue(Context context) {
         config.steamControllerSplitPads = prefs.getBoolean(STEAM_CONTROLLER_SPLIT_PADS_PREF_STRING, true);
         config.steamControllerGrips = prefs.getString(STEAM_CONTROLLER_GRIPS_PREF_STRING, "paddles");
         config.steamControllerRumbleHold = prefs.getString(STEAM_CONTROLLER_RUMBLE_HOLD_PREF_STRING, "500");
-        config.steamControllerStickRim = prefs.getBoolean(STEAM_CONTROLLER_STICK_RIM_PREF_STRING, true);
+        config.steamControllerStickRim = prefs.getBoolean(STEAM_CONTROLLER_STICK_RIM_PREF_STRING, false);
         config.fullScreen = prefs.getBoolean(FULL_SCREEN_PREF_STRING, DEFAULT_FULL_SCREEN);
 
         String renderMode = prefs.getString("render_mode_list", "0");
