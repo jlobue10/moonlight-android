@@ -20,4 +20,7 @@ public interface NvConnectionListener {
     void setMotionEventState(short controllerNumber, byte motionType, short reportRateHz);
 
     void setControllerLED(short controllerNumber, byte r, byte g, byte b);
+
+    /** A Steam Controller (2026) haptic output report to replay on the controller, id first. */
+    void steamHaptic(short controllerNumber, byte[] report);
 }

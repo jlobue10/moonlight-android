@@ -2281,6 +2281,22 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
+    /**
+     * A Steam Controller (2026) haptic output report from the host, for the driver-fed controller
+     * that advertised LI_CCAP_STEAM_HAPTIC. Only the in-app BLE driver knows what to do with it.
+     */
+    public void handleSteamHaptic(short controllerNumber, byte[] report) {
+        if (stopped || report == null) {
+            return;
+        }
+        for (int i = 0; i < usbDeviceContexts.size(); i++) {
+            UsbDeviceContext deviceContext = usbDeviceContexts.valueAt(i);
+            if (deviceContext.controllerNumber == controllerNumber) {
+                deviceContext.device.steamHaptic(report);
+            }
+        }
+    }
+
     private SensorEventListener createSensorListener(final short controllerNumber, final byte motionType, final boolean needsDeviceOrientationCorrection) {
         return new SensorEventListener() {
             private float[] lastValues = new float[3];

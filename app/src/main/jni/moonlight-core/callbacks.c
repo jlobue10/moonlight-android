@@ -38,6 +38,7 @@ static jmethodID BridgeClSetHdrModeMethod;
 static jmethodID BridgeClRumbleTriggersMethod;
 static jmethodID BridgeClSetMotionEventStateMethod;
 static jmethodID BridgeClSetControllerLEDMethod;
+static jmethodID BridgeClSteamHapticMethod;
 static jbyteArray DecodedFrameBuffer;
 static jshortArray DecodedAudioBuffer;
 
@@ -102,6 +103,7 @@ Java_com_limelight_nvstream_jni_MoonBridge_init(JNIEnv *env, jclass clazz) {
     BridgeClRumbleTriggersMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClRumbleTriggers", "(SSS)V");
     BridgeClSetMotionEventStateMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSetMotionEventState", "(SBS)V");
     BridgeClSetControllerLEDMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSetControllerLED", "(SBBB)V");
+    BridgeClSteamHapticMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSteamHaptic", "(S[B)V");
 }
 
 int BridgeDrSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
@@ -389,6 +391,26 @@ void BridgeClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, u
     }
 }
 
+void BridgeClSteamHaptic(uint16_t controllerNumber, uint8_t length, const uint8_t *report) {
+    JNIEnv* env = GetThreadEnv();
+
+    jbyteArray array = (*env)->NewByteArray(env, length);
+    if (array == NULL) {
+        if ((*env)->ExceptionCheck(env)) {
+            // We will crash here
+            (*JVM)->DetachCurrentThread(JVM);
+        }
+        return;
+    }
+    (*env)->SetByteArrayRegion(env, array, 0, length, (const jbyte*)report);
+    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClSteamHapticMethod, controllerNumber, array);
+    (*env)->DeleteLocalRef(env, array);
+    if ((*env)->ExceptionCheck(env)) {
+        // We will crash here
+        (*JVM)->DetachCurrentThread(JVM);
+    }
+}
+
 void BridgeClLogMessage(const char* format, ...) {
     va_list va;
     va_start(va, format);
@@ -426,6 +448,7 @@ static CONNECTION_LISTENER_CALLBACKS BridgeConnListenerCallbacks = {
         .rumbleTriggers = BridgeClRumbleTriggers,
         .setMotionEventState = BridgeClSetMotionEventState,
         .setControllerLED = BridgeClSetControllerLED,
+        .steamHaptic = BridgeClSteamHaptic,
 };
 
 static bool

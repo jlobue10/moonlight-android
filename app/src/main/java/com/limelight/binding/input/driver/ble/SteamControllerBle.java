@@ -64,6 +64,10 @@ public class SteamControllerBle extends AbstractController {
     private static final byte ID_SET_SETTINGS_VALUES = (byte) 0x87;
     private static final byte ID_LOAD_DEFAULT_SETTINGS = (byte) 0x8E;
     private static final byte ID_TRIGGER_HAPTIC_PULSE = (byte) 0x8F;
+    // Deck-era haptic engine commands (SDL controller_constants.h); the Triton's output reports
+    // 0x80 and 0x82 carry the same fields, so they are what a host's report is replayed with.
+    private static final byte ID_TRIGGER_HAPTIC_CMD = (byte) 0xEA;
+    private static final byte ID_TRIGGER_RUMBLE_CMD = (byte) 0xEB;
     // Setting ids (index in the firmware settings enum)
     private static final int SETTING_LIZARD_MODE = 9;
     private static final int SETTING_IMU_MODE = 48;
@@ -87,6 +91,11 @@ public class SteamControllerBle extends AbstractController {
     private static final int RUMBLE_TRAIN_MS = 150;
     /** Hold limit of 0 means "until the host says stop" (the pre-fork.14 behaviour). */
     public static final int RUMBLE_HOLD_UNLIMITED = 0;
+    /** Rumble methods (steam_controller_rumble_method preference). */
+    public static final int RUMBLE_METHOD_RUMBLE_CMD = 0;
+    public static final int RUMBLE_METHOD_PULSES = 1;
+    /** The firmware stops a rumble command on its own after ~50 ms, so SDL re-sends every 40. */
+    private static final int RUMBLE_CMD_RESEND_MS = 40;
 
     // Button bit indices inside the 32-bit field at report bytes 2..5 (bit = (byte - 2) * 8 + n)
     private static final int BTN_A = 0, BTN_B = 1, BTN_X = 2, BTN_Y = 3, BTN_QUICK_ACCESS = 4,
@@ -123,6 +132,7 @@ public class SteamControllerBle extends AbstractController {
     public static final int GRIPS_OFF = 2;
     private final int gripsMode;
     private final int rumbleHoldMs;
+    private final int rumbleMethod;
     private final boolean stickRim;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
@@ -161,6 +171,9 @@ public class SteamControllerBle extends AbstractController {
     private boolean leftPadTouched, rightPadTouched;
     // Rumble state; only touched on the handler thread.
     private float rumbleLow, rumbleHigh;
+    private int rumbleLowRaw, rumbleHighRaw;
+    // A host 0x80 rumble report being replayed instead of the plain rumble values (null = plain).
+    private byte[] rumbleReport;
     private boolean rumbleActive;
     private long rumbleDeadline;
 
@@ -177,7 +190,7 @@ public class SteamControllerBle extends AbstractController {
 
     public SteamControllerBle(int deviceId, UsbDriverListener listener, Context context,
                               BluetoothDevice device, boolean motionEnabled, boolean splitPads, int gripsMode,
-                              int rumbleHoldMs, boolean stickRim) {
+                              int rumbleHoldMs, int rumbleMethod, boolean stickRim) {
         super(deviceId, listener, VENDOR_ID_VALVE, PRODUCT_ID_IBEX_BLE);
         this.context = context.getApplicationContext();
         this.device = device;
@@ -185,12 +198,14 @@ public class SteamControllerBle extends AbstractController {
         this.splitPads = splitPads;
         this.gripsMode = gripsMode;
         this.rumbleHoldMs = Math.max(0, rumbleHoldMs);
+        this.rumbleMethod = rumbleMethod;
         this.stickRim = stickRim;
         loadStickExtents();
         this.type = MoonBridge.LI_CTYPE_STEAM;
         this.capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
                 | MoonBridge.LI_CCAP_TOUCHPAD | (splitPads ? 0 : MoonBridge.LI_CCAP_DUAL_TOUCHPAD)
                 | MoonBridge.LI_CCAP_BATTERY_STATE | MoonBridge.LI_CCAP_GRIP_SENSE | MoonBridge.LI_CCAP_STICK_TOUCH
+                | MoonBridge.LI_CCAP_STEAM_HAPTIC
                 | (motionEnabled ? (MoonBridge.LI_CCAP_GYRO | MoonBridge.LI_CCAP_ACCEL) : 0));
         this.supportedButtonFlags = SUPPORTED_BUTTONS;
     }
@@ -518,17 +533,20 @@ public class SteamControllerBle extends AbstractController {
 
     @Override
     public void rumble(short lowFreqMotor, short highFreqMotor) {
-        final float low = (lowFreqMotor & 0xFFFF) / 65535f;
-        final float high = (highFreqMotor & 0xFFFF) / 65535f;
+        final int lowRaw = lowFreqMotor & 0xFFFF, highRaw = highFreqMotor & 0xFFFF;
+        final float low = lowRaw / 65535f;
+        final float high = highRaw / 65535f;
         handler.post(() -> {
             rumbleLow = low;
             rumbleHigh = high;
+            rumbleLowRaw = lowRaw;
+            rumbleHighRaw = highRaw;
+            rumbleReport = null;
             handler.removeCallbacks(rumbleRefresh);
             if (low <= 0.01f && high <= 0.01f) {
                 if (rumbleActive) {
                     rumbleActive = false;
-                    enqueueWrite(hapticPulse(SIDE_LEFT, 0f, 0));
-                    enqueueWrite(hapticPulse(SIDE_RIGHT, 0f, 0));
+                    stopRumble();
                 }
                 return;
             }
@@ -551,24 +569,154 @@ public class SteamControllerBle extends AbstractController {
             long now = SystemClock.uptimeMillis();
             if (now >= rumbleDeadline) {
                 rumbleActive = false;
-                enqueueWrite(hapticPulse(SIDE_LEFT, 0f, 0));
-                enqueueWrite(hapticPulse(SIDE_RIGHT, 0f, 0));
+                stopRumble();
                 return;
             }
-            // Bound the train to the hold window so the last one ends on time by itself.
-            int trainMs = (int) Math.min(RUMBLE_TRAIN_MS, Math.max(1, rumbleDeadline - now));
-            int repeat = Math.max(1, trainMs * 1000 / RUMBLE_PERIOD_US);
-            enqueueWrite(hapticPulse(SIDE_LEFT, rumbleLow, repeat));
-            enqueueWrite(hapticPulse(SIDE_RIGHT, rumbleHigh, repeat));
-            handler.postDelayed(this, Math.min(RUMBLE_REFRESH_MS, Math.max(1, rumbleDeadline - now)));
+            long remaining = Math.max(1, rumbleDeadline - now);
+            if (rumbleReport != null) {
+                // A host rumble report, re-issued the way Steam and SDL keep the firmware's
+                // ~50 ms safety timeout from cutting it off.
+                enqueueWrite(rumbleCommandFromReport(rumbleReport));
+                handler.postDelayed(this, Math.min(RUMBLE_CMD_RESEND_MS, remaining));
+            } else if (rumbleMethod == RUMBLE_METHOD_PULSES) {
+                // Bound the train to the hold window so the last one ends on time by itself.
+                int trainMs = (int) Math.min(RUMBLE_TRAIN_MS, remaining);
+                int repeat = Math.max(1, trainMs * 1000 / RUMBLE_PERIOD_US);
+                enqueueWrite(hapticPulse(SIDE_LEFT, rumbleLow, repeat));
+                enqueueWrite(hapticPulse(SIDE_RIGHT, rumbleHigh, repeat));
+                handler.postDelayed(this, Math.min(RUMBLE_REFRESH_MS, remaining));
+            } else {
+                enqueueWrite(rumbleCommand(rumbleLowRaw, rumbleHighRaw));
+                handler.postDelayed(this, Math.min(RUMBLE_CMD_RESEND_MS, remaining));
+            }
         }
     };
+
+    /** Motors off, whichever way they were driven (a zero rumble command is also a stop). */
+    private void stopRumble() {
+        if (rumbleMethod == RUMBLE_METHOD_PULSES && rumbleReport == null) {
+            enqueueWrite(hapticPulse(SIDE_LEFT, 0f, 0));
+            enqueueWrite(hapticPulse(SIDE_RIGHT, 0f, 0));
+        } else {
+            enqueueWrite(rumbleCommand(0, 0));
+        }
+        rumbleReport = null;
+    }
+
+    /**
+     * A host's Steam Controller haptic output report, replayed with the firmware's feature
+     * messages: 0x80 rumble as ID_TRIGGER_RUMBLE_CMD (re-sent until the host's zero or the hold
+     * limit), 0x81 pulse as ID_TRIGGER_HAPTIC_PULSE, 0x82 command as ID_TRIGGER_HAPTIC_CMD. The
+     * LFO tone, log sweep and script reports have no feature-message form known to this driver.
+     */
+    @Override
+    public void steamHaptic(byte[] report) {
+        if (report == null || report.length < 2) {
+            return;
+        }
+        final byte[] copy = report.clone();
+        handler.post(() -> {
+            switch (copy[0] & 0xFF) {
+                case 0x80: {
+                    if (copy.length < 10) {
+                        return;
+                    }
+                    handler.removeCallbacks(rumbleRefresh);
+                    boolean silent = u16(copy, 4) == 0 && u16(copy, 7) == 0;
+                    if (silent) {
+                        if (rumbleActive) {
+                            rumbleActive = false;
+                            stopRumble();
+                        }
+                        rumbleReport = null;
+                        return;
+                    }
+                    rumbleReport = copy;
+                    rumbleDeadline = rumbleHoldMs == RUMBLE_HOLD_UNLIMITED
+                            ? Long.MAX_VALUE : SystemClock.uptimeMillis() + rumbleHoldMs;
+                    rumbleActive = true;
+                    rumbleRefresh.run();
+                    break;
+                }
+                case 0x81: {
+                    if (copy.length < 8) {
+                        return;
+                    }
+                    // side, on_us, off_us, repeat; a zero-repeat pulse is Steam's stop for that side
+                    enqueueWrite(firePulse(copy[1], u16(copy, 2), u16(copy, 4), u16(copy, 6)));
+                    break;
+                }
+                case 0x82: {
+                    if (copy.length < 4) {
+                        return;
+                    }
+                    enqueueWrite(triggerHaptic(copy[1], copy[2], copy[3]));
+                    break;
+                }
+                default:
+                    break;
+            }
+        });
+    }
+
+    /** ID_TRIGGER_RUMBLE_CMD: MsgSimpleRumbleCmd {type, intensity, left speed, right speed, left gain, right gain}. */
+    private static byte[] rumbleCommand(int leftSpeed, int rightSpeed) {
+        return new byte[]{
+                ID_TRIGGER_RUMBLE_CMD, 9,
+                0,                                  // type
+                0, 0,                               // intensity
+                (byte) leftSpeed, (byte) (leftSpeed >> 8),
+                (byte) rightSpeed, (byte) (rightSpeed >> 8),
+                0, 0};                              // gains (dB)
+    }
+
+    /** The same message built from a 0x80 report {type, intensity, left{speed, gain}, right{speed, gain}}. */
+    private static byte[] rumbleCommandFromReport(byte[] r) {
+        return new byte[]{
+                ID_TRIGGER_RUMBLE_CMD, 9,
+                r[1],                               // type
+                r[2], r[3],                         // intensity
+                r[4], r[5],                         // left speed
+                r[7], r[8],                         // right speed
+                r[6], r[9]};                        // left gain, right gain
+    }
+
+    /** ID_TRIGGER_HAPTIC_CMD: MsgTriggerHaptic from a 0x82 report {side, command, gain_db}. */
+    private static byte[] triggerHaptic(byte side, byte command, byte gainDb) {
+        // The output report numbers the sides 1 = left, 0 = right; the message wants a mask.
+        byte sideMask = side == 1 ? (byte) 0x01 : side == 0 ? (byte) 0x02 : (byte) 0x03;
+        byte[] msg = new byte[2 + 19];
+        msg[0] = ID_TRIGGER_HAPTIC_CMD;
+        msg[1] = 19;
+        msg[2] = sideMask;
+        msg[3] = command;        // 0 off, 1 tick, 2 click, 3 tone, 4 rumble, 5 noise, 6 script, 7 sweep
+        msg[4] = 0;              // ui_intensity: default
+        msg[5] = gainDb;
+        // freq, dur_ms, noise_intensity, lfo_freq, lfo_depth, rand_tone_gain, script_id,
+        // lss_start_freq, lss_end_freq: a click or tick needs none of them
+        return msg;
+    }
+
+    /**
+     * ID_TRIGGER_HAPTIC_PULSE: MsgFireHapticPulse {which_pad, duration, interval, count, dBgain,
+     * priority}, the firmware's own layout (the first BLE builds sent it without the length byte
+     * and the last two fields, which the firmware could not parse).
+     */
+    private static byte[] firePulse(byte pad, int durationUs, int intervalUs, int count) {
+        return new byte[]{
+                ID_TRIGGER_HAPTIC_PULSE, 9, pad,
+                (byte) durationUs, (byte) (durationUs >> 8),
+                (byte) intervalUs, (byte) (intervalUs >> 8),
+                (byte) count, (byte) (count >> 8),
+                0, 0,                               // gain (dB)
+                0};                                 // priority
+    }
 
     /** Pulse side ids; the firmware numbers them the other way round from the kernel's pad ids. */
     private static final byte SIDE_RIGHT = 0;
     private static final byte SIDE_LEFT = 1;
 
-    /** ID_TRIGGER_HAPTIC_PULSE: side, on_us, off_us, repeat count (0 = stop the running train). */
+    /** A pulse train of the given duty cycle on one pad (repeat 0 = stop the running train). */
     private static byte[] hapticPulse(byte side, float magnitude, int repeat) {
         int onUs = 0, offUs = 0;
         if (magnitude > 0.01f && repeat > 0) {
@@ -578,11 +726,7 @@ public class SteamControllerBle extends AbstractController {
         } else {
             repeat = 0;
         }
-        return new byte[]{
-                ID_TRIGGER_HAPTIC_PULSE, side,
-                (byte) onUs, (byte) (onUs >> 8),
-                (byte) offUs, (byte) (offUs >> 8),
-                (byte) repeat, (byte) (repeat >> 8)};
+        return firePulse(side, onUs, offUs, repeat);
     }
 
     @Override

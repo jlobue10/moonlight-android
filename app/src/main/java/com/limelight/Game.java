@@ -1810,6 +1810,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             steamControllerBle = new SteamControllerBleManager(this, controllerHandler, prefConfig.steamControllerMotion,
                     prefConfig.steamControllerSplitPads, SteamControllerBleManager.gripsModeFromPref(prefConfig.steamControllerGrips),
                     SteamControllerBleManager.rumbleHoldFromPref(prefConfig.steamControllerRumbleHold),
+                    SteamControllerBleManager.rumbleMethodFromPref(prefConfig.steamControllerRumbleMethod),
                     prefConfig.steamControllerStickRim);
             steamControllerBle.start();
         }
@@ -3903,6 +3904,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     @Override
     public void setControllerLED(short controllerNumber, byte r, byte g, byte b) {
         controllerHandler.handleSetControllerLED(controllerNumber, r, g, b);
+    }
+
+    @Override
+    public void steamHaptic(short controllerNumber, byte[] report) {
+        controllerHandler.handleSteamHaptic(controllerNumber, report);
     }
 
     @Override
