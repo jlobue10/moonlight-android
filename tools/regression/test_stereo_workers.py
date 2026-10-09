@@ -25,6 +25,7 @@ def block(marker):
 PREFIX = r'''
 import java.nio.*; import java.io.*; import java.util.concurrent.*; import java.util.concurrent.atomic.*;
 public class StereoWorkers {
+ int depthRequests; void requestDepthRender(){depthRequests++;}
  boolean stopped=false,floatInput=false,floatOutput=false;
  int modelInputWidth=1,modelInputHeight=1,calcThreeDFps=0;float threeDFps=60;float ON_DRAW_CHANGE_TRESHOLD=2;
  Boolean isDebugMode=false; String renderer="CPU",backend="CPU"; DepthModel depthModel=DepthModel.MIDAS_V2_256;
@@ -78,6 +79,7 @@ SUFFIX = r'''
   worker=start(s.new AiResultHandling());long deadline=System.nanoTime()+1_000_000_000L;
   while(s.freeInputBuffers.isEmpty() && System.nanoTime()<deadline)Thread.yield();
   check(s.latestDepthMap.get()==smooth && s.freeSmoothedBuffers.isEmpty(),"published depth map remains exclusively owned by the consumer");
+  check(s.depthRequests==1,"publishing a depth map requests a render");
   deadline=System.nanoTime()+1_000_000_000L;
   while(worker.getState()!=Thread.State.WAITING && System.nanoTime()<deadline)Thread.yield();
   worker.interrupt();worker.join(200);

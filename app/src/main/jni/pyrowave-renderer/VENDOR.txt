@@ -2,7 +2,10 @@ PyroWave codec tree (pyrowave/), copied from Vibepollo's third-party/pyrowave/py
 which is the output of its vendor-pyrowave.ps1 (pruned Granite subset the C API needs)
 with the patches in pyrowave-patches/ applied. Using the host's exact tree guarantees
 the bitstream matches: PyroWave carries no version field, the host advertises the
-commit as `a=x-ss-pyrowave.bitstream:186f0393` and the client warns on a mismatch.
+commit as `a=x-ss-pyrowave.bitstream:186f0393`. The common-C negotiation guard
+requires that exact revision and a complete PyroWave media declaration. Missing,
+malformed, duplicate or mismatched revisions are logged and fall back to the
+existing AV1/HEVC/H.264 negotiation path, without invoking the PyroWave decoder.
 
 pyrowave:        186f0393b77f7755953b5ecde994bb1cec2e4155 (https://github.com/Themaister/pyrowave, MIT)
 Granite:         b6cffd5ce81f540f0855e6778428483e14763d9b (https://github.com/Themaister/Granite, MIT)
@@ -15,5 +18,7 @@ The Android renderer (pyrowave_renderer.cpp, shaders/, shaders_spv.h) and
 PyroWaveDecoderRenderer.java come from joemossjr16/artemis-android-pyrowave
 (branch pyrowave, GPL-3.0 like this app), adapted here.
 
-To move to a newer codec revision: update the host first, re-vendor from its tree,
-and keep the two in lockstep.
+To move to a newer codec revision: re-vendor from the matching host tree, update
+LI_PYROWAVE_BITSTREAM_ID in common-C and this record, and test both peers together.
+During a staggered update, mismatched peers use a conventional codec. Keep the
+SDP revision and decoder bytes in lockstep; changing only the guard is unsafe.
