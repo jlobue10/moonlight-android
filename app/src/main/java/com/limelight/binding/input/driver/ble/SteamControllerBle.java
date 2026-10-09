@@ -96,6 +96,14 @@ public class SteamControllerBle extends AbstractController {
     public static final int RUMBLE_METHOD_PULSES = 1;
     /** The firmware stops a rumble command on its own after ~50 ms, so SDL re-sends every 40. */
     private static final int RUMBLE_CMD_RESEND_MS = 40;
+    /** A host 0x80 that lands this soon after the last rumble write just updates the chain. */
+    private static final int RUMBLE_CMD_MIN_GAP_MS = 20;
+    /** A write whose completion never arrives would wedge the queue; clear it after this. */
+    private static final long WRITE_WATCHDOG_MS = 2000;
+    /** Retry delay after the stack refused a write (one operation outstanding at a time). */
+    private static final long WRITE_RETRY_MS = 50;
+    /** stop(): how long to wait for the restore writes to complete before closing anyway. */
+    private static final long CLOSE_FALLBACK_MS = 400;
 
     // Button bit indices inside the 32-bit field at report bytes 2..5 (bit = (byte - 2) * 8 + n)
     private static final int BTN_A = 0, BTN_B = 1, BTN_X = 2, BTN_Y = 3, BTN_QUICK_ACCESS = 4,
@@ -136,12 +144,14 @@ public class SteamControllerBle extends AbstractController {
     private final boolean stickRim;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
-    private BluetoothGatt gatt;
-    private BluetoothGattCharacteristic writeChar;
+    private volatile BluetoothGatt gatt;
+    private volatile BluetoothGattCharacteristic writeChar;
     private BluetoothGattCharacteristic batteryChar;
     private final ArrayDeque<BluetoothGattCharacteristic> pendingSubscriptions = new ArrayDeque<>();
     private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<>();
     private boolean writeBusy;
+    // stop() in progress: the restore commands still go out, nothing else does.
+    private boolean closing;
     private boolean mtuRequested;
     private boolean announced;
     private volatile boolean stopped;
@@ -176,6 +186,7 @@ public class SteamControllerBle extends AbstractController {
     private byte[] rumbleReport;
     private boolean rumbleActive;
     private long rumbleDeadline;
+    private long lastRumbleWriteMs;
 
     private final Runnable keepAlive = new Runnable() {
         @Override
@@ -183,7 +194,11 @@ public class SteamControllerBle extends AbstractController {
             if (stopped || gatt == null || writeChar == null) {
                 return;
             }
-            enqueueWrite(settings(SETTING_LIZARD_MODE, 0));
+            // The whole setup triple (11 bytes a second): a settings write lost at
+            // connect time (the stack refuses a write while one is outstanding) would
+            // otherwise leave the watchdog armed or the IMU off for the session.
+            enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
+                    SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0));
             handler.postDelayed(this, KEEPALIVE_INTERVAL_MS);
         }
     };
@@ -242,32 +257,57 @@ public class SteamControllerBle extends AbstractController {
     @SuppressLint("MissingPermission")
     @Override
     public void stop() {
+        if (stopped) {
+            return;
+        }
         stopped = true;
         handler.removeCallbacksAndMessages(null);
         saveStickExtents();
         BluetoothGatt g = gatt;
-        gatt = null;
-        if (g != null) {
-            try {
-                // Give the controller its keyboard/mouse emulation back for the rest of the system.
-                if (writeChar != null) {
-                    writeChar.setValue(new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS});
-                    writeChar.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-                    g.writeCharacteristic(writeChar);
-                    writeChar.setValue(new byte[]{ID_LOAD_DEFAULT_SETTINGS});
-                    g.writeCharacteristic(writeChar);
-                }
-                g.disconnect();
-                g.close();
-            } catch (SecurityException | IllegalStateException e) {
-                LimeLog.warning("Steam Controller BLE: close failed: " + e.getMessage());
+        if (g != null && writeChar != null) {
+            // Give the controller its keyboard/mouse emulation back for the rest of the
+            // system. The stack takes one GATT operation at a time, so the restore commands
+            // go through the queue (behind a motors-off) and the link closes from the last
+            // completion, or after a fallback delay if the link is already gone. With the
+            // firmware's Steam watchdog disabled, a restore that never arrives leaves the
+            // controller without keyboard/mouse until it is power-cycled.
+            synchronized (this) {
+                writeQueue.clear();
+                closing = true;
+                writeQueue.add(rumbleCommand(0, 0));
+                writeQueue.add(new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS});
+                writeQueue.add(new byte[]{ID_LOAD_DEFAULT_SETTINGS});
             }
+            flushWrites();
+            handler.postDelayed(closeLink, CLOSE_FALLBACK_MS);
+        } else {
+            closeLink.run();
         }
         if (announced) {
             announced = false;
             notifyDeviceRemoved();
         }
     }
+
+    /** Drops the link once the restore writes are done (or given up on). */
+    private final Runnable closeLink = new Runnable() {
+        @SuppressLint("MissingPermission")
+        @Override
+        public void run() {
+            handler.removeCallbacks(this);
+            BluetoothGatt g = gatt;
+            gatt = null;
+            if (g == null) {
+                return;
+            }
+            try {
+                g.disconnect();
+                g.close();
+            } catch (SecurityException | IllegalStateException e) {
+                LimeLog.warning("Steam Controller BLE: close failed: " + e.getMessage());
+            }
+        }
+    };
 
     // ----- GATT -----
 
@@ -297,6 +337,9 @@ public class SteamControllerBle extends AbstractController {
         @SuppressLint("MissingPermission")
         @Override
         public void onMtuChanged(BluetoothGatt g, int mtu, int status) {
+            if (stopped) {
+                return;
+            }
             // The stack may report this twice; discover services once.
             if (mtuRequested) {
                 mtuRequested = false;
@@ -349,6 +392,15 @@ public class SteamControllerBle extends AbstractController {
 
         @Override
         public void onDescriptorWrite(BluetoothGatt g, BluetoothGattDescriptor descriptor, int status) {
+            if (stopped) {
+                return;
+            }
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                // That characteristic stays unsubscribed; the state report is on another
+                // one, so carry on rather than drop the controller.
+                LimeLog.warning("Steam Controller BLE: subscribing to " + descriptor.getCharacteristic().getUuid()
+                        + " failed, status " + status);
+            }
             if (!subscribeNext(g)) {
                 onReady(g);
             }
@@ -359,8 +411,15 @@ public class SteamControllerBle extends AbstractController {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 LimeLog.warning("Steam Controller BLE: write failed, status " + status);
             }
+            handler.removeCallbacks(writeWatchdog);
+            boolean drained;
             synchronized (SteamControllerBle.this) {
                 writeBusy = false;
+                drained = closing && writeQueue.isEmpty();
+            }
+            if (drained) {
+                handler.post(closeLink);
+                return;
             }
             flushWrites();
         }
@@ -419,12 +478,15 @@ public class SteamControllerBle extends AbstractController {
         enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0));
         enqueueWrite(settings(SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0));
         if (batteryChar != null) {
-            handler.post(() -> {
+            // After the setup writes have had their turn: a read is refused while a write
+            // is outstanding and would just be lost.
+            handler.postDelayed(() -> {
                 try {
-                    if (gatt != null) gatt.readCharacteristic(batteryChar);
+                    BluetoothGatt current = gatt;
+                    if (current != null && !stopped) current.readCharacteristic(batteryChar);
                 } catch (SecurityException ignored) {
                 }
-            });
+            }, 500);
         }
         handler.removeCallbacks(keepAlive);
         handler.postDelayed(keepAlive, KEEPALIVE_INTERVAL_MS);
@@ -491,15 +553,62 @@ public class SteamControllerBle extends AbstractController {
         return cmd;
     }
 
+    /** A motors-off: a zero rumble command or a zero-count pulse. Never evicted from the queue. */
+    private static boolean isStop(byte[] cmd) {
+        if (cmd.length >= 9 && cmd[0] == ID_TRIGGER_RUMBLE_CMD) {
+            return cmd[5] == 0 && cmd[6] == 0 && cmd[7] == 0 && cmd[8] == 0;
+        }
+        if (cmd.length >= 9 && cmd[0] == ID_TRIGGER_HAPTIC_PULSE) {
+            return cmd[7] == 0 && cmd[8] == 0;
+        }
+        return false;
+    }
+
     private void enqueueWrite(byte[] cmd) {
         synchronized (this) {
+            if (closing) {
+                return;
+            }
+            if (cmd[0] == ID_SET_SETTINGS_VALUES) {
+                // One keep-alive waiting is enough; a stalled link must not fill up with them.
+                for (byte[] queued : writeQueue) {
+                    if (queued[0] == ID_SET_SETTINGS_VALUES) {
+                        return;
+                    }
+                }
+            }
             if (writeQueue.size() > 32) {
-                writeQueue.pollFirst();   // drop the oldest rather than grow without bound
+                // Drop the oldest command that is not a motors-off, so a stall cannot
+                // leave a pad buzzing by evicting the stop and keeping the start.
+                byte[] victim = null;
+                for (byte[] queued : writeQueue) {
+                    if (!isStop(queued)) {
+                        victim = queued;
+                        break;
+                    }
+                }
+                if (victim != null) {
+                    writeQueue.remove(victim);
+                } else if (!isStop(cmd)) {
+                    return;
+                }
             }
             writeQueue.add(cmd);
         }
         flushWrites();
     }
+
+    /** The completion of a write never came: free the queue rather than wedge for good. */
+    private final Runnable writeWatchdog = () -> {
+        synchronized (this) {
+            if (!writeBusy) {
+                return;
+            }
+            writeBusy = false;
+        }
+        LimeLog.warning("Steam Controller BLE: a write never completed; resuming the queue");
+        flushWrites();
+    };
 
     @SuppressLint("MissingPermission")
     private void flushWrites() {
@@ -507,7 +616,7 @@ public class SteamControllerBle extends AbstractController {
         BluetoothGattCharacteristic ch = writeChar;
         byte[] cmd;
         synchronized (this) {
-            if (writeBusy || g == null || ch == null || stopped) {
+            if (writeBusy || g == null || ch == null || (stopped && !closing)) {
                 return;
             }
             cmd = writeQueue.poll();
@@ -516,20 +625,37 @@ public class SteamControllerBle extends AbstractController {
             }
             writeBusy = true;
         }
+        boolean accepted = false;
         try {
-            ch.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            // Haptics are fire-and-forget and frequent (40 ms rumble re-sends, 100 ms clicks):
+            // without a response each costs no round trip on the link. The stack still
+            // reports the write complete, so the one-at-a-time pacing holds either way.
+            boolean haptic = cmd[0] == ID_TRIGGER_RUMBLE_CMD || cmd[0] == ID_TRIGGER_HAPTIC_CMD
+                    || cmd[0] == ID_TRIGGER_HAPTIC_PULSE;
+            boolean noResponse = haptic
+                    && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
+            ch.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
             ch.setValue(cmd);
-            if (!g.writeCharacteristic(ch)) {
-                synchronized (this) {
-                    writeBusy = false;
-                }
-            }
-        } catch (SecurityException | IllegalStateException e) {
-            synchronized (this) {
-                writeBusy = false;
-            }
+            accepted = g.writeCharacteristic(ch);
+        } catch (SecurityException | IllegalStateException ignored) {
         }
+        if (accepted) {
+            handler.removeCallbacks(writeWatchdog);
+            handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
+            return;
+        }
+        // Refused: another GATT operation is outstanding (a read, a descriptor write) or
+        // the link is going down. Put the command back at the head and try again shortly.
+        synchronized (this) {
+            writeBusy = false;
+            writeQueue.addFirst(cmd);
+        }
+        handler.removeCallbacks(retryFlush);
+        handler.postDelayed(retryFlush, WRITE_RETRY_MS);
     }
+
+    private final Runnable retryFlush = this::flushWrites;
 
     @Override
     public void rumble(short lowFreqMotor, short highFreqMotor) {
@@ -541,15 +667,16 @@ public class SteamControllerBle extends AbstractController {
             rumbleHigh = high;
             rumbleLowRaw = lowRaw;
             rumbleHighRaw = highRaw;
-            rumbleReport = null;
             handler.removeCallbacks(rumbleRefresh);
             if (low <= 0.01f && high <= 0.01f) {
                 if (rumbleActive) {
                     rumbleActive = false;
-                    stopRumble();
+                    stopRumble();   // stops whatever was driving, a replayed report included
                 }
+                rumbleReport = null;
                 return;
             }
+            rumbleReport = null;
             // Every host update, even a repeat of the same value, restarts the hold window. Hosts
             // that forward Steam's UI haptics on a DualSense have been seen to never send the
             // matching "motors off", so without a limit the pads would buzz until the next event.
@@ -576,6 +703,7 @@ public class SteamControllerBle extends AbstractController {
             if (rumbleReport != null) {
                 // A host rumble report, re-issued the way Steam and SDL keep the firmware's
                 // ~50 ms safety timeout from cutting it off.
+                lastRumbleWriteMs = now;
                 enqueueWrite(rumbleCommandFromReport(rumbleReport));
                 handler.postDelayed(this, Math.min(RUMBLE_CMD_RESEND_MS, remaining));
             } else if (rumbleMethod == RUMBLE_METHOD_PULSES) {
@@ -586,6 +714,7 @@ public class SteamControllerBle extends AbstractController {
                 enqueueWrite(hapticPulse(SIDE_RIGHT, rumbleHigh, repeat));
                 handler.postDelayed(this, Math.min(RUMBLE_REFRESH_MS, remaining));
             } else {
+                lastRumbleWriteMs = now;
                 enqueueWrite(rumbleCommand(rumbleLowRaw, rumbleHighRaw));
                 handler.postDelayed(this, Math.min(RUMBLE_CMD_RESEND_MS, remaining));
             }
@@ -631,11 +760,20 @@ public class SteamControllerBle extends AbstractController {
                         rumbleReport = null;
                         return;
                     }
+                    long now = SystemClock.uptimeMillis();
+                    boolean chainRunning = rumbleActive && rumbleReport != null;
                     rumbleReport = copy;
                     rumbleDeadline = rumbleHoldMs == RUMBLE_HOLD_UNLIMITED
-                            ? Long.MAX_VALUE : SystemClock.uptimeMillis() + rumbleHoldMs;
+                            ? Long.MAX_VALUE : now + rumbleHoldMs;
                     rumbleActive = true;
-                    rumbleRefresh.run();
+                    if (chainRunning && now - lastRumbleWriteMs < RUMBLE_CMD_MIN_GAP_MS) {
+                        // Steam re-sends every 40-50 ms itself; writing on every one of those
+                        // on top of our own 40 ms chain would double the link traffic. The
+                        // chain picks the new values up on its next write.
+                        handler.postDelayed(rumbleRefresh, Math.max(1, RUMBLE_CMD_RESEND_MS - (now - lastRumbleWriteMs)));
+                    } else {
+                        rumbleRefresh.run();
+                    }
                     break;
                 }
                 case 0x81: {
@@ -698,18 +836,17 @@ public class SteamControllerBle extends AbstractController {
     }
 
     /**
-     * ID_TRIGGER_HAPTIC_PULSE: MsgFireHapticPulse {which_pad, duration, interval, count, dBgain,
-     * priority}, the firmware's own layout (the first BLE builds sent it without the length byte
-     * and the last two fields, which the firmware could not parse).
+     * ID_TRIGGER_HAPTIC_PULSE as the Linux hid-steam driver frames it for this firmware:
+     * {0x8F, length 8, pad, duration u16, interval u16, count u16, gain u8 (dB, -24..+6)}.
+     * The first BLE builds sent it without the length byte, which the firmware cannot parse.
      */
     private static byte[] firePulse(byte pad, int durationUs, int intervalUs, int count) {
         return new byte[]{
-                ID_TRIGGER_HAPTIC_PULSE, 9, pad,
+                ID_TRIGGER_HAPTIC_PULSE, 8, pad,
                 (byte) durationUs, (byte) (durationUs >> 8),
                 (byte) intervalUs, (byte) (intervalUs >> 8),
                 (byte) count, (byte) (count >> 8),
-                0, 0,                               // gain (dB)
-                0};                                 // priority
+                0};                                 // gain (dB)
     }
 
     /** Pulse side ids; the firmware numbers them the other way round from the kernel's pad ids. */
