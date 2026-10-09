@@ -148,8 +148,10 @@ public class SteamControllerBle extends AbstractController {
     private volatile BluetoothGattCharacteristic writeChar;
     private BluetoothGattCharacteristic batteryChar;
     private final ArrayDeque<BluetoothGattCharacteristic> pendingSubscriptions = new ArrayDeque<>();
+    private int subscribedNotifications;
     private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<>();
     private boolean writeBusy;
+    private long writeRejectedSinceMs = -1;
     // stop() in progress: the restore commands still go out, nothing else does.
     private boolean closing;
     private boolean mtuRequested;
@@ -362,6 +364,7 @@ public class SteamControllerBle extends AbstractController {
             }
             synchronized (SteamControllerBle.this) {
                 pendingSubscriptions.clear();
+                subscribedNotifications = 0;
                 writeChar = null;
                 batteryChar = null;
                 for (BluetoothGattCharacteristic ch : service.getCharacteristics()) {
@@ -402,6 +405,8 @@ public class SteamControllerBle extends AbstractController {
                 // one, so carry on rather than drop the controller.
                 LimeLog.warning("Steam Controller BLE: subscribing to " + descriptor.getCharacteristic().getUuid()
                         + " failed, status " + status);
+            } else {
+                subscribedNotifications++;
             }
             if (!subscribeNext(g)) {
                 onReady(g);
@@ -476,6 +481,7 @@ public class SteamControllerBle extends AbstractController {
         BluetoothGattDescriptor cccd = ch.getDescriptor(CCCD);
         if (cccd == null) {
             // Nothing to wait for; move on synchronously
+            subscribedNotifications++;
             return subscribeNext(g);
         }
         cccd.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
@@ -491,6 +497,14 @@ public class SteamControllerBle extends AbstractController {
     @SuppressLint("MissingPermission")
     private void onReady(BluetoothGatt g) {
         if (stopped || g != gatt) {
+            return;
+        }
+        if (subscribedNotifications == 0) {
+            // Optional characteristics may fail, but without any subscription
+            // this link cannot deliver input. Do not publish a ghost controller
+            // or reset the retry budget for a setup that never succeeded.
+            LimeLog.warning("Steam Controller BLE: no notification subscriptions succeeded");
+            onLinkLost(g);
             return;
         }
         reconnectAttempts = 0;
@@ -530,9 +544,11 @@ public class SteamControllerBle extends AbstractController {
         synchronized (this) {
             writeQueue.clear();
             writeBusy = false;
+            writeRejectedSinceMs = -1;
             writeChar = null;
             batteryChar = null;
             pendingSubscriptions.clear();
+            subscribedNotifications = 0;
             rumbleActive = false;
             rumbleReport = null;
         }
@@ -659,10 +675,12 @@ public class SteamControllerBle extends AbstractController {
 
     @SuppressLint("MissingPermission")
     private void flushWrites() {
-        BluetoothGatt g = gatt;
-        BluetoothGattCharacteristic ch = writeChar;
+        BluetoothGatt g;
+        BluetoothGattCharacteristic ch;
         byte[] cmd;
         synchronized (this) {
+            g = gatt;
+            ch = writeChar;
             if (writeBusy || g == null || ch == null || (stopped && !closing)) {
                 return;
             }
@@ -688,18 +706,35 @@ public class SteamControllerBle extends AbstractController {
         } catch (SecurityException | IllegalStateException ignored) {
         }
         if (accepted) {
-            handler.removeCallbacks(writeWatchdog);
-            handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
+            synchronized (this) {
+                if (g != gatt || ch != writeChar) return;
+                writeRejectedSinceMs = -1;
+                handler.removeCallbacks(writeWatchdog);
+                handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
+            }
             return;
         }
         // Refused: another GATT operation is outstanding (a read, a descriptor write) or
         // the link is going down. Put the command back at the head and try again shortly.
+        boolean expired;
         synchronized (this) {
+            // A failed write may race link loss. Never put its command into a
+            // replacement connection's queue or clear that connection's busy flag.
+            if (g != gatt || ch != writeChar || (stopped && !closing)) return;
             writeBusy = false;
+            long now = SystemClock.uptimeMillis();
+            if (writeRejectedSinceMs < 0) writeRejectedSinceMs = now;
+            expired = now - writeRejectedSinceMs >= WRITE_WATCHDOG_MS;
             writeQueue.addFirst(cmd);
         }
         handler.removeCallbacks(retryFlush);
-        handler.postDelayed(retryFlush, WRITE_RETRY_MS);
+        if (expired) {
+            LimeLog.warning("Steam Controller BLE: writes keep being rejected; recycling the link");
+            if (closing) closeLink.run();
+            else onLinkLost(g);
+        } else {
+            handler.postDelayed(retryFlush, WRITE_RETRY_MS);
+        }
     }
 
     private final Runnable retryFlush = this::flushWrites;
