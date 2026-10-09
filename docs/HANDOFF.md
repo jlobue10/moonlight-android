@@ -41,7 +41,31 @@ original conversation. Everything below is either in this repository, in
 
 ## 2. Where it stopped, and the next steps
 
-Check the live state first (`gh pr list`, the Actions tab); this section is a snapshot (2026-10-04, late).
+Check the live state first (`gh pr list`, the Actions tab); this section is a snapshot (2026-10-04, late,
+with a 2026-10-08 addendum at the top).
+
+**2026-10-08 addendum (read this first):**
+- **Current release: v20.3.0-fork.24** (versionCode 81, merge e0464a5f, release run 37870257964, signed).
+  fork.17–fork.23 were the movable/recenter stereo screen, PyroWave HDR10, Steam Controller grip
+  sense (fork.19), stick diagnostics (fork.20), rim stretch (fork.21, retired as a default in
+  fork.23) and raw button-bit logging (fork.22). fork.24 = PR #45: toolbars with an Up arrow on the
+  Add PC, Debug Info and Help screens (headsets have no back gesture for a panel); every activity
+  now has a way out. No PR is open.
+- **Steam Controller, still open:** on fork.24 Steam's "move the left stick in a full circle" test
+  step still stalls and the grips never light up on Steam's test screen. The investigation and the
+  host-side fix live in the driver fork: `jlobue10/libvirtualgamepad` branch
+  `feat/steam-controller-profile`, `docs/STEAM_CONTROLLER_PROFILE.md` §7.9 (what to install, what
+  to test) and §8 (findings table). Short form: the probe cleared everything about the stream except
+  its burst timing (three reports within a millisecond per BLE packet, then ~12 ms of nothing), so
+  driver commit 6f2ad3a makes motion samples ride the 4 ms tick; the test-signed package is
+  artifact 11593181427 of run 37877814035. The grips need the fork.24 **stream log** (Settings →
+  Misc → Share stream log, controller held for 10 s+): the line
+  `raw buttons seen 0x… (grip touch L … R …)` says whether this firmware sends the grip bits over
+  BLE at all (SDL's Triton driver reads them from the same word on the BLE report, so the client's
+  decode is right). If it never does, add a client-side grip proxy. Nothing on the client is
+  known to be wrong for either symptom; do not change the stick path again without new evidence.
+- Everything below this line predates fork.17 and is kept for history.
+
 
 1. **Released:** v20.3.0-fork.2 is published and signed with the persistent key (the four signing
    secrets exist in the repository; the keystore and its password are on the owner's machine, the
