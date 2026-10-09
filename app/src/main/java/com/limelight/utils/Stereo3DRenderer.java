@@ -43,6 +43,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.microedition.khronos.egl.EGLConfig;
@@ -82,10 +83,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     public static Boolean isActive = false;
     public static String renderer = "CPU";
 
-    // Private Static Fields
-    private static float calcFps = 0;
-    private static int depthMapResultCount = 0;
-    private static float calcThreeDFps = 0;
+    private int calcFps;
 
     // Final Member Variables
     private final Context context;
@@ -118,7 +116,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     // Other Member Variables
     private long totalDrawTime = 0;
     private long lastFpsTime = 0;
-    private ByteBuffer previousFrameForComparison;
     private ByteBuffer currentlyRenderingMap;
     private volatile boolean stopped;
     private PreferenceConfiguration prefConfig;
@@ -242,7 +239,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         currentlyRenderingMap = null;
         drawDelay = 0.0f;
         calcFps = 0;
-        calcThreeDFps = 0.0f;
         renderer = "CPU";
         isActive = false;
     }
@@ -275,6 +271,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             block = false;
             lastFpsTime = 0;
             totalDrawTime = 0;
+            calcFps = 0;
+            fps = 0;
+            threeDFps = 0;
+            drawDelay = 0;
             videoTextureId = createExternalOESTexture();
             videoSurfaceTexture = new SurfaceTexture(videoTextureId);
             // A SurfaceTexture's default buffer size is 1x1. MediaCodec sets its own buffer
@@ -332,8 +332,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             initializeFbo();
             depth.initBuffer();
             initializePBOs();
-            previousFrameForComparison = ByteBuffer.allocateDirect(modelInputWidth * modelInputHeight * 4)
-                    .order(ByteOrder.nativeOrder());
 
             if (onSurfaceReadyListener != null) {
                 onSurfaceReadyListener.onStereo3DSurfaceReady(videoSurface);
@@ -510,12 +508,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         ? readPixelsForAI_Async(pixelBufferForAI)
                         : readPixelsForAI(pixelBufferForAI);
                 if (success) {
-                    double difference = hasSceneChangedFast(pixelBufferForAI, previousFrameForComparison);
-                    pixelBufferForAI.rewind();
-                    previousFrameForComparison.rewind();
-                    previousFrameForComparison.put(pixelBufferForAI);
-
-                    if (depth.inferenceInputQueue.offer(new RenderResult(pixelBufferForAI, difference))) {
+                    if (depth.inferenceInputQueue.offer(new RenderResult(pixelBufferForAI))) {
                         if (Boolean.TRUE.equals(isDebugMode)) Log.d("AiTask", "Success: The AI will now process this buffer.");
                     } else {
                         depth.freeInputBuffers.offer(pixelBufferForAI);
@@ -550,7 +543,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 if (currentlyRenderingMap != null) depth.freeSmoothedBuffers.offer(currentlyRenderingMap);
                 currentlyRenderingMap = newMap;
                 uploadLatestDepthMapToGpu(newMap);
-                depthMapResultCount++;
                 endTimeAi = System.nanoTime();
                 if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "DepthMap OutputSpeed " + (endTimeAi - startTimeAi) / 1_000_000 + " ms");
             }
@@ -560,24 +552,27 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             drawWithShader();
             long endTime = System.nanoTime();
 
-            if (lastFpsTime == 0) {
-                lastFpsTime = startTime;
-            }
-            totalDrawTime += endTime - startTime;
-            calcFps++;
+            updatePerformanceStats(startTime, endTime, depth);
+        }
+    }
 
-            long sampleDuration = endTime - lastFpsTime;
-            if (sampleDuration >= 1_000_000_000L) {
-                // The overlay labels this value in milliseconds. Count this draw
-                // once, and average time spent drawing, not time since the window began.
-                drawDelay = (float) totalDrawTime / calcFps / 1_000_000.0f;
-                totalDrawTime = 0;
-                fps = calcFps * 1_000_000_000.0f / sampleDuration;
-                calcFps = 0;
-                depthMapResultCount = 0;
-                threeDFps = calcThreeDFps * 1_000_000_000.0f / sampleDuration;
-                calcThreeDFps = 0;
-                lastFpsTime = endTime;
+    private void updatePerformanceStats(long startTime, long endTime, DepthSession depth) {
+        if (lastFpsTime == 0) {
+            lastFpsTime = startTime;
+        }
+        totalDrawTime += endTime - startTime;
+        calcFps++;
+        long elapsed = endTime - lastFpsTime;
+        if (elapsed >= 1_000_000_000L) {
+            // The overlay labels this value in milliseconds. Count each draw once,
+            // including the reporting frame, and average this window's durations.
+            drawDelay = (float) totalDrawTime / calcFps / 1_000_000f;
+            fps = calcFps * 1_000_000_000f / elapsed;
+            threeDFps = depth.completedDepthFrames.getAndSet(0) * 1_000_000_000f / elapsed;
+            totalDrawTime = 0;
+            calcFps = 0;
+            lastFpsTime = endTime;
+            if (Boolean.TRUE.equals(isDebugMode)) {
                 int freeInputCap = depth.freeInputBuffers.size() + depth.freeInputBuffers.remainingCapacity();
                 int aiInCap = depth.inferenceInputQueue.size() + depth.inferenceInputQueue.remainingCapacity();
                 int aiOutCap = depth.filledOutputBuffers.size() + depth.filledOutputBuffers.remainingCapacity();
@@ -590,7 +585,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         depth.filledOutputBuffers.remainingCapacity(), aiOutCap,
                         depth.freeSmoothedBuffers.remainingCapacity(), freeSmoothCap
                 );
-                if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", queueStatus);
+                Log.d("Stereo3DRenderer", queueStatus);
             }
         }
     }
@@ -649,11 +644,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     private static class RenderResult {
         final ByteBuffer pixelBuffer;
-        final double imageDifference;
 
-        RenderResult(ByteBuffer pixelBuffer, double imageDifference) {
+        RenderResult(ByteBuffer pixelBuffer) {
             this.pixelBuffer = pixelBuffer;
-            this.imageDifference = imageDifference;
         }
     }
 
@@ -924,11 +917,14 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     private int createProgram(String vertex, String fragment) {
         int vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, vertex);
         if (vertexShader == 0) return 0;
-        int fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, fragment);
-        if (fragmentShader == 0) return 0;
-
-        int program = GLES20.glCreateProgram();
-        if (program != 0) {
+        int fragmentShader = 0;
+        int program = 0;
+        boolean linked = false;
+        try {
+            fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, fragment);
+            if (fragmentShader == 0) return 0;
+            program = GLES20.glCreateProgram();
+            if (program == 0) return 0;
             GLES20.glAttachShader(program, vertexShader);
             GLES20.glAttachShader(program, fragmentShader);
             GLES20.glLinkProgram(program);
@@ -937,14 +933,20 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             if (linkStatus[0] != GLES20.GL_TRUE) {
                 LimeLog.severe("Could not link program: ");
                 LimeLog.severe(GLES20.glGetProgramInfoLog(program));
-                GLES20.glDeleteProgram(program);
-                program = 0;
+                return 0;
             }
+            linked = true;
+            return program;
+        } finally {
+            // Deletion of attached shaders is deferred by GL until the linked
+            // program releases them. Program deletion alone does not delete shaders.
+            GLES20.glDeleteShader(vertexShader);
+            if (fragmentShader != 0) GLES20.glDeleteShader(fragmentShader);
+            if (!linked && program != 0) GLES20.glDeleteProgram(program);
         }
-        return program;
     }
 
-    private double hasSceneChangedFast(ByteBuffer currentFrame, ByteBuffer previousFrame) {
+    private static double hasSceneChangedFast(ByteBuffer currentFrame, ByteBuffer previousFrame, int modelInputWidth) {
         if (currentFrame == null || previousFrame == null || currentFrame.capacity() != previousFrame.capacity()) {
             return 0.0;
         }
@@ -988,6 +990,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         private Future<?> inferenceTask;
         private volatile boolean stopped;
         private final AtomicBoolean isAiRunning = new AtomicBoolean();
+        private final AtomicInteger completedDepthFrames = new AtomicInteger();
         private final AtomicBoolean isAiResultHandlingRunning = new AtomicBoolean();
         private final AtomicReference<ByteBuffer> latestDepthMap = new AtomicReference<>();
         private GpuDelegate gpuDelegate;
@@ -1122,6 +1125,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         private class AiTask implements Runnable {
 
             private ByteBuffer previousRawMap = null;
+            private ByteBuffer previousInferencePixels;
 
             @Override
             public void run() {
@@ -1137,7 +1141,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         if (tflite == null) break;
                         RenderResult result = inferenceInputQueue.take();
                         pixelBuffer = result.pixelBuffer;
-                        difference = result.imageDifference;
+                        // Compare against the image that produced the cached map, not
+                        // the preceding display frame. Small changes must accumulate,
+                        // and frames skipped by a full queue must not advance the cache.
+                        difference = hasSceneChangedFast(pixelBuffer, previousInferencePixels, modelInputWidth);
                         outputBuffer = freeOutputBuffers.take();
                         waitTime = System.nanoTime();
                         outputBuffer.rewind();
@@ -1162,6 +1169,13 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                             tfliteInputBuffer.rewind();
                             outputBuffer.rewind();
                             tflite.run(tfliteInputBuffer, outputBuffer);
+                            if (previousInferencePixels == null) {
+                                previousInferencePixels = ByteBuffer.allocateDirect(pixelBuffer.capacity());
+                            }
+                            previousInferencePixels.clear();
+                            pixelBuffer.rewind();
+                            previousInferencePixels.put(pixelBuffer);
+                            pixelBuffer.rewind();
                             if (previousRawMap == null) {
                                 previousRawMap = ByteBuffer.allocateDirect(outputBuffer.capacity());
                             }
@@ -1175,7 +1189,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                             outputBuffer.put(previousRawMap);
                             outputBuffer.rewind();
                         }
-                        if (!stopped) calcThreeDFps++;
+                        completedDepthFrames.incrementAndGet();
                         aiTime_end = System.nanoTime();
                         filledOutputBuffers.put(new InferenceResult(pixelBuffer, outputBuffer));
                         pixelBuffer = null;
