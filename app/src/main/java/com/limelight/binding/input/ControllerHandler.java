@@ -2956,6 +2956,16 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         sendControllerInputPacket(defaultContext);
     }
 
+    // A driver-fed stick axis over the full signed range. Scaling by 0x7FFE left a
+    // fully pushed stick one count short of 32767, and Steam's controller test
+    // waits for the Steam Controller's left stick to sit at exact full scale while
+    // it circles (the host probe passes the step at 32767 and stalls at 32766), so
+    // a streamed Steam Controller could never finish it. Rounded, not truncated, so
+    // the controller's own values survive the float round trip.
+    private static short driverStickAxis(float value) {
+        return (short) Math.max(-0x7FFF, Math.min(0x7FFF, Math.round(value * 0x7FFF)));
+    }
+
     @Override
     public void reportControllerState(int controllerId, int buttonFlags,
                                       float leftStickX, float leftStickY,
@@ -2970,15 +2980,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
         handleDeadZone(leftStickVector, context.leftStickDeadzoneRadius);
 
-        context.leftStickX = (short) (leftStickVector.getX() * 0x7FFE);
-        context.leftStickY = (short) (-leftStickVector.getY() * 0x7FFE);
+        context.leftStickX = driverStickAxis(leftStickVector.getX());
+        context.leftStickY = driverStickAxis(-leftStickVector.getY());
 
         Vector2d rightStickVector = populateCachedVector(rightStickX, rightStickY);
 
         handleDeadZone(rightStickVector, context.rightStickDeadzoneRadius);
 
-        context.rightStickX = (short) (rightStickVector.getX() * 0x7FFE);
-        context.rightStickY = (short) (-rightStickVector.getY() * 0x7FFE);
+        context.rightStickX = driverStickAxis(rightStickVector.getX());
+        context.rightStickY = driverStickAxis(-rightStickVector.getY());
 
         if (leftTrigger <= context.triggerDeadzone) {
             leftTrigger = 0;
