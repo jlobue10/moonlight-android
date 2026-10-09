@@ -4,12 +4,14 @@ import android.app.Activity;
 import android.graphics.Bitmap;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.MenuItem;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 
 import com.limelight.utils.SpinnerDialog;
 
@@ -38,8 +40,18 @@ public class HelpActivity extends AppCompatActivity {
             };
         }
 
-        webView = new WebView(this);
-        setContentView(webView);
+        setContentView(R.layout.activity_help);
+
+        // Toolbar with an Up arrow out of the help viewer. Android XR and desktop-style windows
+        // have no system back gesture, so without it this screen traps the user once entered.
+        Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            getSupportActionBar().setTitle(R.string.help);
+        }
+
+        webView = findViewById(R.id.helpWebView);
 
         // These allow the user to zoom the page
         webView.getSettings().setBuiltInZoomControls(true);
@@ -76,6 +88,16 @@ public class HelpActivity extends AppCompatActivity {
         });
 
         webView.loadUrl(getIntent().getData().toString());
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            // Up leaves the viewer outright; back (below) walks the page history first
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     private void refreshBackDispatchState() {

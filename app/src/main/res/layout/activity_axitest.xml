@@ -1,72 +1,89 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="10dp">
+    android:orientation="vertical">
 
-    <Button
-        android:id="@+id/bt_vibrator"
+    <!-- Up navigation: headsets and desktop-style windows have no system back gesture for a
+         panel, so without this the screen cannot be left once entered. -->
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/toolbar"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:onClick="onClick"
-        android:text="@string/debug_info_test_device_vibration" />
-
-    <Button
-        android:id="@+id/bt_update_gamepad"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:onClick="onClick"
-        android:text="@string/debug_info_refresh_gamepad_list" />
-
-    <Button
-        android:id="@+id/bt_vibrator_gamepad"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:onClick="onClick"
-        android:text="@string/debug_info_test_gamepad_rumble" />
+        android:layout_height="?attr/actionBarSize"
+        android:background="#1A1A1A"
+        android:theme="@style/ThemeOverlay.AppCompat.Dark.ActionBar"
+        app:popupTheme="@style/ThemeOverlay.AppCompat.Dark"
+        app:titleTextColor="@android:color/white" />
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content">
-
-        <Button
-            android:id="@+id/bt_vibrator_value"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:onClick="onClick"
-            android:text="@string/debug_info_vibration_amplitude" />
-
-        <Button
-            android:id="@+id/bt_vibrator_cancle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:onClick="onClick"
-            android:text="@string/debug_info_stop_vibration" />
-
-
-
-    </LinearLayout>
-
-    <TextView
-        android:id="@+id/tx_content"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/debug_info_refresh_gamepad_info" />
-
-    <ScrollView
-        android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_marginTop="10dp">
+        android:orientation="vertical"
+        android:padding="10dp">
+
+        <Button
+            android:id="@+id/bt_vibrator"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:onClick="onClick"
+            android:text="@string/debug_info_test_device_vibration" />
+
+        <Button
+            android:id="@+id/bt_update_gamepad"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:onClick="onClick"
+            android:text="@string/debug_info_refresh_gamepad_list" />
+
+        <Button
+            android:id="@+id/bt_vibrator_gamepad"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:onClick="onClick"
+            android:text="@string/debug_info_test_gamepad_rumble" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <Button
+                android:id="@+id/bt_vibrator_value"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:onClick="onClick"
+                android:text="@string/debug_info_vibration_amplitude" />
+
+            <Button
+                android:id="@+id/bt_vibrator_cancle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:onClick="onClick"
+                android:text="@string/debug_info_stop_vibration" />
+
+
+
+        </LinearLayout>
 
         <TextView
-            android:id="@+id/tx_game_pad_info"
+            android:id="@+id/tx_content"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
-    </ScrollView>
+            android:layout_height="wrap_content"
+            android:text="@string/debug_info_refresh_gamepad_info" />
 
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_marginTop="10dp">
 
+            <TextView
+                android:id="@+id/tx_game_pad_info"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+        </ScrollView>
+
+    </LinearLayout>
 
 </LinearLayout>

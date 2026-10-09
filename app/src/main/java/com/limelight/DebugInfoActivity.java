@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.InputDevice;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -21,6 +22,7 @@ import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 
 import com.limelight.utils.DeviceUtils;
 
@@ -41,6 +43,15 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_axitest);
+
+        // Toolbar with an Up arrow back to the settings. Android XR and desktop-style windows
+        // have no system back gesture, so without it this screen traps the user once entered.
+        Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            getSupportActionBar().setTitle(R.string.title_debug_info);
+        }
 
         tx_gamepad_info = findViewById(R.id.tx_game_pad_info);
         TextView tx_content = findViewById(R.id.tx_content);
@@ -191,6 +202,15 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
                     .build();
             vibrator.vibrate(new long[]{0, onTime, offTime}, 0, audioAttributes);
         }
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == android.R.id.home) {
+            finish();
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     @Override
