@@ -1,0 +1,60 @@
+name: Validate Android pull request
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run focused lifecycle and transport regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          for regression in tools/regression/test_*.py; do
+            python3 "$regression"
+          done
+      - name: Install the project's Android toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          COMPILE_SDK=$(sed -nE 's/^\s*compileSdk\s*=?\s*([0-9]+).*/\1/p' app/build.gradle | head -1)
+          NDK_VERSION=$(sed -nE 's/^\s*ndkVersion\s+"([^"]+)".*/\1/p' app/build.gradle | head -1)
+          test -n "$COMPILE_SDK" && test -n "$NDK_VERSION"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "cmdline-tools;latest"
+          PLATFORM=$("$SDKMANAGER" --list | awk '{print $1}' | grep -E "^platforms;android-${COMPILE_SDK}(\.[0-9]+)?$" | sort -t. -k2,2n | head -1 || true)
+          if [ -n "$PLATFORM" ]; then
+            "$SDKMANAGER" --install "$PLATFORM"
+          fi
+          "$SDKMANAGER" --install "build-tools;36.0.0" "ndk;${NDK_VERSION}"
+      - name: Build unsigned release APKs (all supported ABIs, NDK and R8)
+        run: ./gradlew --no-daemon --stacktrace assembleNonRoot_gameRelease
+      - name: Run Android unit tests
+        run: ./gradlew --no-daemon --stacktrace testNonRoot_gameDebugUnitTest
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-unit-test-results
+          path: app/build/reports/tests/
+          if-no-files-found: ignore

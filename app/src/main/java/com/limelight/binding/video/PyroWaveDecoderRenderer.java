@@ -19,6 +19,7 @@ public class PyroWaveDecoderRenderer {
     private static final boolean LIBRARY_LOADED = loadLibrary();
 
     private long handle;
+    private boolean lastFramePresented;
 
     private static boolean loadLibrary() {
         // Vulkan 1.3 loaders ship with newer Android releases; the native probe makes the
@@ -48,7 +49,7 @@ public class PyroWaveDecoderRenderer {
      * @param tenBit a 10-bit profile was negotiated: the planes hold 10-bit code values and the
      *               host's HDR mode message decides between HDR10 (BT.2020 PQ) and 10-bit SDR
      */
-    public boolean setup(Surface surface, int width, int height, int frameRate, boolean chroma444, boolean tenBit) {
+    public synchronized boolean setup(Surface surface, int width, int height, int frameRate, boolean chroma444, boolean tenBit) {
         cleanup();
         if (!LIBRARY_LOADED || surface == null || !surface.isValid()) {
             return false;
@@ -62,29 +63,36 @@ public class PyroWaveDecoderRenderer {
      * presented as PQ; elsewhere the renderer tone-maps it to SDR using peakNits (MaxCLL or
      * the mastering display peak, 0 for the default).
      */
-    public void setHdrMode(boolean enabled, float peakNits) {
+    public synchronized void setHdrMode(boolean enabled, float peakNits) {
         if (handle != 0) {
             nativeSetHdrMode(handle, enabled, peakNits);
         }
     }
 
-    public int submitFrame(byte[] data, int length) {
+    public synchronized int submitFrame(byte[] data, int length) {
+        lastFramePresented = false;
         if (handle == 0) {
             return MoonBridge.DR_NEED_IDR;
         }
         // Skipped frames are fine: every frame is a keyframe, so the next one recovers.
         // PyroWave has no IDR to request, so an error only asks for the next frame.
-        return nativeSubmitFrame(handle, data, length) == SUBMIT_ERROR ? MoonBridge.DR_NEED_IDR : MoonBridge.DR_OK;
+        int result = nativeSubmitFrame(handle, data, length);
+        lastFramePresented = result == 0;
+        return result == SUBMIT_ERROR ? MoonBridge.DR_NEED_IDR : MoonBridge.DR_OK;
     }
 
     /**
      * GPU time of the last completed decode in microseconds, or 0 when the GPU cannot report it.
      */
-    public int getLastGpuDecodeUs() {
+    public synchronized int getLastGpuDecodeUs() {
         return handle != 0 ? nativeGetLastGpuDecodeUs(handle) : 0;
     }
 
-    public void cleanup() {
+    public synchronized boolean wasLastFramePresented() {
+        return lastFramePresented;
+    }
+
+    public synchronized void cleanup() {
         if (handle != 0) {
             nativeDestroy(handle);
             handle = 0;

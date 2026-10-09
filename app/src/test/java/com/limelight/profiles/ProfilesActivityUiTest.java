@@ -21,7 +21,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
-import org.robolectric.Shadows;
+import org.robolectric.shadow.api.Shadow;
+import org.robolectric.shadows.ShadowActivity;
+import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowAlertDialog;
@@ -59,7 +61,7 @@ public class ProfilesActivityUiTest {
         assertNotNull(fab);
         fab.performClick();
 
-        Intent next = Shadows.shadowOf(activity).getNextStartedActivity();
+        Intent next = Shadow.<ShadowActivity>extract(activity).getNextStartedActivity();
         assertNotNull("FAB should launch EditProfileActivity", next);
         assertEquals("com.limelight.EditProfileActivity", next.getComponent().getClassName());
     }
@@ -111,7 +113,7 @@ public class ProfilesActivityUiTest {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
 
         // Process queued UI tasks
-        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        Shadow.<ShadowLooper>extract(Looper.getMainLooper()).idle();
 
         // Adapter should now have zero items and empty state should be visible
         assertEquals(0, rv.getAdapter().getItemCount());

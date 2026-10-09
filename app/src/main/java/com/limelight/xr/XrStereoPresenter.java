@@ -88,13 +88,11 @@ public final class XrStereoPresenter {
     private boolean hideMainPanel;
     private boolean movableScreen;
     private boolean mainPanelHidden;
+    private boolean active;
+    private int generation;
     private volatile boolean waitingForFullSpace;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Runnable fullSpaceTimeout = () -> {
-        if (entity == null && listener != null) {
-            fail("Full Space was not granted within " + FULL_SPACE_TIMEOUT_MS + " ms");
-        }
-    };
+    private Runnable fullSpaceTimeout;
 
     public XrStereoPresenter(Activity activity) {
         this.activity = activity;
@@ -119,12 +117,20 @@ public final class XrStereoPresenter {
 
     public void start(int frameWidthPx, int frameHeightPx, float screenWidthMeters, boolean hideMainPanel,
                       boolean movableScreen, Listener listener) {
+        stop();
+        active = true;
+        final int startedGeneration = ++generation;
         this.frameWidthPx = frameWidthPx;
         this.frameHeightPx = frameHeightPx;
         this.screenWidthMeters = screenWidthMeters;
         this.hideMainPanel = hideMainPanel;
         this.movableScreen = movableScreen;
         this.listener = listener;
+        fullSpaceTimeout = () -> {
+            if (isCurrentGeneration(startedGeneration) && waitingForFullSpace && entity == null) {
+                fail("Full Space was not granted within " + FULL_SPACE_TIMEOUT_MS + " ms");
+            }
+        };
         try {
             SessionCreateResult result = Session.create(activity);
             if (!(result instanceof SessionCreateSuccess)) {
@@ -139,8 +145,10 @@ public final class XrStereoPresenter {
                 createEntity();
             } else {
                 // Spatial content needs Full Space; the capability arrives once the transition is done.
+                waitingForFullSpace = true;
                 capabilitiesListener = caps -> {
-                    if (entity == null && caps.contains(SpatialCapability.SPATIAL_3D_CONTENT)) {
+                    if (isCurrentGeneration(startedGeneration) && entity == null
+                            && caps.contains(SpatialCapability.SPATIAL_3D_CONTENT)) {
                         try {
                             createEntity();
                         } catch (Throwable t) {
@@ -149,11 +157,12 @@ public final class XrStereoPresenter {
                     }
                 };
                 scene.addSpatialCapabilitiesChangedListener(capabilitiesListener);
-                LimeLog.info("XR stereo: requesting Full Space");
-                scene.requestFullSpace();
-                waitingForFullSpace = true;
-                // Never leave the stream waiting for a surface that may not come.
-                mainHandler.postDelayed(fullSpaceTimeout, FULL_SPACE_TIMEOUT_MS);
+                if (isCurrentGeneration(startedGeneration) && waitingForFullSpace) {
+                    LimeLog.info("XR stereo: requesting Full Space");
+                    // Register first: requestFullSpace may synchronously grant the capability.
+                    mainHandler.postDelayed(fullSpaceTimeout, FULL_SPACE_TIMEOUT_MS);
+                    scene.requestFullSpace();
+                }
             }
         } catch (Throwable t) {
             // Includes NoClassDefFoundError/LinkageError when the XR runtime is missing.
@@ -166,9 +175,15 @@ public final class XrStereoPresenter {
         return waitingForFullSpace;
     }
 
+    private boolean isCurrentGeneration(int expected) {
+        return active && generation == expected;
+    }
+
     private void createEntity() {
+        if (!active || scene == null || entity != null) return;
+        final int createdGeneration = generation;
         waitingForFullSpace = false;
-        mainHandler.removeCallbacks(fullSpaceTimeout);
+        if (fullSpaceTimeout != null) mainHandler.removeCallbacks(fullSpaceTimeout);
         // SBS: the quad has one eye's aspect (each half is stretched over it). MONO (A/B test):
         // the whole side-by-side frame is shown flat, so the quad takes the full frame's aspect.
         boolean mono = layout == LAYOUT_MONO;
@@ -216,6 +231,7 @@ public final class XrStereoPresenter {
         // or near the viewer's origin puts a plane through the head, which shows nothing. The screen
         // stays where we put it: SCREEN_DISTANCE_METERS straight ahead of the activity space origin.
         modeListener = event -> {
+            if (!isCurrentGeneration(createdGeneration)) return;
             Pose p = event.getRecommendedPose();
             if (p != null) {
                 LimeLog.info("XR stereo: system recommended pose t=(" + p.getTranslation().getX() + ","
@@ -251,6 +267,7 @@ public final class XrStereoPresenter {
         }
         try {
             originListener = () -> {
+                if (!isCurrentGeneration(createdGeneration)) return;
                 LimeLog.info("XR stereo: activity space origin changed (system recenter); re-placing the screen");
                 recenter();
             };
@@ -393,60 +410,62 @@ public final class XrStereoPresenter {
     }
 
     private void fail(String reason) {
+        if (!active) return;
         LimeLog.warning("XR stereo unavailable: " + reason);
+        Listener failedListener = listener;
         stop();
-        listener.onStereoUnavailable(reason);
+        if (failedListener != null) failedListener.onStereoUnavailable(reason);
+    }
+
+    private void cleanup(Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable t) {
+            LimeLog.warning("XR stereo teardown: " + t);
+        }
     }
 
     /** Disposes the entity, restores the main panel and returns to Home Space. Safe to call twice. */
     public void stop() {
+        active = false;
+        ++generation;
         waitingForFullSpace = false;
-        mainHandler.removeCallbacks(fullSpaceTimeout);
-        try {
-            if (scene != null) {
-                if (originListener != null) {
-                    try {
-                        scene.getActivitySpace().removeOriginChangedListener(originListener);
-                    } catch (RuntimeException ignored) {
-                    }
-                    originListener = null;
+        if (fullSpaceTimeout != null) mainHandler.removeCallbacks(fullSpaceTimeout);
+        fullSpaceTimeout = null;
+        listener = null;
+        // Invalidate ownership before invoking runtime APIs: removing a listener cannot
+        // retract a callback already queued by SceneCore, and cleanup APIs can throw.
+        Scene oldScene = scene;
+        SurfaceEntity oldEntity = entity;
+        MovableComponent oldMovable = movable;
+        Runnable oldOriginListener = originListener;
+        Consumer<Set<SpatialCapability>> oldCapabilitiesListener = capabilitiesListener;
+        Consumer<SpatialModeChangeEvent> oldModeListener = modeListener;
+        boolean restorePanel = mainPanelHidden;
+        scene = null;
+        session = null; // lifecycle-bound to the activity; no explicit destroy API
+        entity = null;
+        movable = null;
+        originListener = null;
+        capabilitiesListener = null;
+        modeListener = null;
+        mainPanelHidden = false;
+        if (oldScene != null) {
+            if (oldOriginListener != null) cleanup(() -> oldScene.getActivitySpace().removeOriginChangedListener(oldOriginListener));
+            if (oldCapabilitiesListener != null) cleanup(() -> oldScene.removeSpatialCapabilitiesChangedListener(oldCapabilitiesListener));
+            if (oldModeListener != null) cleanup(oldScene::clearSpatialModeChangedListener);
+            if (restorePanel) cleanup(() -> {
+                Entity panel = oldScene.getMainPanelEntity();
+                if (panel != null) {
+                    cleanup(() -> panel.setEnabled(true));
+                    cleanup(() -> panel.setAlpha(1f));
                 }
-                if (capabilitiesListener != null) {
-                    scene.removeSpatialCapabilitiesChangedListener(capabilitiesListener);
-                    capabilitiesListener = null;
-                }
-                if (modeListener != null) {
-                    scene.clearSpatialModeChangedListener();
-                    modeListener = null;
-                }
-                if (mainPanelHidden && scene.getMainPanelEntity() != null) {
-                    scene.getMainPanelEntity().setEnabled(true);
-                    try {
-                        scene.getMainPanelEntity().setAlpha(1f);
-                    } catch (RuntimeException ignored) {
-                    }
-                    mainPanelHidden = false;
-                }
-            }
-            if (entity != null) {
-                if (movable != null) {
-                    try {
-                        entity.removeComponent(movable);
-                    } catch (RuntimeException ignored) {
-                    }
-                    movable = null;
-                }
-                entity.dispose();
-                entity = null;
-            }
-            if (scene != null) {
-                scene.requestHomeSpace();
-            }
-        } catch (Throwable t) {
-            LimeLog.warning("XR stereo teardown: " + t);
-        } finally {
-            scene = null;
-            session = null;   // lifecycle-bound to the activity; no explicit destroy API
+            });
         }
+        if (oldEntity != null) {
+            if (oldMovable != null) cleanup(() -> oldEntity.removeComponent(oldMovable));
+            cleanup(oldEntity::dispose);
+        }
+        if (oldScene != null) cleanup(oldScene::requestHomeSpace);
     }
 }
