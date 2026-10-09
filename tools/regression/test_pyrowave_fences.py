@@ -54,6 +54,11 @@ TEST = r'''
 static bool pending=false;
 static VkFence pendingFence=VK_NULL_HANDLE;
 static int invalidResets=0, submits=0, waits=0;
+static uint64_t queryTicks[3];
+// The baseline renderer discarded timestampValidBits. Let it run the same
+// wrapping-counter fixtures without a test-only change to its implementation.
+template<class T> auto setTimestampMask(T& r,uint64_t mask,int) -> decltype(r.timestampMask=mask,void()) {r.timestampMask=mask;}
+template<class T> void setTimestampMask(T&,uint64_t,long) {}
 extern "C" {
 void pyrowave_device_set_command_buffer(pyrowave_device,VkCommandBuffer){}
 pyrowave_result pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder,const pyrowave_gpu_sync_operation*,
@@ -99,8 +104,23 @@ int main(){
    renderer.pushFrame(input.data(),input.size());
  }
  printf("PASS container fixtures, truncations and 20000 deterministic malformed frames\n");
+ vk.GetQueryPoolResults=[](VkDevice,VkQueryPool,uint32_t,uint32_t,size_t,void* data,VkDeviceSize,VkQueryResultFlags){
+   std::memcpy(data,queryTicks,sizeof(queryTicks));return VK_SUCCESS;};
+ bool timestampsOk=true;
+ for(unsigned bits:{36u,40u,48u,64u}) {
+   uint64_t mask=UINT64_MAX>>(64-bits);
+   setTimestampMask(renderer,mask,0);
+   for(bool wrapDecode:{false,true}) {
+     queryTicks[0]=wrapDecode?mask-5999:mask-15999;
+     queryTicks[1]=wrapDecode?4000:mask-5999;
+     queryTicks[2]=wrapDecode?16000:6000;
+     renderer.stats={};renderer.queriesPending=true;renderer.readTimestamps();
+     timestampsOk &= renderer.lastGpuDecodeUs==10 && renderer.stats.gpuDecodeUs==10 && renderer.stats.gpuDrawUs==12;
+   }
+ }
+ printf("%s decode/draw timestamp wrap at 36, 40, 48 and 64 valid bits\n",timestampsOk?"PASS":"FAIL");
  // device remains null: these are fake handles, not native allocations.
- return invalidResets!=0 || submits!=2 || waits!=2;
+ return invalidResets!=0 || submits!=2 || waits!=2 || !timestampsOk;
 }
 '''
 with tempfile.TemporaryDirectory(prefix='pyrowave-fences-') as directory:

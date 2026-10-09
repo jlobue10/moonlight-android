@@ -456,6 +456,8 @@ namespace {
                         physicalDevice = device;
                         queueFamily = i;
                         timestampsSupported = families[i].timestampValidBits > 0;
+                        const uint32_t timestampBits = families[i].timestampValidBits;
+                        timestampMask = timestampBits == 0 ? 0 : UINT64_MAX >> (64 - timestampBits);
                         chosenProbe = probe;
                         break;
                     }
@@ -1489,6 +1491,7 @@ namespace {
         VkCommandBuffer decodeCommandBuffer = VK_NULL_HANDLE;
         VkQueryPool queryPool = VK_NULL_HANDLE;
         bool timestampsSupported = false;
+        uint64_t timestampMask = UINT64_MAX;
         int frameRateHz = 60;
 
         bool queriesPending = false;
@@ -1521,9 +1524,12 @@ namespace {
                 return;
             }
             const auto toUs = [this](uint64_t delta) { return uint64_t(double(delta) * timestampPeriodNs / 1000.0); };
-            lastGpuDecodeUs = uint32_t(toUs(ticks[1] - ticks[0]));
+            // Even VK_QUERY_RESULT_64_BIT returns only timestampValidBits
+            // meaningful bits. Subtract modulo that counter's width so a wrap
+            // does not turn a short decode/draw into an enormous duration.
+            lastGpuDecodeUs = uint32_t(toUs((ticks[1] - ticks[0]) & timestampMask));
             stats.gpuDecodeUs += lastGpuDecodeUs;
-            stats.gpuDrawUs += toUs(ticks[2] - ticks[1]);
+            stats.gpuDrawUs += toUs((ticks[2] - ticks[1]) & timestampMask);
             stats.gpuSamples++;
         }
 
