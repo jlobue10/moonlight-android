@@ -27,7 +27,7 @@ import java.nio.*; import java.io.*; import java.util.concurrent.*; import java.
 public class StereoWorkers {
  boolean stopped=false,floatInput=false,floatOutput=false;
  int modelInputWidth=1,modelInputHeight=1,calcThreeDFps=0;float threeDFps=60;float ON_DRAW_CHANGE_TRESHOLD=2;
- Boolean isDebugMode=false; String renderer="CPU"; DepthModel depthModel=DepthModel.MIDAS_V2_256;
+ Boolean isDebugMode=false; String renderer="CPU",backend="CPU"; DepthModel depthModel=DepthModel.MIDAS_V2_256;
  AtomicBoolean isAiRunning=new AtomicBoolean(true),isAiResultHandlingRunning=new AtomicBoolean(true),gpuDelegateFailed=new AtomicBoolean();
  AtomicReference<ByteBuffer> latestDepthMap=new AtomicReference<>();
  BlockingQueue<ByteBuffer> freeInputBuffers=new ArrayBlockingQueue<>(10),freeOutputBuffers=new ArrayBlockingQueue<>(6),freeSmoothedBuffers=new ArrayBlockingQueue<>(3);
@@ -37,7 +37,7 @@ public class StereoWorkers {
  Interpreter tflite;GpuDelegate gpuDelegate;NnApiDelegate nnApiDelegate;
  static class RenderResult{ByteBuffer pixelBuffer;double imageDifference=10;RenderResult(ByteBuffer b){pixelBuffer=b;}}
  static class InferenceResult{ByteBuffer pixelBuffer,rawDepthBuffer;InferenceResult(ByteBuffer p,ByteBuffer r){pixelBuffer=p;rawDepthBuffer=r;}}
- enum DepthModel {MIDAS_V2_256}
+ enum DepthModel {MIDAS_V2_256; String shortName(){return "test";}}
  static class Interpreter{
   static class Options{Options addDelegate(Object d){return this;}Options setNumThreads(int n){return this;}void setUseNNAPI(boolean b){}}
   Interpreter(MappedByteBuffer m,Options o){} void run(Object i,Object o){throw new IllegalStateException("inference failed");}void close(){}
@@ -67,7 +67,7 @@ SUFFIX = r'''
  static Thread start(Runnable r){Thread t=new Thread(r);t.setDaemon(true);t.start();return t;}
  public static void main(String[] args)throws Exception{
   StereoWorkers s=new StereoWorkers();boolean initialized;
-  try{s.initializeTfLite();initialized=s.tflite!=null && s.renderer.equals("CPU");}catch(Exception e){initialized=false;}
+  try{s.initializeTfLite();initialized=s.tflite!=null && s.renderer.startsWith("CPU") && s.backend.startsWith("CPU");}catch(Exception e){initialized=false;}
   check(initialized,"GPU/NNAPI constructor failures reach a fresh CPU interpreter");
   s=new StereoWorkers();s.tflite=new Interpreter(null,new Interpreter.Options());
   ByteBuffer output=ByteBuffer.allocate(1);s.freeOutputBuffers.add(output);s.inferenceInputQueue.add(new RenderResult(ByteBuffer.allocate(4)));
@@ -90,6 +90,7 @@ SUFFIX = r'''
 markers=['    private void initializeTfLite()', '    private void reinitializeTfLiteOnCpu()',
          '    private class AiTask', '    private class AiResultHandling']
 if '    private void closeTfLite()' in source: markers.insert(0,'    private void closeTfLite()')
+if '    private static void closeModel(' in source: markers.insert(0,'    private static void closeModel(')
 if '    private static void closeTfLite(' in source: markers.insert(0,'    private static void closeTfLite(')
 with tempfile.TemporaryDirectory(prefix='stereo-workers-') as directory:
     work=pathlib.Path(directory)

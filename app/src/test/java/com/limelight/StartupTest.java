@@ -51,7 +51,8 @@ public class StartupTest {
     @Test
     public void testApplicationStartup() {
         // Test ArtemisApplication creation and initialization
-        ArtemisApplication app = new ArtemisApplication();
+        // Re-run startup after setUp resets profiles, using the attached application.
+        ArtemisApplication app = ApplicationProvider.getApplicationContext();
         app.onCreate();
 
         // Verify ProfilesManager was initialized
