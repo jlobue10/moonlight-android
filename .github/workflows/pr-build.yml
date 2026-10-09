@@ -25,6 +25,13 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Run focused lifecycle and transport regressions
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          for regression in tools/regression/test_*.py; do
+            python3 "$regression"
+          done
       - name: Install the project's Android toolchain
         shell: bash
         run: |

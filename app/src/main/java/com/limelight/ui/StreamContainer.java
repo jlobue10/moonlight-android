@@ -53,6 +53,7 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     private SurfaceGlThread xrGlThread;
     private CanvasTestPattern xrTestPattern;
     private boolean xrStereo = false;
+    private volatile boolean destroyed;
 
     private SurfaceView mSurfaceView;
     private Surface mCurrentSurface;
@@ -151,6 +152,7 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
                 prefConfig.xrMovableScreen, new XrStereoPresenter.Listener() {
             @Override
             public void onStereoSurfaceReady(Surface surface, int widthPx, int heightPx) {
+                if (destroyed) return;
                 if (xrGlThread != null || xrTestPattern != null) {
                     return;
                 }
@@ -174,6 +176,7 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
 
             @Override
             public void onStereoUnavailable(String reason) {
+                if (destroyed) return;
                 LimeLog.warning("XR stereo unavailable (" + reason + "); showing the side-by-side frame flat");
                 xrStereo = false;
                 xrPresenter = null;
@@ -202,12 +205,17 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
 
     /** The EGL thread could not start on the entity's surface: tear the XR path down and go flat. */
     private void onXrGlFailed(String reason) {
+        if (destroyed) return;
         LimeLog.warning("XR stereo GL thread failed (" + reason + "); showing the side-by-side frame flat");
+        // onSurfaceCreated may fail after allocating the model or starting workers.
+        if (mStereoRenderer != null) {
+            mStereoRenderer.onSurfaceDestroyed();
+            mStereoRenderer = null;
+        }
         if (xrGlThread != null) {
             xrGlThread.shutdown();
             xrGlThread = null;
         }
-        mStereoRenderer = null;   // never received onSurfaceCreated, so there is nothing to release
         if (xrPresenter != null) {
             xrPresenter.stop();
             xrPresenter = null;
@@ -218,6 +226,7 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
 
     /** Builds the flat GLSurfaceView path if it does not exist yet and tells the user why. */
     private void fallBackToFlatStereo(String reason) {
+        if (destroyed) return;
         try {
             Toast.makeText(getContext(), getContext().getString(R.string.xr_stereo_fallback_toast, reason), Toast.LENGTH_LONG).show();
         } catch (RuntimeException ignored) {
@@ -398,15 +407,21 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
 
     @Override
     public void onStereo3DSurfaceReady(Surface surface) {
-        if (renderMode != StreamMode.MODE_2D) {
+        if (!destroyed && renderMode != StreamMode.MODE_2D) {
             mCurrentSurface = surface;
             notifySurfaceReady();
         }
     }
 
     public void onDestroy() {
+        if (destroyed) return;
+        destroyed = true;
+        isSurfaceReady = false;
+        mCurrentSurface = null;
+        onSurfaceAvailable = null;
         if (mStereoRenderer != null) {
             mStereoRenderer.onSurfaceDestroyed();   // queues its GL cleanup on the host thread
+            mStereoRenderer = null;
         }
         if (xrGlThread != null) {
             xrGlThread.shutdown();                  // drains that cleanup, then releases EGL
@@ -420,5 +435,6 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
             xrPresenter.stop();                     // disposes the entity, back to Home Space
             xrPresenter = null;
         }
+        xrStereo = false;
     }
 }

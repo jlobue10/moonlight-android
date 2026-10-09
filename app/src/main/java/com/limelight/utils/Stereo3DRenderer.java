@@ -17,8 +17,6 @@ import org.opencv.android.OpenCVLoader;
 import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
-import org.opencv.core.MatOfFloat;
-import org.opencv.core.MatOfInt;
 import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
 import org.tensorflow.lite.DataType;
@@ -37,7 +35,6 @@ import java.nio.FloatBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -1056,84 +1053,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         return program;
     }
 
-    private double hasFrameChangedSignificantlyOCV(ByteBuffer newPixelBuffer, ByteBuffer oldPixelBuffer) {
-        if (newPixelBuffer == null || oldPixelBuffer == null || newPixelBuffer.capacity() != oldPixelBuffer.capacity()) {
-            return 1.0; // maximal unterschiedliche Frames
-        }
-
-        Mat mat1 = null, mat2 = null;
-        Mat gray1 = null, gray2 = null;
-        Mat edges1 = null, edges2 = null;
-        Mat histGray1 = null, histGray2 = null;
-        Mat histEdge1 = null, histEdge2 = null;
-
-        try {
-            mat1 = new Mat(modelInputHeight, modelInputWidth, CvType.CV_8UC4, newPixelBuffer);
-            mat2 = new Mat(modelInputHeight, modelInputWidth, CvType.CV_8UC4, oldPixelBuffer);
-
-            // Graustufen
-            gray1 = new Mat();
-            gray2 = new Mat();
-            Imgproc.cvtColor(mat1, gray1, Imgproc.COLOR_RGBA2GRAY);
-            Imgproc.cvtColor(mat2, gray2, Imgproc.COLOR_RGBA2GRAY);
-
-            // Kanten (Sobel)
-            edges1 = new Mat();
-            edges2 = new Mat();
-            Mat gradX1 = new Mat(), gradY1 = new Mat();
-            Mat gradX2 = new Mat(), gradY2 = new Mat();
-            Imgproc.Sobel(gray1, gradX1, CvType.CV_16S, 1, 0);
-            Imgproc.Sobel(gray1, gradY1, CvType.CV_16S, 0, 1);
-            Core.convertScaleAbs(gradX1, gradX1);
-            Core.convertScaleAbs(gradY1, gradY1);
-            Core.addWeighted(gradX1, 0.5, gradY1, 0.5, 0, edges1);
-
-            Imgproc.Sobel(gray2, gradX2, CvType.CV_16S, 1, 0);
-            Imgproc.Sobel(gray2, gradY2, CvType.CV_16S, 0, 1);
-            Core.convertScaleAbs(gradX2, gradX2);
-            Core.convertScaleAbs(gradY2, gradY2);
-            Core.addWeighted(gradX2, 0.5, gradY2, 0.5, 0, edges2);
-
-            gradX1.release();
-            gradY1.release();
-            gradX2.release();
-            gradY2.release();
-
-            // Histogramme Graustufen
-            histGray1 = new Mat();
-            histGray2 = new Mat();
-            Imgproc.calcHist(Collections.singletonList(gray1), new MatOfInt(0), new Mat(), histGray1, new MatOfInt(256), new MatOfFloat(0f, 256f));
-            Imgproc.calcHist(Collections.singletonList(gray2), new MatOfInt(0), new Mat(), histGray2, new MatOfInt(256), new MatOfFloat(0f, 256f));
-
-            // Histogramme Kanten
-            histEdge1 = new Mat();
-            histEdge2 = new Mat();
-            Imgproc.calcHist(Collections.singletonList(edges1), new MatOfInt(0), new Mat(), histEdge1, new MatOfInt(256), new MatOfFloat(0f, 256f));
-            Imgproc.calcHist(Collections.singletonList(edges2), new MatOfInt(0), new Mat(), histEdge2, new MatOfInt(256), new MatOfFloat(0f, 256f));
-
-            // Vergleich: Graustufen + Kanten
-            double grayDiff = 1.0 - Imgproc.compareHist(histGray1, histGray2, Imgproc.HISTCMP_CORREL);
-            double edgeDiff = 1.0 - Imgproc.compareHist(histEdge1, histEdge2, Imgproc.HISTCMP_CORREL);
-
-            // Kombiniere beide Differenzen (Gewichtung kann angepasst werden)
-            double combinedDiff = 0.5 * grayDiff + 0.5 * edgeDiff;
-            return combinedDiff;
-
-        } finally {
-            if (mat1 != null) mat1.release();
-            if (mat2 != null) mat2.release();
-            if (gray1 != null) gray1.release();
-            if (gray2 != null) gray2.release();
-            if (edges1 != null) edges1.release();
-            if (edges2 != null) edges2.release();
-            if (histGray1 != null) histGray1.release();
-            if (histGray2 != null) histGray2.release();
-            if (histEdge1 != null) histEdge1.release();
-            if (histEdge2 != null) histEdge2.release();
-        }
-    }
-
-
     private double hasSceneChangedFast(ByteBuffer currentFrame, ByteBuffer previousFrame) {
         if (currentFrame == null || previousFrame == null || currentFrame.capacity() != previousFrame.capacity()) {
             return 0.0;
@@ -1269,98 +1188,102 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
         @Override
         public void run() {
-            while (!stopped && !Thread.currentThread().isInterrupted()) {
-                ByteBuffer resultBuffer = null;
-                InferenceResult result = null;
-                long startTime = System.nanoTime();
-                long waitTime = System.nanoTime();
-                Mat rawMat = null;
-                Mat processedMat = null;
-                try {
-                    result = filledOutputBuffers.take();
-                    resultBuffer = freeSmoothedBuffers.take();
-                    waitTime = System.nanoTime();
+            try (DepthFrameDifference frameDifference = new DepthFrameDifference(modelInputWidth, modelInputHeight)) {
+                while (!stopped && !Thread.currentThread().isInterrupted()) {
+                    ByteBuffer resultBuffer = null;
+                    InferenceResult result = null;
+                    long startTime = System.nanoTime();
+                    long waitTime = System.nanoTime();
+                    Mat rawMat = null;
+                    Mat processedMat = null;
+                    Mat diff = null, validMask = null, blended = null, inverseMask = null;
+                    try {
+                        result = filledOutputBuffers.take();
+                        resultBuffer = freeSmoothedBuffers.take();
+                        waitTime = System.nanoTime();
 
-                    InferenceResult intermediate;
-                    while ((intermediate = filledOutputBuffers.poll()) != null) {
-                        freeInputBuffers.offer(result.pixelBuffer);
-                        freeOutputBuffers.offer(result.rawDepthBuffer);
-                        result = intermediate;
-                    }
-                    ByteBuffer rawDepthBuffer = result.rawDepthBuffer;
-                    ByteBuffer currentPixelBuffer = result.pixelBuffer;
+                        InferenceResult intermediate;
+                        while ((intermediate = filledOutputBuffers.poll()) != null) {
+                            freeInputBuffers.offer(result.pixelBuffer);
+                            freeOutputBuffers.offer(result.rawDepthBuffer);
+                            result = intermediate;
+                        }
+                        ByteBuffer rawDepthBuffer = result.rawDepthBuffer;
+                        ByteBuffer currentPixelBuffer = result.pixelBuffer;
 
-                    currentPixelBuffer.rewind();
-                    double imageDifference = hasFrameChangedSignificantlyOCV(currentPixelBuffer, previousPixelBuffer) * IMAGE_DIFFERENCE_MULTIPLIER;
+                        currentPixelBuffer.rewind();
+                        double imageDifference = frameDifference.compare(currentPixelBuffer, previousPixelBuffer) * IMAGE_DIFFERENCE_MULTIPLIER;
 
-                    rawDepthBuffer.rewind();
-                    rawMat = new Mat(modelInputHeight, modelInputWidth, floatOutput ? CvType.CV_32FC1 : CvType.CV_8UC1, rawDepthBuffer);
-                    processedMat = new Mat();
-                    // Min-max normalise to 8 bit; the rest of the pipeline is 8-bit whatever the model emits
-                    Core.normalize(rawMat, processedMat, 0, 255, Core.NORM_MINMAX, CvType.CV_8U);
+                        rawDepthBuffer.rewind();
+                        rawMat = new Mat(modelInputHeight, modelInputWidth, floatOutput ? CvType.CV_32FC1 : CvType.CV_8UC1, rawDepthBuffer);
+                        processedMat = new Mat();
+                        // Min-max normalise to 8 bit; the rest of the pipeline is 8-bit whatever the model emits
+                        Core.normalize(rawMat, processedMat, 0, 255, Core.NORM_MINMAX, CvType.CV_8U);
 
-                    if (isFirstFrame) {
-                        previousSmoothedMat = processedMat.clone();
-                        isFirstFrame = false;
-                    }
+                        if (isFirstFrame) {
+                            previousSmoothedMat = processedMat.clone();
+                            isFirstFrame = false;
+                        }
 
-                    double smoothing = (imageDifference * 10) / (Math.max(1.0f, threeDFps) * 3);
-                    smoothing = Math.min(smoothing, MAX_SMOOTHING_FACTOR);
-                    smoothing = Math.max(smoothing, MIN_SMOOTHING_FACTOR);
-                    Mat diff = new Mat();
-                    Core.absdiff(processedMat, previousSmoothedMat, diff);
-                    Core.MinMaxLocResult mmr = Core.minMaxLoc(diff);
-                    double thresholdValue = Math.max(1, mmr.maxVal * ((1.0 - smoothing)) * 0.1);
-                    Mat validMask = new Mat();
-                    Imgproc.threshold(diff, validMask, thresholdValue, 255, Imgproc.THRESH_BINARY_INV);
-                    processedMat.copyTo(previousSmoothedMat, validMask);
-                    Mat blended = new Mat();
-                    Core.addWeighted(processedMat, smoothing, previousSmoothedMat, 1.0 - smoothing, 0.0, blended);
-                    Mat inverseMask = new Mat();
-                    Core.bitwise_not(validMask, inverseMask);
-                    blended.copyTo(previousSmoothedMat, inverseMask);
-                    diff.release();
-                    validMask.release();
-                    inverseMask.release();
-                    blended.release();
-                    previousSmoothedMat.get(0, 0, processedDataArray);
-                    // Straight into the 8-bit map buffer: the raw buffer may be float32 and 4x larger
-                    resultBuffer.clear();
-                    resultBuffer.put(processedDataArray);
-                    resultBuffer.rewind();
-                    // Transfer ownership to the GL consumer. Only an unpublished
-                    // superseded map may return to the producer's pool here.
-                    ByteBuffer superseded = latestDepthMap.getAndSet(resultBuffer);
-                    resultBuffer = null;
-                    if (superseded != null) freeSmoothedBuffers.offer(superseded);
+                        double smoothing = (imageDifference * 10) / (Math.max(1.0f, threeDFps) * 3);
+                        smoothing = Math.min(smoothing, MAX_SMOOTHING_FACTOR);
+                        smoothing = Math.max(smoothing, MIN_SMOOTHING_FACTOR);
+                        diff = new Mat();
+                        Core.absdiff(processedMat, previousSmoothedMat, diff);
+                        Core.MinMaxLocResult mmr = Core.minMaxLoc(diff);
+                        double thresholdValue = Math.max(1, mmr.maxVal * ((1.0 - smoothing)) * 0.1);
+                        validMask = new Mat();
+                        Imgproc.threshold(diff, validMask, thresholdValue, 255, Imgproc.THRESH_BINARY_INV);
+                        processedMat.copyTo(previousSmoothedMat, validMask);
+                        blended = new Mat();
+                        Core.addWeighted(processedMat, smoothing, previousSmoothedMat, 1.0 - smoothing, 0.0, blended);
+                        inverseMask = new Mat();
+                        Core.bitwise_not(validMask, inverseMask);
+                        blended.copyTo(previousSmoothedMat, inverseMask);
+                        previousSmoothedMat.get(0, 0, processedDataArray);
+                        // Straight into the 8-bit map buffer: the raw buffer may be float32 and 4x larger
+                        resultBuffer.clear();
+                        resultBuffer.put(processedDataArray);
+                        resultBuffer.rewind();
+                        // Transfer ownership to the GL consumer. Only an unpublished
+                        // superseded map may return to the producer's pool here.
+                        ByteBuffer superseded = latestDepthMap.getAndSet(resultBuffer);
+                        resultBuffer = null;
+                        if (superseded != null) freeSmoothedBuffers.offer(superseded);
 
-                    previousPixelBuffer.rewind();
-                    previousPixelBuffer.put(currentPixelBuffer);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } catch (Exception e) {
-                    LimeLog.severe("AI exception " + e.getMessage());
-                } finally {
-                    if (rawMat != null) {
-                        rawMat.release();
+                        previousPixelBuffer.rewind();
+                        previousPixelBuffer.put(currentPixelBuffer);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch (Exception e) {
+                        LimeLog.severe("AI exception " + e.getMessage());
+                    } finally {
+                        if (diff != null) diff.release();
+                        if (validMask != null) validMask.release();
+                        if (blended != null) blended.release();
+                        if (inverseMask != null) inverseMask.release();
+                        if (rawMat != null) {
+                            rawMat.release();
+                        }
+                        if (processedMat != null) {
+                            processedMat.release();
+                        }
+                        if (resultBuffer != null) {
+                            freeSmoothedBuffers.offer(resultBuffer);
+                        }
+                        if (result != null) {
+                            freeInputBuffers.offer(result.pixelBuffer);
+                            freeOutputBuffers.offer(result.rawDepthBuffer);
+                        }
+                        long duration = (System.nanoTime() - startTime) / 1_000_000;
+                        long waitTimeText = (waitTime - startTime) / 1_000_000;
+                        if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "CalculateTime AiResult:    " + duration + " ms" + " " + freeOutputBuffers.remainingCapacity() + " " + waitTimeText + " ms ");
                     }
-                    if (processedMat != null) {
-                        processedMat.release();
-                    }
-                    if (resultBuffer != null) {
-                        freeSmoothedBuffers.offer(resultBuffer);
-                    }
-                    if (result != null) {
-                        freeInputBuffers.offer(result.pixelBuffer);
-                        freeOutputBuffers.offer(result.rawDepthBuffer);
-                    }
-                    long duration = (System.nanoTime() - startTime) / 1_000_000;
-                    long waitTimeText = (waitTime - startTime) / 1_000_000;
-                    if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "CalculateTime AiResult:    " + duration + " ms" + " " + freeOutputBuffers.remainingCapacity() + " " + waitTimeText + " ms ");
                 }
+            } finally {
+                if (previousSmoothedMat != null) previousSmoothedMat.release();
+                isAiResultHandlingRunning.set(false);
             }
-            if (previousSmoothedMat != null) previousSmoothedMat.release();
-            isAiResultHandlingRunning.set(false);
         }
     }
 }

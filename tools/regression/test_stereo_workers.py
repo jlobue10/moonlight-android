@@ -49,6 +49,7 @@ public class StereoWorkers {
  MappedByteBuffer loadModelFile()throws IOException{return null;}
  ByteBuffer createFlatDepthMap(){return ByteBuffer.allocate(1);}
  void convertRgbaToFloatRgb(ByteBuffer a,ByteBuffer b,int w,int h){}void convertRgbaToRgb(ByteBuffer a,ByteBuffer b,int w,int h){}
+ static class DepthFrameDifference implements AutoCloseable {DepthFrameDifference(int w,int h){}double compare(ByteBuffer a,ByteBuffer b){return 1;}public void close(){}}
  double hasFrameChangedSignificantlyOCV(ByteBuffer a,ByteBuffer b){return 1;}
  static class ReflectivePaddingInt8Minimal{static void applyReflectedPadding(ByteBuffer b){}}
  static class LimeLog{static void severe(String s){}static void info(String s){}}
@@ -89,6 +90,7 @@ SUFFIX = r'''
 markers=['    private void initializeTfLite()', '    private void reinitializeTfLiteOnCpu()',
          '    private class AiTask', '    private class AiResultHandling']
 if '    private void closeTfLite()' in source: markers.insert(0,'    private void closeTfLite()')
+if '    private static void closeTfLite(' in source: markers.insert(0,'    private static void closeTfLite(')
 with tempfile.TemporaryDirectory(prefix='stereo-workers-') as directory:
     work=pathlib.Path(directory)
     (work/'StereoWorkers.java').write_text(PREFIX+'\n'.join(map(block,markers))+SUFFIX)

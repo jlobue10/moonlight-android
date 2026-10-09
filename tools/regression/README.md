@@ -17,6 +17,13 @@ boundaries. See each script for the exact boundary being replaced.
 - `test_pyrowave_state.py`: actual setup/HDR/cleanup methods; early HDR state.
 - `test_depth_download.py`: actual downloader, fake HTTP streams and real files;
   cancellation overlapping a retry cannot delete the retry's private file.
+- `test_xr_lifecycle.py`: actual presenter start/stop/failure methods; queued
+  callbacks after stop/restart, synchronous capability grants and teardown errors.
+- `test_stream_shutdown.py`: actual container teardown/fallback methods; delayed
+  work after destruction and cleanup of a partly initialized stereo renderer.
+- `test_depth_scratch.py`: production frame comparison; bounds application-level
+  Mat construction to two headers per comparison and checks explicit release,
+  including a failing Sobel operation. It does not measure native memory or FPS.
 
 The `--baseline` option on supported scripts uses the current HEAD's source,
 which is useful before committing local fixes. To compare published revisions,
@@ -28,3 +35,6 @@ sanitizers stay enabled; that invocation does not test native leaks.
 
 These checks do not replace Android Gradle/NDK/R8 builds or BLE, XR, Vulkan,
 HDR display, tensor-quality and thermal/performance tests on real devices.
+
+`.github/workflows/pr-build.yml` runs these regressions, builds unsigned release
+APKs for all supported ABIs (including NDK and R8), and runs Android unit tests.
