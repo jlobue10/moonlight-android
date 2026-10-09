@@ -24,6 +24,9 @@ boundaries. See each script for the exact boundary being replaced.
 - `test_depth_scratch.py`: production frame comparison; bounds application-level
   Mat construction to two headers per comparison and checks explicit release,
   including a failing Sobel operation. It does not measure native memory or FPS.
+- `test_stereo_initialization.py`: actual surface lifecycle and session stop;
+  a native model constructor ignores interruption while teardown cancels the GL
+  wait. Checks late publication, deferred close and teardown inside the ready callback.
 
 The `--baseline` option on supported scripts uses the current HEAD's source,
 which is useful before committing local fixes. To compare published revisions,
