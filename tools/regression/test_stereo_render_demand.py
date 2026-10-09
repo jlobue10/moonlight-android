@@ -42,9 +42,10 @@ public class StereoDemand {
  static class GLES20 {static final int GL_COLOR_BUFFER_BIT=1;static void glClear(int i){}}
  static class Host {boolean continuous;int requests;void setContinuousRendering(boolean b){continuous=b;}void requestRender(){requests++;}}
  static class Texture {int updates;void updateTexImage(){updates++;}}
- static class RenderResult {ByteBuffer pixelBuffer;RenderResult(ByteBuffer b,double d){pixelBuffer=b;}}
+ static class RenderResult {ByteBuffer pixelBuffer;RenderResult(ByteBuffer b,double d){pixelBuffer=b;}RenderResult(ByteBuffer b){pixelBuffer=b;}}
  class DepthSession {
   String backend="CPU";Object tflite=new Object();boolean stopped;
+  AtomicInteger completedDepthFrames=new AtomicInteger();
   AtomicReference<ByteBuffer> latestDepthMap=new AtomicReference<>();AtomicBoolean isAiRunning=new AtomicBoolean();
   ArrayBlockingQueue<ByteBuffer> freeInputBuffers=new ArrayBlockingQueue<>(10),freeSmoothedBuffers=new ArrayBlockingQueue<>(3);
   ArrayBlockingQueue<ByteBuffer> filledOutputBuffers=new ArrayBlockingQueue<>(6);
@@ -104,6 +105,8 @@ request_test = r'''
 with tempfile.TemporaryDirectory(prefix='stereo-demand-') as directory:
     work = pathlib.Path(directory)
     code = PREFIX.replace('DEPTH_REQUEST_METHOD', request) + method('    public void onDrawFrame(')
+    if '    private void updatePerformanceStats(' in source:
+        code += method('    private void updatePerformanceStats(')
     code += SUFFIX.replace('DEPTH_REQUEST_TEST', request_test)
     (work / 'StereoDemand.java').write_text(code)
     subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(work), str(work / 'StereoDemand.java')], check=True)

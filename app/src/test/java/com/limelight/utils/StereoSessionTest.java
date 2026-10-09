@@ -136,9 +136,9 @@ public class StereoSessionTest {
         ExecutorService oldExecutor = executor(oldOwner);
         try {
             Class<?> result = nested(Stereo3DRenderer.class, "RenderResult");
-            Constructor<?> resultConstructor = result.getDeclaredConstructor(ByteBuffer.class, double.class);
+            Constructor<?> resultConstructor = result.getDeclaredConstructor(ByteBuffer.class);
             resultConstructor.setAccessible(true);
-            queue(oldOwner, "inferenceInputQueue").add(resultConstructor.newInstance(ByteBuffer.allocateDirect(4), 10.0));
+            queue(oldOwner, "inferenceInputQueue").add(resultConstructor.newInstance(ByteBuffer.allocateDirect(4)));
             Runnable worker = (Runnable) construct(nested(oldOwner.getClass(), "AiTask"), oldOwner);
             Future<?> task = oldExecutor.submit(() -> {
                 // Pixel conversion is a native boundary; keep the production

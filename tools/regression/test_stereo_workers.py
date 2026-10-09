@@ -30,6 +30,7 @@ public class StereoWorkers {
  int modelInputWidth=1,modelInputHeight=1,calcThreeDFps=0;float threeDFps=60;float ON_DRAW_CHANGE_TRESHOLD=2;
  Boolean isDebugMode=false; String renderer="CPU",backend="CPU"; DepthModel depthModel=DepthModel.MIDAS_V2_256;
  AtomicBoolean isAiRunning=new AtomicBoolean(true),isAiResultHandlingRunning=new AtomicBoolean(true),gpuDelegateFailed=new AtomicBoolean();
+ AtomicInteger completedDepthFrames=new AtomicInteger();
  AtomicReference<ByteBuffer> latestDepthMap=new AtomicReference<>();
  BlockingQueue<ByteBuffer> freeInputBuffers=new ArrayBlockingQueue<>(10),freeOutputBuffers=new ArrayBlockingQueue<>(6),freeSmoothedBuffers=new ArrayBlockingQueue<>(3);
  BlockingQueue<RenderResult> inferenceInputQueue=new ArrayBlockingQueue<>(1);
@@ -91,6 +92,8 @@ SUFFIX = r'''
 '''
 markers=['    private void initializeTfLite()', '    private void reinitializeTfLiteOnCpu()',
          '    private class AiTask', '    private class AiResultHandling']
+if '    private static double hasSceneChangedFast(' in source:
+    markers.insert(0, '    private static double hasSceneChangedFast(')
 if '    private void closeTfLite()' in source: markers.insert(0,'    private void closeTfLite()')
 if '    private static void closeModel(' in source: markers.insert(0,'    private static void closeModel(')
 if '    private static void closeTfLite(' in source: markers.insert(0,'    private static void closeTfLite(')
