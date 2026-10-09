@@ -27,6 +27,10 @@ boundaries. See each script for the exact boundary being replaced.
 - `test_stereo_initialization.py`: actual surface lifecycle and session stop;
   a native model constructor ignores interruption while teardown cancels the GL
   wait. Checks late publication, deferred close and teardown inside the ready callback.
+- `test_stereo_render_demand.py`: actual draw method with fake GL/pixels and a
+  deterministic clock; redraws do not repeat AI submissions or depth uploads,
+  late synced-mode maps are consumed, retired sessions do not wake the renderer,
+  and draw duration is reported in milliseconds. No GPU speedup is inferred.
 
 The `--baseline` option on supported scripts uses the current HEAD's source,
 which is useful before committing local fixes. To compare published revisions,
