@@ -28,4 +28,7 @@ public class ControllerPacket {
     // sent only with LI_CCAP_GRIP_SENSE
     public static final int LEFT_GRIP_TOUCH_FLAG  = 0x400000;
     public static final int RIGHT_GRIP_TOUCH_FLAG = 0x800000;
+    // Capacitive stick touch (LI_CCAP_STICK_TOUCH): held, not pressed
+    public static final int LEFT_STICK_TOUCH_FLAG  = 0x1000000;
+    public static final int RIGHT_STICK_TOUCH_FLAG = 0x2000000;
 }

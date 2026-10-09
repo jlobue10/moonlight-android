@@ -105,7 +105,8 @@ public class SteamControllerBle extends AbstractController {
             ControllerPacket.LS_CLK_FLAG | ControllerPacket.RS_CLK_FLAG | ControllerPacket.SPECIAL_BUTTON_FLAG |
             ControllerPacket.PADDLE1_FLAG | ControllerPacket.PADDLE2_FLAG | ControllerPacket.PADDLE3_FLAG | ControllerPacket.PADDLE4_FLAG |
             ControllerPacket.TOUCHPAD_FLAG | ControllerPacket.MISC_FLAG |
-            ControllerPacket.LEFT_GRIP_TOUCH_FLAG | ControllerPacket.RIGHT_GRIP_TOUCH_FLAG;
+            ControllerPacket.LEFT_GRIP_TOUCH_FLAG | ControllerPacket.RIGHT_GRIP_TOUCH_FLAG |
+            ControllerPacket.LEFT_STICK_TOUCH_FLAG | ControllerPacket.RIGHT_STICK_TOUCH_FLAG;
 
     private final Context context;
     private final BluetoothDevice device;
@@ -189,7 +190,7 @@ public class SteamControllerBle extends AbstractController {
         this.type = MoonBridge.LI_CTYPE_STEAM;
         this.capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
                 | MoonBridge.LI_CCAP_TOUCHPAD | (splitPads ? 0 : MoonBridge.LI_CCAP_DUAL_TOUCHPAD)
-                | MoonBridge.LI_CCAP_BATTERY_STATE | MoonBridge.LI_CCAP_GRIP_SENSE
+                | MoonBridge.LI_CCAP_BATTERY_STATE | MoonBridge.LI_CCAP_GRIP_SENSE | MoonBridge.LI_CCAP_STICK_TOUCH
                 | (motionEnabled ? (MoonBridge.LI_CCAP_GYRO | MoonBridge.LI_CCAP_ACCEL) : 0));
         this.supportedButtonFlags = SUPPORTED_BUTTONS;
     }
@@ -642,6 +643,10 @@ public class SteamControllerBle extends AbstractController {
         // ignore the two extension bits.
         if (bit(buttons, BTN_GRIP_L_TOUCH)) flags |= ControllerPacket.LEFT_GRIP_TOUCH_FLAG;
         if (bit(buttons, BTN_GRIP_R_TOUCH)) flags |= ControllerPacket.RIGHT_GRIP_TOUCH_FLAG;
+        // Stick touch (capacitive, held not pressed) goes the same way; the host driver
+        // otherwise guesses it from deflection and misses a thumb resting on the stick.
+        if (bit(buttons, BTN_LSTICK_TOUCH)) flags |= ControllerPacket.LEFT_STICK_TOUCH_FLAG;
+        if (bit(buttons, BTN_RSTICK_TOUCH)) flags |= ControllerPacket.RIGHT_STICK_TOUCH_FLAG;
         buttonFlags = flags;
 
         // Triggers: 0..32767 (SDL maps value*2-32768 onto the full axis)
@@ -756,9 +761,11 @@ public class SteamControllerBle extends AbstractController {
                 + describeStick(stickLogRightMax, stickLogRightAxisX, stickLogRightAxisY, stickLogRightSectors, stickLogRightSectorPeak)
                 + String.format(Locale.ROOT, "; rim calibration %s, extents left %.3f/%.3f right %.3f/%.3f",
                         stickRim ? "on" : "off", leftExtentX, leftExtentY, rightExtentX, rightExtentY)
-                + String.format(Locale.ROOT, "; raw buttons seen 0x%08x (grip touch L %s R %s)", stickLogButtonsSeen,
+                + String.format(Locale.ROOT, "; raw buttons seen 0x%08x (grip touch L %s R %s, stick touch L %s R %s)", stickLogButtonsSeen,
                         bit(stickLogButtonsSeen, BTN_GRIP_L_TOUCH) ? "yes" : "no",
-                        bit(stickLogButtonsSeen, BTN_GRIP_R_TOUCH) ? "yes" : "no"));
+                        bit(stickLogButtonsSeen, BTN_GRIP_R_TOUCH) ? "yes" : "no",
+                        bit(stickLogButtonsSeen, BTN_LSTICK_TOUCH) ? "yes" : "no",
+                        bit(stickLogButtonsSeen, BTN_RSTICK_TOUCH) ? "yes" : "no"));
         stickLogDueMs = now + 10_000;
         stickLogButtonsSeen = 0;
         stickLogLeftMax = stickLogRightMax = 0;
