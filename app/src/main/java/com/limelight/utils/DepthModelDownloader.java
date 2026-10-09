@@ -57,7 +57,7 @@ public final class DepthModelDownloader {
         this.context = context.getApplicationContext();
     }
 
-    public void cancel() {
+    public synchronized void cancel() {
         cancelled.set(true);
         Call c = call;
         if (c != null) {
@@ -78,10 +78,21 @@ public final class DepthModelDownloader {
     private void run(DepthModel model, Listener listener) {
         File dir = DepthModel.modelDirectory(context);
         File target = model.localFile(context);
-        File temp = new File(dir, model.fileName + ".part");
-
         if (!dir.isDirectory() && !dir.mkdirs()) {
-            fail(listener, model, temp, "cannot create " + dir);
+            fail(listener, model, null, "cannot create " + dir);
+            return;
+        }
+        final File temp;
+        try {
+            // A cancelled attempt may still be unwinding when a retry starts.
+            // Give each writer its own file so it cannot corrupt/delete the retry.
+            temp = File.createTempFile(model.fileName + ".", ".part", dir);
+        } catch (IOException e) {
+            fail(listener, model, null, e.getMessage());
+            return;
+        }
+        if (cancelled.get()) {
+            fail(listener, model, temp, "cancelled");
             return;
         }
 
@@ -94,6 +105,7 @@ public final class DepthModelDownloader {
 
         Request request = new Request.Builder().url(model.downloadUrl).build();
         call = client.newCall(request);
+        if (cancelled.get()) call.cancel();
 
         MessageDigest digest;
         try {
@@ -163,20 +175,24 @@ public final class DepthModelDownloader {
             return;
         }
 
-        if (target.exists() && !target.delete()) {
-            fail(listener, model, temp, "cannot replace the old file");
-            return;
-        }
-        if (!temp.renameTo(target)) {
-            fail(listener, model, temp, "cannot move the file into place");
-            return;
+        synchronized (this) {
+            if (cancelled.get()) {
+                fail(listener, model, temp, "cancelled");
+                return;
+            }
+            // Both paths are in one private directory; Android's rename replaces
+            // atomically. Keep a verified existing model if publication fails.
+            if (!temp.renameTo(target)) {
+                fail(listener, model, temp, "cannot move the file into place");
+                return;
+            }
         }
         LimeLog.info("Depth model " + model.fileName + " downloaded and verified (" + written + " bytes)");
         mainHandler.post(() -> listener.onSuccess(model));
     }
 
     private void fail(Listener listener, DepthModel model, File temp, String reason) {
-        if (temp.exists() && !temp.delete()) {
+        if (temp != null && temp.exists() && !temp.delete()) {
             LimeLog.warning("Could not delete " + temp);
         }
         LimeLog.warning("Depth model download of " + model.fileName + " failed: " + reason);

@@ -343,6 +343,7 @@ namespace {
         }
 
         int submit(const uint8_t *data, size_t length) {
+            framePresented = false;
             // Every frame is complete and independent, so start each one from a
             // cleared decoder. This also sidesteps PyroWave's 3-bit sequence
             // counter, which would treat the first frame after four or more
@@ -356,7 +357,7 @@ namespace {
             if (!pyrowave_decoder_decode_is_ready(decoder, true)) {
                 return SUBMIT_SKIPPED;
             }
-            return present() ? SUBMIT_OK : SUBMIT_ERROR;
+            return present() ? (framePresented ? SUBMIT_OK : SUBMIT_SKIPPED) : SUBMIT_ERROR;
         }
 
     private:
@@ -1024,6 +1025,7 @@ namespace {
             fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
             VkSemaphoreCreateInfo semInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             return check(vk.CreateFence(device, &fenceInfo, nullptr, &frameFence), "vkCreateFence") &&
+                   check(vk.CreateFence(device, &fenceInfo, nullptr, &decodeFence), "vkCreateFence(decode)") &&
                    check(vk.CreateSemaphore(device, &semInfo, nullptr, &acquireSemaphore), "vkCreateSemaphore");
         }
 
@@ -1190,9 +1192,11 @@ namespace {
         bool present() {
             const uint64_t frameStart = nowUs();
 
-            // One frame in flight: after this wait the previous frame's sampling of the
-            // planes is finished, so decoding may overwrite them.
-            if (!check(vk.WaitForFences(device, 1, &frameFence, VK_TRUE, FENCE_TIMEOUT_NS), "frame fence")) {
+            // A display acquire can time out after decode was submitted, without a
+            // draw to signal frameFence. Wait for decode independently before reusing
+            // its command buffer, query pool, or output planes.
+            const VkFence fences[] = {frameFence, decodeFence};
+            if (!check(vk.WaitForFences(device, 2, fences, VK_TRUE, FENCE_TIMEOUT_NS), "frame fences")) {
                 return false;
             }
             const uint64_t afterFence = nowUs();
@@ -1200,10 +1204,14 @@ namespace {
 
             // Decode first, without waiting for the display, so the GPU starts on the
             // frame immediately. The draw below is ordered after it on the same queue.
-            vk.ResetCommandBuffer(decodeCommandBuffer, 0);
+            if (!check(vk.ResetCommandBuffer(decodeCommandBuffer, 0), "vkResetCommandBuffer(decode)")) {
+                return false;
+            }
             VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            vk.BeginCommandBuffer(decodeCommandBuffer, &beginInfo);
+            if (!check(vk.BeginCommandBuffer(decodeCommandBuffer, &beginInfo), "vkBeginCommandBuffer(decode)")) {
+                return false;
+            }
             if (queryPool != VK_NULL_HANDLE) {
                 vk.CmdResetQueryPool(decodeCommandBuffer, queryPool, 0, QUERY_COUNT);
                 vk.CmdWriteTimestamp(decodeCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queryPool, 0);
@@ -1241,7 +1249,8 @@ namespace {
             VkSubmitInfo decodeSubmit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             decodeSubmit.commandBufferCount = 1;
             decodeSubmit.pCommandBuffers = &decodeCommandBuffer;
-            if (!check(vk.QueueSubmit(queue, 1, &decodeSubmit, VK_NULL_HANDLE), "vkQueueSubmit(decode)")) {
+            if (!check(vk.ResetFences(device, 1, &decodeFence), "vkResetFences(decode)") ||
+                    !check(vk.QueueSubmit(queue, 1, &decodeSubmit, decodeFence), "vkQueueSubmit(decode)")) {
                 return false;
             }
 
@@ -1325,6 +1334,7 @@ namespace {
             presentInfo.pSwapchains = &swapchain;
             presentInfo.pImageIndices = &imageIndex;
             const auto presented = vk.QueuePresentKHR(queue, &presentInfo);
+            framePresented = presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR;
             const uint64_t frameEnd = nowUs();
 
             stats.frames++;
@@ -1384,6 +1394,7 @@ namespace {
                 if (swapchain != VK_NULL_HANDLE) vk.DestroySwapchainKHR(device, swapchain, nullptr);
                 if (acquireSemaphore != VK_NULL_HANDLE) vk.DestroySemaphore(device, acquireSemaphore, nullptr);
                 if (frameFence != VK_NULL_HANDLE) vk.DestroyFence(device, frameFence, nullptr);
+                if (decodeFence != VK_NULL_HANDLE) vk.DestroyFence(device, decodeFence, nullptr);
                 if (queryPool != VK_NULL_HANDLE) vk.DestroyQueryPool(device, queryPool, nullptr);
                 if (commandPool != VK_NULL_HANDLE) vk.DestroyCommandPool(device, commandPool, nullptr);
                 if (pipeline != VK_NULL_HANDLE) vk.DestroyPipeline(device, pipeline, nullptr);
@@ -1444,6 +1455,7 @@ namespace {
         pyrowave_decoder decoder = nullptr;
         Plane planes[3];
         bool planesInitialized = false;
+        bool framePresented = false;
         bool fragmentPath = false;
         uint64_t lastSizeCheckUs = 0;
 
@@ -1468,6 +1480,7 @@ namespace {
         VkCommandPool commandPool = VK_NULL_HANDLE;
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkFence frameFence = VK_NULL_HANDLE;
+        VkFence decodeFence = VK_NULL_HANDLE;
         VkSemaphore acquireSemaphore = VK_NULL_HANDLE;
 
         // Timing. Queries 0/1 bracket the decode, 1/2 the colour conversion draw.

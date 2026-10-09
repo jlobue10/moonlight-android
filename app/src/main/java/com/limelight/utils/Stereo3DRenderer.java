@@ -42,6 +42,8 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -72,6 +74,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     private final int NUM_SMOOTHED_BUFFERS = 3;
     private final int[] pboHandles = new int[2];
     private int pboIndex = 0;
+    private boolean pboPrimed;
 
     public static boolean isMovieMode = true;
     private int PBO_SIZE = modelInputWidth * modelInputHeight * 4;
@@ -98,7 +101,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     private final FloatBuffer textureVertexBuffer;
     private final FloatBuffer flippedTextureVertexBuffer;
     private final AtomicBoolean frameAvailable = new AtomicBoolean(false);
-    private final AtomicBoolean gpuDelegateFailed = new AtomicBoolean(false);
     private final AtomicBoolean isAiResultHandlingRunning = new AtomicBoolean(false);
     private final AtomicBoolean isAiRunning = new AtomicBoolean(false);
 
@@ -119,7 +121,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     // AI & TFLite Variables
     private GpuDelegate gpuDelegate;
-    private Interpreter tflite;
+    private volatile Interpreter tflite;
     private NnApiDelegate nnApiDelegate;
     private ByteBuffer tfliteInputBuffer;
 
@@ -129,6 +131,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     private ByteBuffer previousFrameForComparison;
     private ByteBuffer currentlyRenderingMap;
     private ExecutorService executorService;
+    private ExecutorService inferenceExecutor;
+    private Future<?> inferenceTask;
+    private volatile boolean stopped;
     private BlockingQueue<InferenceResult> filledOutputBuffers;
     private BlockingQueue<ByteBuffer> freeInputBuffers;
     private BlockingQueue<ByteBuffer> freeOutputBuffers;
@@ -214,7 +219,15 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         this.prefConfig = prefConfig;
     }
 
-    public void onSurfaceDestroyed() {
+    public synchronized void onSurfaceDestroyed() {
+        stopped = true;
+        if (inferenceExecutor != null && !inferenceExecutor.isShutdown()) {
+            if (inferenceTask != null) inferenceTask.cancel(true);
+            // Native inference may ignore interruption. Cleanup runs after it on
+            // its owning thread, never concurrently after an arbitrary timeout.
+            inferenceExecutor.execute(this::closeTfLite);
+            inferenceExecutor.shutdown();
+        }
         LimeLog.info("Quit called. Shutting down 3dRenderer.");
         if (executorService != null) {
             executorService.shutdownNow();
@@ -226,18 +239,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 executorService.shutdownNow();
                 Thread.currentThread().interrupt();
             }
-        }
-        if (tflite != null) {
-            tflite.close();
-            tflite = null;
-        }
-        if (gpuDelegate != null) {
-            gpuDelegate.close();
-            gpuDelegate = null;
-        }
-        if (nnApiDelegate != null) {
-            nnApiDelegate.close();
-            nnApiDelegate = null;
         }
         if (videoSurface != null) {
             videoSurface.release();
@@ -264,12 +265,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
             int[] fbos = {fboHandle, intermediateFboHandle, filterFboHandle};
             GLES20.glDeleteFramebuffers(fbos.length, fbos, 0);
+            GLES30.glDeleteBuffers(pboHandles.length, pboHandles, 0);
         });
 
         if (filledOutputBuffers != null) filledOutputBuffers.clear();
-        previousPixelBuffer = null;
         currentlyRenderingMap = null;
-        prefConfig = null;
         drawDelay = 0.0f;
         calcFps = 0;
         calcThreeDFps = 0.0f;
@@ -283,6 +283,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     @Override
     public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+        if (stopped) return;
         synchronized (frameLock) {
             frameAvailable.set(true);
         }
@@ -290,7 +291,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     }
 
     @Override
-    public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+    public synchronized void onSurfaceCreated(GL10 gl, EGLConfig config) {
+        stopped = false;
         videoTextureId = createExternalOESTexture();
         videoSurfaceTexture = new SurfaceTexture(videoTextureId);
         // A SurfaceTexture's default buffer size is 1x1. MediaCodec sets its own buffer
@@ -304,8 +306,24 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         videoSurface = new Surface(videoSurfaceTexture);
 
         // Load the model first: every buffer and FBO below is sized from its input tensor.
-        initializeTfLite();
-        adoptTensorLayout();
+        // The GPU delegate must be created, invoked and closed on one thread.
+        inferenceExecutor = Executors.newSingleThreadExecutor();
+        Future<?> initialization = inferenceExecutor.submit(() -> {
+            initializeTfLite();
+            adoptTensorLayout();
+        });
+        try {
+            initialization.get();
+        } catch (InterruptedException e) {
+            initialization.cancel(true);
+            Thread.currentThread().interrupt();
+            onSurfaceDestroyed();
+            return;
+        } catch (ExecutionException e) {
+            LimeLog.severe("Depth model initialization failed: " + e.getCause());
+            onSurfaceDestroyed();
+            return;
+        }
         renderer = renderer + " " + depthModel.shortName();
 
         depthMapTextureId = createEmptyTexture(modelInputWidth, modelInputHeight);
@@ -336,18 +354,18 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             freeInputBuffers.offer(ByteBuffer.allocateDirect(inputPixelSize).order(ByteOrder.nativeOrder()));
         }
 
-        executorService = Executors.newFixedThreadPool(2);
+        executorService = Executors.newSingleThreadExecutor();
 
         if (onSurfaceReadyListener != null) {
             onSurfaceReadyListener.onStereo3DSurfaceReady(videoSurface);
         }
-        if (!isAiResultHandlingRunning.get()) {
+        if (tflite != null && !isAiResultHandlingRunning.get()) {
             isAiResultHandlingRunning.set(true);
             executorService.submit(new AiResultHandling());
         }
-        if (!isAiRunning.get()) {
+        if (tflite != null && !isAiRunning.get()) {
             isAiRunning.set(true);
-            executorService.submit(new AiTask());
+            inferenceTask = inferenceExecutor.submit(new AiTask());
         }
         isActive = true;
     }
@@ -493,6 +511,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     @Override
     public void onDrawFrame(GL10 gl) {
+        if (stopped) return;
         long startTime = System.nanoTime();
 
         synchronized (frameLock) {
@@ -515,10 +534,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             return;
         }
 
-        if (currentlyRenderingMap != null) {
-            freeSmoothedBuffers.offer(currentlyRenderingMap);
-        }
-
         long startTimeAi = System.nanoTime();
         long endTimeAi = System.nanoTime();
         if (tflite != null) {
@@ -527,7 +542,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 if (pixelBufferForAI != null) {
                     // Double-buffered PBO readback (one frame of latency, no GL stall); the
                     // synchronous path only remains for API < 24, which lacks offset-based glReadPixels.
-                    boolean success = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                    boolean success = !isMovieMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
                             ? readPixelsForAI_Async(pixelBufferForAI)
                             : readPixelsForAI(pixelBufferForAI);
                     if (success) {
@@ -537,7 +552,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         previousFrameForComparison.put(pixelBufferForAI);
 
                         if (inferenceInputQueue.offer(new RenderResult(pixelBufferForAI, difference))) {
-                            Log.d("AiTask", "Success: The AI will now process this buffer.");
+                            if (Boolean.TRUE.equals(isDebugMode)) Log.d("AiTask", "Success: The AI will now process this buffer.");
                         } else {
                             freeInputBuffers.offer(pixelBufferForAI);
                         }
@@ -568,10 +583,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 }
                 if (newMap != null) {
                     block = false;
+                    if (currentlyRenderingMap != null) freeSmoothedBuffers.offer(currentlyRenderingMap);
                     currentlyRenderingMap = newMap;
                     depthMapResultCount++;
                     endTimeAi = System.nanoTime();
-                    Log.d("Stereo3DRenderer", "DepthMap OutputSpeed " + (endTimeAi - startTimeAi) / 1_000_000 + " ms");
+                    if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "DepthMap OutputSpeed " + (endTimeAi - startTimeAi) / 1_000_000 + " ms");
                 }
             }
 
@@ -611,7 +627,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         filledOutputBuffers.remainingCapacity(), aiOutCap,
                         freeSmoothedBuffers.remainingCapacity(), freeSmoothCap
                 );
-                Log.d("Stereo3DRenderer", queueStatus);
+                if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", queueStatus);
             } else {
                 calcFps++;
             }
@@ -753,6 +769,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     }
 
     private void initializePBOs() {
+        pboIndex = 0;
+        pboPrimed = false;
         PBO_SIZE = modelInputWidth * modelInputHeight * 4;
 
         GLES30.glGenBuffers(2, pboHandles, 0);
@@ -789,6 +807,14 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             GLES30.glReadPixels(0, 0, modelInputWidth, modelInputHeight, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, 0);
         }
+        if (!pboPrimed) {
+            // The other PBO has not received a frame yet.
+            pboPrimed = true;
+            pboIndex = readIndex;
+            GLES30.glBindBuffer(GLES30.GL_PIXEL_PACK_BUFFER, 0);
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+            return false;
+        }
         GLES30.glBindBuffer(GLES30.GL_PIXEL_PACK_BUFFER, pboHandles[readIndex]);
         ByteBuffer mappedBuffer = (ByteBuffer) GLES30.glMapBufferRange(
                 GLES30.GL_PIXEL_PACK_BUFFER, 0, PBO_SIZE, GLES30.GL_MAP_READ_BIT);
@@ -808,71 +834,54 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         return success;
     }
 
-    private void initializeTfLite() {
-        Interpreter.Options options = new Interpreter.Options();
+    // All interpreter/delegate lifecycle operations run on inferenceExecutor.
+    private void closeTfLite() {
+        if (tflite != null) { tflite.close(); tflite = null; }
+        if (gpuDelegate != null) { gpuDelegate.close(); gpuDelegate = null; }
+        if (nnApiDelegate != null) { nnApiDelegate.close(); nnApiDelegate = null; }
+    }
 
+    private void initializeTfLite() {
         try {
             GpuDelegate.Options gpuOptions = new GpuDelegate.Options();
             gpuOptions.setQuantizedModelsAllowed(true);
             gpuOptions.setPrecisionLossAllowed(true);
             gpuOptions.setInferencePreference(GpuDelegateFactory.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED);
             gpuDelegate = new GpuDelegate(gpuOptions);
-            options.addDelegate(gpuDelegate);
-            LimeLog.info("GPU Delegate aktiviert");
+            tflite = new Interpreter(loadModelFile(), new Interpreter.Options().addDelegate(gpuDelegate));
             renderer = "GPU";
-            tflite = new Interpreter(loadModelFile(), options);
+            return;
         } catch (Exception e) {
-            LimeLog.info("GPU Delegate nicht verfügbar: " + e.getMessage());
-            gpuDelegate.close();
-            try {
-                nnApiDelegate = new NnApiDelegate();
-                options.addDelegate(nnApiDelegate);
-                tflite = new Interpreter(loadModelFile(), options);
-                LimeLog.info("NNAPI Delegate aktiviert");
-                renderer = "NNAPI";
-            } catch (Exception exception) {
-                LimeLog.info("NNAPI Delegate nicht verfügbar: " + e.getMessage());
-                nnApiDelegate.close();
-                try {
-                    LimeLog.info("Fallback: CPU");
-                    tflite = new Interpreter(loadModelFile(), options);
-                    renderer = "CPU";
-                } catch (Exception ex) {
-                    reinitializeTfLiteOnCpu();
-                }
-            }
+            LimeLog.info("GPU delegate unavailable: " + e.getMessage());
+            closeTfLite();
+        }
+        try {
+            nnApiDelegate = new NnApiDelegate();
+            tflite = new Interpreter(loadModelFile(), new Interpreter.Options().addDelegate(nnApiDelegate));
+            renderer = "NNAPI";
+        } catch (Exception e) {
+            LimeLog.info("NNAPI delegate unavailable: " + e.getMessage());
+            reinitializeTfLiteOnCpu();
         }
     }
 
     private void reinitializeTfLiteOnCpu() {
-        if (tflite != null) {
-            tflite.close();
-            tflite = null;
-        }
-        if (gpuDelegate != null) {
-            gpuDelegate.close();
-            gpuDelegate = null;
-        }
-
+        closeTfLite();
         try {
-            Interpreter.Options options = new Interpreter.Options();
-            options.setUseNNAPI(true);
-            options.setNumThreads(4);
-            tflite = new Interpreter(loadModelFile(), options);
-            LimeLog.info("Successfully re-initialized TFLite interpreter on CPU.");
-        } catch (IOException e) {
-            LimeLog.severe("Failed to re-initialize TFLite model on CPU: " + e.getMessage());
+            tflite = new Interpreter(loadModelFile(), new Interpreter.Options().setNumThreads(4));
+            renderer = "CPU";
+        } catch (Exception e) {
+            LimeLog.severe("Failed to initialize the depth model on CPU: " + e.getMessage());
         }
     }
 
     private MappedByteBuffer loadModelFile() throws IOException {
         if (depthModel.isBundled()) {
-            AssetFileDescriptor fileDescriptor = context.getAssets().openFd(depthModel.fileName);
-            FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor());
-            FileChannel fileChannel = inputStream.getChannel();
-            long startOffset = fileDescriptor.getStartOffset();
-            long declaredLength = fileDescriptor.getDeclaredLength();
-            return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength);
+            try (AssetFileDescriptor fileDescriptor = context.getAssets().openFd(depthModel.fileName);
+                 FileInputStream inputStream = new FileInputStream(fileDescriptor.getFileDescriptor())) {
+                return inputStream.getChannel().map(FileChannel.MapMode.READ_ONLY,
+                        fileDescriptor.getStartOffset(), fileDescriptor.getDeclaredLength());
+            }
         }
         File file = depthModel.localFile(context);
         try (FileInputStream inputStream = new FileInputStream(file)) {
@@ -1149,19 +1158,20 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
         @Override
         public void run() {
-            ByteBuffer pixelBuffer = null;
-            double difference = 0.0f;
-            while (!Thread.currentThread().isInterrupted()) {
+            while (!stopped && !Thread.currentThread().isInterrupted()) {
+                ByteBuffer pixelBuffer = null;
+                ByteBuffer outputBuffer = null;
+                double difference = 0.0f;
                 long startTime = System.nanoTime();
                 long waitTime = System.nanoTime();
                 long aiTime = System.nanoTime();
                 long aiTime_end = System.nanoTime();
                 try {
-                    if (tflite == null) return;
+                    if (tflite == null) break;
                     RenderResult result = inferenceInputQueue.take();
                     pixelBuffer = result.pixelBuffer;
                     difference = result.imageDifference;
-                    ByteBuffer outputBuffer = freeOutputBuffers.take();
+                    outputBuffer = freeOutputBuffers.take();
                     waitTime = System.nanoTime();
                     outputBuffer.rewind();
 
@@ -1202,20 +1212,25 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                     aiTime_end = System.nanoTime();
                     filledOutputBuffers.put(new InferenceResult(pixelBuffer, outputBuffer));
                     pixelBuffer = null;
+                    outputBuffer = null;
                 } catch (InterruptedException e) {
                     LimeLog.severe("AI inference failed: " + e.getMessage());
                     Thread.currentThread().interrupt();
                 } catch (Exception e) {
                     LimeLog.severe("AI inference failed: " + e.getMessage());
-                    gpuDelegateFailed.set(true);
+                    if (gpuDelegate != null || nnApiDelegate != null) {
+                        reinitializeTfLiteOnCpu();
+                        previousRawMap = null;
+                    } else {
+                        break; // A broken CPU model must not spin and exhaust the pools.
+                    }
                 } finally {
                     long duration = (System.nanoTime() - startTime) / 1_000_000;
                     long waitTimeText = (waitTime - startTime) / 1_000_000;
                     long aitimeText = (aiTime_end - aiTime) / 1_000_000;
-                    if (pixelBuffer != null) {
-                        freeInputBuffers.offer(pixelBuffer);
-                    }
-                    Log.d("Stereo3DRenderer", "CalculateTime AiDepthMap: " + duration + " ms " + filledOutputBuffers.remainingCapacity() + " " + waitTimeText + " ms" + "aitime: " + aitimeText);
+                    if (pixelBuffer != null) freeInputBuffers.offer(pixelBuffer);
+                    if (outputBuffer != null) freeOutputBuffers.offer(outputBuffer);
+                    if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "CalculateTime AiDepthMap: " + duration + " ms " + filledOutputBuffers.remainingCapacity() + " " + waitTimeText + " ms" + "aitime: " + aitimeText);
                 }
             }
             isAiRunning.set(false);
@@ -1236,10 +1251,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
         @Override
         public void run() {
-            ByteBuffer resultBuffer = createFlatDepthMap();
-            InferenceResult result = null;
-
-            while (!Thread.currentThread().isInterrupted()) {
+            while (!stopped && !Thread.currentThread().isInterrupted()) {
+                ByteBuffer resultBuffer = null;
+                InferenceResult result = null;
                 long startTime = System.nanoTime();
                 long waitTime = System.nanoTime();
                 Mat rawMat = null;
@@ -1272,7 +1286,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         isFirstFrame = false;
                     }
 
-                    double smoothing = (imageDifference * 10) / (threeDFps * 3);
+                    double smoothing = (imageDifference * 10) / (Math.max(1.0f, threeDFps) * 3);
                     smoothing = Math.min(smoothing, MAX_SMOOTHING_FACTOR);
                     smoothing = Math.max(smoothing, MIN_SMOOTHING_FACTOR);
                     Mat diff = new Mat();
@@ -1296,10 +1310,16 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                     resultBuffer.clear();
                     resultBuffer.put(processedDataArray);
                     resultBuffer.rewind();
-                    latestDepthMap.set(resultBuffer);
+                    // Transfer ownership to the GL consumer. Only an unpublished
+                    // superseded map may return to the producer's pool here.
+                    ByteBuffer superseded = latestDepthMap.getAndSet(resultBuffer);
+                    resultBuffer = null;
+                    if (superseded != null) freeSmoothedBuffers.offer(superseded);
 
                     previousPixelBuffer.rewind();
                     previousPixelBuffer.put(currentPixelBuffer);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 } catch (Exception e) {
                     LimeLog.severe("AI exception " + e.getMessage());
                 } finally {
@@ -1318,9 +1338,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                     }
                     long duration = (System.nanoTime() - startTime) / 1_000_000;
                     long waitTimeText = (waitTime - startTime) / 1_000_000;
-                    Log.d("Stereo3DRenderer", "CalculateTime AiResult:    " + duration + " ms" + " " + freeOutputBuffers.remainingCapacity() + " " + waitTimeText + " ms ");
+                    if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "CalculateTime AiResult:    " + duration + " ms" + " " + freeOutputBuffers.remainingCapacity() + " " + waitTimeText + " ms ");
                 }
             }
+            if (previousSmoothedMat != null) previousSmoothedMat.release();
             isAiResultHandlingRunning.set(false);
         }
     }

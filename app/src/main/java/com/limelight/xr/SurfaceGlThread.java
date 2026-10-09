@@ -215,6 +215,11 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
             return;
         }
         lastReportNs = now;
+        if (!Boolean.TRUE.equals(Stereo3DRenderer.isDebugMode)) {
+            LimeLog.info("XR stereo GL: " + swaps + " frames swapped");
+            return;
+        }
+        // Readback can force GPU completion. Keep pixel diagnostics opt-in.
         probe.clear();
         GLES20.glReadPixels(width / 4, height / 2, 1, 1, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, probe);
         int err = GLES20.glGetError();

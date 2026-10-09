@@ -77,7 +77,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private Surface renderTarget;
 
     // Set when the stream negotiated PyroWave, which is decoded with Vulkan instead of MediaCodec.
-    private PyroWaveDecoderRenderer pyroWaveRenderer;
+    private volatile PyroWaveDecoderRenderer pyroWaveRenderer;
+    private final Object pyroWaveStateLock = new Object();
+    private boolean requestedHdrEnabled;
+    private byte[] requestedHdrMetadata;
     // Sub-millisecond PyroWave decode time carried between frames (stats are in whole ms).
     private long pyroWaveDecodeUsRemainder;
     // Set before the connection starts when the client offers PyroWave.
@@ -790,14 +793,17 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         this.refreshRate = redrawRate;
 
         if ((format & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
-            pyroWaveRenderer = new PyroWaveDecoderRenderer();
             boolean chroma444 = (format & MoonBridge.VIDEO_FORMAT_MASK_YUV444) != 0;
             boolean tenBit = (format & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0;
-            if (!pyroWaveRenderer.setup(renderTarget, width, height, redrawRate, chroma444, tenBit)) {
-                LimeLog.severe("PyroWave renderer initialization failed");
-                pyroWaveRenderer.cleanup();
-                pyroWaveRenderer = null;
-                return -1;
+            synchronized (pyroWaveStateLock) {
+                PyroWaveDecoderRenderer renderer = new PyroWaveDecoderRenderer();
+                if (!renderer.setup(renderTarget, width, height, redrawRate, chroma444, tenBit)) {
+                    LimeLog.severe("PyroWave renderer initialization failed");
+                    renderer.cleanup();
+                    return -1;
+                }
+                renderer.setHdrMode(requestedHdrEnabled, hdrPeakNits(requestedHdrEnabled, requestedHdrMetadata));
+                pyroWaveRenderer = renderer;
             }
             LimeLog.info("Using PyroWave Vulkan renderer for " + width + "x" + height + (chroma444 ? " 4:4:4" : " 4:2:0")
                     + (tenBit ? " 10-bit" : " 8-bit"));
@@ -1391,29 +1397,33 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     @Override
     public void cleanup() {
-        if (pyroWaveRenderer != null) {
-            pyroWaveRenderer.cleanup();
-            pyroWaveRenderer = null;
-            return;
+        synchronized (pyroWaveStateLock) {
+            if (pyroWaveRenderer != null) {
+                pyroWaveRenderer.cleanup();
+                pyroWaveRenderer = null;
+                return;
+            }
         }
         videoDecoder.release();
     }
 
+    private static float hdrPeakNits(boolean enabled, byte[] metadata) {
+        if (!enabled || metadata == null || metadata.length < 22) return 0;
+        int maxCll = (metadata[20] & 0xFF) | ((metadata[21] & 0xFF) << 8);
+        int maxDisplay = (metadata[16] & 0xFF) | ((metadata[17] & 0xFF) << 8);
+        return maxCll > 0 ? maxCll : maxDisplay;
+    }
+
     @Override
     public void setHdrMode(boolean enabled, byte[] hdrMetadata) {
-        if (pyroWaveRenderer != null) {
-            // PyroWave carries no HDR signalling in its bitstream: this message decides whether a
-            // 10-bit stream is BT.2020 PQ or 10-bit SDR. The renderer does its own tone mapping,
-            // so only the content peak is taken from the metadata (SS_HDR_METADATA, little-endian:
-            // maxContentLightLevel at offset 20, maxDisplayLuminance at 16).
-            float peakNits = 0;
-            if (enabled && hdrMetadata != null && hdrMetadata.length >= 22) {
-                int maxCll = (hdrMetadata[20] & 0xFF) | ((hdrMetadata[21] & 0xFF) << 8);
-                int maxDisplay = (hdrMetadata[16] & 0xFF) | ((hdrMetadata[17] & 0xFF) << 8);
-                peakNits = maxCll > 0 ? maxCll : maxDisplay;
+        synchronized (pyroWaveStateLock) {
+            // Control starts before video setup, so retain early HDR signalling.
+            requestedHdrEnabled = enabled;
+            requestedHdrMetadata = hdrMetadata != null ? hdrMetadata.clone() : null;
+            if (pyroWaveRenderer != null) {
+                pyroWaveRenderer.setHdrMode(enabled, hdrPeakNits(enabled, hdrMetadata));
+                return;
             }
-            pyroWaveRenderer.setHdrMode(enabled, peakNits);
-            return;
         }
         // HDR metadata is only supported in Android 7.0 and later, so don't bother
         // restarting the codec on anything earlier than that.
@@ -1999,7 +2009,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         long submitStartUs = SystemClock.elapsedRealtimeNanos() / 1000;
         int result = pyroWaveRenderer.submitFrame(decodeUnitData, decodeUnitLength);
         long submitEndUs = SystemClock.elapsedRealtimeNanos() / 1000;
-        if (result == MoonBridge.DR_OK) {
+        if (result == MoonBridge.DR_OK && pyroWaveRenderer.wasLastFramePresented()) {
             // Report the GPU decode time (of the last completed frame) as decoder time.
             // Wall time would include waiting for the display, which is not decoding.
             long decodeUs = pyroWaveRenderer.getLastGpuDecodeUs();

@@ -14,7 +14,6 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.os.Looper;
-import android.os.SystemClock;
 
 import com.limelight.LimeLog;
 import com.limelight.binding.input.driver.AbstractController;
@@ -102,6 +101,7 @@ public class SteamControllerBle extends AbstractController {
     private static final long WRITE_WATCHDOG_MS = 2000;
     /** Retry delay after the stack refused a write (one operation outstanding at a time). */
     private static final long WRITE_RETRY_MS = 50;
+    private static final int MAX_PENDING_WRITES = 32;
     /** stop(): how long to wait for the restore writes to complete before closing anyway. */
     private static final long CLOSE_FALLBACK_MS = 400;
 
@@ -240,6 +240,7 @@ public class SteamControllerBle extends AbstractController {
     @Override
     public boolean start() {
         stopped = false;
+        closing = false;
         LimeLog.info("Steam Controller BLE: connecting to " + device.getAddress());
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -315,18 +316,17 @@ public class SteamControllerBle extends AbstractController {
         @SuppressLint("MissingPermission")
         @Override
         public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
-            if (stopped) {
+            if (stopped || g != gatt) {
                 return;
             }
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 LimeLog.info("Steam Controller BLE: connected, negotiating");
-                reconnectAttempts = 0;
                 everConnected = true;
                 mtuRequested = true;
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
                 if (!g.requestMtu(DESIRED_MTU)) {
                     mtuRequested = false;
-                    g.discoverServices();
+                    if (!g.discoverServices()) onLinkLost(g);
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 LimeLog.info("Steam Controller BLE: disconnected (status " + status + ")");
@@ -337,21 +337,21 @@ public class SteamControllerBle extends AbstractController {
         @SuppressLint("MissingPermission")
         @Override
         public void onMtuChanged(BluetoothGatt g, int mtu, int status) {
-            if (stopped) {
+            if (stopped || g != gatt) {
                 return;
             }
             // The stack may report this twice; discover services once.
             if (mtuRequested) {
                 mtuRequested = false;
                 LimeLog.info("Steam Controller BLE: MTU " + mtu);
-                g.discoverServices();
+                if (!g.discoverServices()) onLinkLost(g);
             }
         }
 
         @SuppressLint("MissingPermission")
         @Override
         public void onServicesDiscovered(BluetoothGatt g, int status) {
-            if (stopped) {
+            if (stopped || g != gatt) {
                 return;
             }
             BluetoothGattService service = g.getService(VALVE_SERVICE);
@@ -387,12 +387,14 @@ public class SteamControllerBle extends AbstractController {
                 onLinkLost(g);
                 return;
             }
-            subscribeNext(g);
+            if (!subscribeNext(g)) {
+                onReady(g);
+            }
         }
 
         @Override
         public void onDescriptorWrite(BluetoothGatt g, BluetoothGattDescriptor descriptor, int status) {
-            if (stopped) {
+            if (stopped || g != gatt) {
                 return;
             }
             if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -408,6 +410,10 @@ public class SteamControllerBle extends AbstractController {
 
         @Override
         public void onCharacteristicWrite(BluetoothGatt g, BluetoothGattCharacteristic ch, int status) {
+            // A closed connection may still deliver its final callback after a reconnect.
+            if (g != gatt || (stopped && !closing)) {
+                return;
+            }
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 LimeLog.warning("Steam Controller BLE: write failed, status " + status);
             }
@@ -426,6 +432,9 @@ public class SteamControllerBle extends AbstractController {
 
         @Override
         public void onCharacteristicRead(BluetoothGatt g, BluetoothGattCharacteristic ch, int status) {
+            if (stopped || g != gatt) {
+                return;
+            }
             if (status == BluetoothGatt.GATT_SUCCESS && shortUuid(ch.getUuid()) == BATTERY_SHORT) {
                 handleBattery(ch.getValue());
             }
@@ -433,6 +442,9 @@ public class SteamControllerBle extends AbstractController {
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic ch) {
+            if (stopped || g != gatt) {
+                return;
+            }
             byte[] data = ch.getValue();
             if (data == null) {
                 return;
@@ -457,26 +469,35 @@ public class SteamControllerBle extends AbstractController {
         if (ch == null) {
             return false;
         }
-        g.setCharacteristicNotification(ch, true);
+        if (!g.setCharacteristicNotification(ch, true)) {
+            onLinkLost(g);
+            return true; // Recovery owns the next step; do not announce this link as ready.
+        }
         BluetoothGattDescriptor cccd = ch.getDescriptor(CCCD);
         if (cccd == null) {
             // Nothing to wait for; move on synchronously
-            return subscribeNext(g) || false;
+            return subscribeNext(g);
         }
         cccd.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-        g.writeDescriptor(cccd);
+        if (!g.writeDescriptor(cccd)) {
+            // A rejected operation has no completion callback. Recover the link instead
+            // of leaving the rest of setup waiting indefinitely.
+            onLinkLost(g);
+        }
         return true;
     }
 
     /** All notifications are on: take the controller out of lizard mode and announce it. */
     @SuppressLint("MissingPermission")
     private void onReady(BluetoothGatt g) {
-        if (stopped) {
+        if (stopped || g != gatt) {
             return;
         }
+        reconnectAttempts = 0;
         enqueueWrite(new byte[]{ID_CLEAR_DIGITAL_MAPPINGS});
-        enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0));
-        enqueueWrite(settings(SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0));
+        // All settings in one command: keep-alive deduplication must not discard the IMU setup.
+        enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
+                SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0));
         if (batteryChar != null) {
             // After the setup writes have had their turn: a read is refused while a write
             // is outstanding and would just be lost.
@@ -499,10 +520,21 @@ public class SteamControllerBle extends AbstractController {
 
     @SuppressLint("MissingPermission")
     private void onLinkLost(BluetoothGatt g) {
+        if (g != gatt) {
+            return;
+        }
         handler.removeCallbacks(keepAlive);
+        handler.removeCallbacks(rumbleRefresh);
+        handler.removeCallbacks(retryFlush);
+        handler.removeCallbacks(writeWatchdog);
         synchronized (this) {
             writeQueue.clear();
             writeBusy = false;
+            writeChar = null;
+            batteryChar = null;
+            pendingSubscriptions.clear();
+            rumbleActive = false;
+            rumbleReport = null;
         }
         if (announced) {
             announced = false;
@@ -561,13 +593,26 @@ public class SteamControllerBle extends AbstractController {
         if (cmd.length >= 9 && cmd[0] == ID_TRIGGER_HAPTIC_PULSE) {
             return cmd[7] == 0 && cmd[8] == 0;
         }
+        if (cmd.length >= 4 && cmd[0] == ID_TRIGGER_HAPTIC_CMD) {
+            return cmd[3] == 0;
+        }
         return false;
+    }
+
+    private static boolean sameStopTarget(byte[] a, byte[] b) {
+        return a[0] == b[0] && (a[0] == ID_TRIGGER_RUMBLE_CMD || a[2] == b[2]);
     }
 
     private void enqueueWrite(byte[] cmd) {
         synchronized (this) {
-            if (closing) {
+            if (closing || stopped || gatt == null || writeChar == null) {
                 return;
+            }
+            if (isStop(cmd)) {
+                // The newest stop supersedes older stops for the same actuator, and
+                // stays after any intervening effects. Never accumulate an unbounded
+                // queue of "protected" stop commands while GATT is stalled.
+                writeQueue.removeIf(queued -> isStop(queued) && sameStopTarget(queued, cmd));
             }
             if (cmd[0] == ID_SET_SETTINGS_VALUES) {
                 // One keep-alive waiting is enough; a stalled link must not fill up with them.
@@ -577,7 +622,7 @@ public class SteamControllerBle extends AbstractController {
                     }
                 }
             }
-            if (writeQueue.size() > 32) {
+            if (writeQueue.size() >= MAX_PENDING_WRITES) {
                 // Drop the oldest command that is not a motors-off, so a stall cannot
                 // leave a pad buzzing by evicting the stop and keeping the start.
                 byte[] victim = null;
@@ -589,7 +634,7 @@ public class SteamControllerBle extends AbstractController {
                 }
                 if (victim != null) {
                     writeQueue.remove(victim);
-                } else if (!isStop(cmd)) {
+                } else {
                     return;
                 }
             }
@@ -598,16 +643,18 @@ public class SteamControllerBle extends AbstractController {
         flushWrites();
     }
 
-    /** The completion of a write never came: free the queue rather than wedge for good. */
+    /** A timed-out operation cannot be distinguished from a later write's callback. */
     private final Runnable writeWatchdog = () -> {
+        BluetoothGatt expired;
         synchronized (this) {
             if (!writeBusy) {
                 return;
             }
-            writeBusy = false;
+            expired = gatt;
         }
-        LimeLog.warning("Steam Controller BLE: a write never completed; resuming the queue");
-        flushWrites();
+        LimeLog.warning("Steam Controller BLE: a write never completed; recycling the link");
+        if (closing) closeLink.run();
+        else if (expired != null) onLinkLost(expired);
     };
 
     @SuppressLint("MissingPermission")
@@ -663,6 +710,9 @@ public class SteamControllerBle extends AbstractController {
         final float low = lowRaw / 65535f;
         final float high = highRaw / 65535f;
         handler.post(() -> {
+            if (stopped || gatt == null || writeChar == null) {
+                return;
+            }
             rumbleLow = low;
             rumbleHigh = high;
             rumbleLowRaw = lowRaw;
@@ -690,7 +740,7 @@ public class SteamControllerBle extends AbstractController {
     private final Runnable rumbleRefresh = new Runnable() {
         @Override
         public void run() {
-            if (!rumbleActive || stopped) {
+            if (!rumbleActive || stopped || gatt == null || writeChar == null) {
                 return;
             }
             long now = SystemClock.uptimeMillis();
@@ -745,6 +795,9 @@ public class SteamControllerBle extends AbstractController {
         }
         final byte[] copy = report.clone();
         handler.post(() -> {
+            if (stopped || gatt == null || writeChar == null) {
+                return;
+            }
             switch (copy[0] & 0xFF) {
                 case 0x80: {
                     if (copy.length < 10) {
@@ -777,7 +830,7 @@ public class SteamControllerBle extends AbstractController {
                     break;
                 }
                 case 0x81: {
-                    if (copy.length < 8) {
+                    if (copy.length < 8 || (copy[1] & 0xFF) > 2) {
                         return;
                     }
                     // side, on_us, off_us, repeat; a zero-repeat pulse is Steam's stop for that side
@@ -785,7 +838,7 @@ public class SteamControllerBle extends AbstractController {
                     break;
                 }
                 case 0x82: {
-                    if (copy.length < 4) {
+                    if (copy.length < 4 || (copy[1] & 0xFF) > 2) {
                         return;
                     }
                     enqueueWrite(triggerHaptic(copy[1], copy[2], copy[3]));
