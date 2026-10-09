@@ -27,6 +27,9 @@ boundaries. See each script for the exact boundary being replaced.
 - `test_stereo_initialization.py`: actual surface lifecycle and session stop;
   a native model constructor ignores interruption while teardown cancels the GL
   wait. Checks late publication, deferred close and teardown inside the ready callback.
+- `test_stereo_render_demand.py`: actual draw method and depth notification;
+  idle draws do not submit duplicate input, late depth maps trigger redraws, and
+  unchanged maps are not repeatedly uploaded.
 - `test_stereo_scene_cache.py`: actual inference worker with a deterministic model;
   slow accumulated changes and producer-side skipped frames invalidate cached depth,
   identical frames reuse it, and owned buffers return on shutdown.

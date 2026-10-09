@@ -195,6 +195,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     public void setPrefConfig(PreferenceConfiguration prefConfig) {
         this.prefConfig = prefConfig;
+        host.requestRender();
     }
 
     public synchronized void onSurfaceDestroyed() {
@@ -479,80 +480,73 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         renderer = depth.backend;
         long startTime = System.nanoTime();
 
+        // A newly decoded image and a completed depth map each request a draw.
+        // Redrawing for depth/settings must not submit the same image to AI again.
+        host.setContinuousRendering(false);
+        final boolean newVideoFrame;
         synchronized (frameLock) {
-            if (!frameAvailable.get()) {
-                if (!isMovieMode) {
-                    host.setContinuousRendering(true);
-                } else {
-                    host.setContinuousRendering(false);
-                    return;
-                }
-            } else if (isMovieMode) {
-                block = true;
-            }
-            frameAvailable.set(false);
+            newVideoFrame = frameAvailable.getAndSet(false);
+            block = newVideoFrame && isMovieMode;
         }
-        try {
-            videoSurfaceTexture.updateTexImage();
-        } catch (Exception e) {
-            Log.w("Stereo3DRenderer", "updateTexImagse failed", e);
-            return;
+        if (newVideoFrame) {
+            try {
+                videoSurfaceTexture.updateTexImage();
+            } catch (Exception e) {
+                Log.w("Stereo3DRenderer", "updateTexImage failed", e);
+                return;
+            }
         }
 
         long startTimeAi = System.nanoTime();
         long endTimeAi = System.nanoTime();
         if (depth.tflite != null) {
-            if (block || !isMovieMode) {
-                ByteBuffer pixelBufferForAI = depth.freeInputBuffers.poll();
-                if (pixelBufferForAI != null) {
-                    // Double-buffered PBO readback (one frame of latency, no GL stall); the
-                    // synchronous path only remains for API < 24, which lacks offset-based glReadPixels.
-                    boolean success = !isMovieMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
-                            ? readPixelsForAI_Async(pixelBufferForAI)
-                            : readPixelsForAI(pixelBufferForAI);
-                    if (success) {
-                        if (depth.inferenceInputQueue.offer(new RenderResult(pixelBufferForAI))) {
-                            if (Boolean.TRUE.equals(isDebugMode)) Log.d("AiTask", "Success: The AI will now process this buffer.");
-                        } else {
-                            depth.freeInputBuffers.offer(pixelBufferForAI);
-                        }
+            ByteBuffer pixelBufferForAI = newVideoFrame ? depth.freeInputBuffers.poll() : null;
+            if (pixelBufferForAI != null) {
+                // Double-buffered PBO readback (one frame of latency, no GL stall); the
+                // synced mode and API < 24 use current-frame synchronous readback.
+                boolean success = !isMovieMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N
+                        ? readPixelsForAI_Async(pixelBufferForAI)
+                        : readPixelsForAI(pixelBufferForAI);
+                if (success) {
+                    if (depth.inferenceInputQueue.offer(new RenderResult(pixelBufferForAI))) {
+                        if (Boolean.TRUE.equals(isDebugMode)) Log.d("AiTask", "Success: The AI will now process this buffer.");
                     } else {
                         depth.freeInputBuffers.offer(pixelBufferForAI);
                     }
-                }
-                ByteBuffer newMap = null;
-                if (block && isMovieMode) {
-                    // Synced mode waits for this frame's depth map, but a slow or failed model must
-                    // not freeze the GL thread: give up after MOVIE_MODE_MAX_DEPTH_WAIT_NS or as
-                    // soon as the inference thread is gone, and render with the previous map.
-                    long deadline = System.nanoTime() + MOVIE_MODE_MAX_DEPTH_WAIT_NS;
-                    while ((newMap = depth.latestDepthMap.getAndSet(null)) == null
-                            && depth.isAiRunning.get() && System.nanoTime() < deadline) {
-                        try {
-                            Thread.sleep(1);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
-                    }
-                    if (newMap == null) {
-                        block = false;
-                    }
                 } else {
-                    newMap = depth.latestDepthMap.getAndSet(null);
+                    depth.freeInputBuffers.offer(pixelBufferForAI);
                 }
-                if (newMap != null) {
+            }
+            ByteBuffer newMap = null;
+            if (block && isMovieMode) {
+                // Synced mode waits for this frame's depth map, but a slow or failed model must
+                // not freeze the GL thread: give up after MOVIE_MODE_MAX_DEPTH_WAIT_NS or as
+                // soon as the inference thread is gone, and render with the previous map.
+                long deadline = System.nanoTime() + MOVIE_MODE_MAX_DEPTH_WAIT_NS;
+                while ((newMap = depth.latestDepthMap.getAndSet(null)) == null
+                        && depth.isAiRunning.get() && System.nanoTime() < deadline) {
+                    try {
+                        Thread.sleep(1);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                if (newMap == null) {
                     block = false;
-                    if (currentlyRenderingMap != null) depth.freeSmoothedBuffers.offer(currentlyRenderingMap);
-                    currentlyRenderingMap = newMap;
-                    endTimeAi = System.nanoTime();
-                    if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "DepthMap OutputSpeed " + (endTimeAi - startTimeAi) / 1_000_000 + " ms");
                 }
+            } else {
+                newMap = depth.latestDepthMap.getAndSet(null);
+            }
+            if (newMap != null) {
+                block = false;
+                if (currentlyRenderingMap != null) depth.freeSmoothedBuffers.offer(currentlyRenderingMap);
+                currentlyRenderingMap = newMap;
+                uploadLatestDepthMapToGpu(newMap);
+                endTimeAi = System.nanoTime();
+                if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "DepthMap OutputSpeed " + (endTimeAi - startTimeAi) / 1_000_000 + " ms");
             }
 
-            if (currentlyRenderingMap != null) {
-                uploadLatestDepthMapToGpu(currentlyRenderingMap);
-            }
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
             applyTwoPassGaussianBlur();
             drawWithShader();
@@ -1033,6 +1027,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             executorService.shutdownNow();
         }
 
+        private void requestDepthRender() {
+            if (!stopped && depthSession == this) host.requestRender();
+        }
+
         private void closeTfLite() {
             final Interpreter closingInterpreter = tflite;
             final GpuDelegate closingGpuDelegate = gpuDelegate;
@@ -1296,6 +1294,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                             ByteBuffer superseded = latestDepthMap.getAndSet(resultBuffer);
                             resultBuffer = null;
                             if (superseded != null) freeSmoothedBuffers.offer(superseded);
+                            requestDepthRender();
 
                             previousPixelBuffer.rewind();
                             previousPixelBuffer.put(currentPixelBuffer);

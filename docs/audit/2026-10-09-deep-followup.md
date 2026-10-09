@@ -2,6 +2,14 @@
 
 Baseline: `7bb0a5944533a9e436c4c992918cf955d17f4b6b` (`moonlight-noir`, fork.31).
 
+Integration: this PR is stacked on Android #54 at `ed8877d6`, which also pins
+the compatibility fix from common-C #3. It preserves #54's demand-driven draws,
+new-video-only readback, late-depth redraws, and upload-on-map-change behavior.
+S03's timing arithmetic overlaps #54; this PR adds atomic session-owned counters,
+conditional diagnostic formatting and explicit regression cases. Merge common-C
+#3, then Android #54, then this PR (#55); do not cherry-pick competing versions of
+the draw loop independently.
+
 The earlier four-repository audit covered Android PRs #1-50, Vibepollo PRs
 #1-4, and the direct library commits consumed by their dependency pins.
 Android #51-53, common-C #1-2, libvirtualgamepad #1-2 and Vibepollo #5 are
@@ -74,7 +82,7 @@ For 51 simulated 2 ms draws spanning 1.002 seconds, the old displayed delay was
 
 ## Validation
 
-- All 11 scripts in `tools/regression/test_*.py` pass; the native renderer check
+- All 12 scripts in `tools/regression/test_*.py` pass after integration; the native renderer check
   retains ASan/UBSan. The two new scripts reproduce failures on the baseline.
 - The complete renderer and XR GL host compile with Android 15 framework
   classes, LiteRT 1.4 Java APIs and OpenCV 4.12; only preferences are stubbed.
