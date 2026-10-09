@@ -56,7 +56,8 @@ public class SimpleStartupTest {
         // Test application onCreate which initializes ProfilesManager
         // After the fix, this should no longer crash
         try {
-            ArtemisApplication app = new ArtemisApplication();
+            // Robolectric attaches the real application to a base context.
+            ArtemisApplication app = ApplicationProvider.getApplicationContext();
             app.onCreate();
 
             // Should now work without crashing

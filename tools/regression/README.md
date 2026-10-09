@@ -38,3 +38,6 @@ HDR display, tensor-quality and thermal/performance tests on real devices.
 
 `.github/workflows/pr-build.yml` runs these regressions, builds unsigned release
 APKs for all supported ABIs (including NDK and R8), and runs Android unit tests.
+`StereoSessionTest` runs the real stereo worker and teardown with native
+inference/pixel boundaries mocked. It holds inference or initialization across
+surface replacement and verifies buffer/flag isolation and deferred model close.
