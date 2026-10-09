@@ -36,7 +36,7 @@ public class StereoInitialization {
  volatile DepthSession depthSession; volatile boolean stopped; volatile long glGeneration;
  AtomicBoolean frameAvailable=new AtomicBoolean();
  ByteBuffer currentlyRenderingMap,previousFrameForComparison;
- boolean block,isActive,blockFirst=true;
+ boolean block,isActive,blockFirst=true,flatMapUploaded;
  long lastFpsTime,totalDrawTime; float drawDelay,calcFps,calcThreeDFps,fps,threeDFps;
  String renderer; int modelInputWidth=1,modelInputHeight=1;
  int videoTextureId,depthMapTextureId,filteredDepthMapTextureId,fboTextureId,intermediateTextureId;

@@ -48,6 +48,9 @@ public class SteamControllerBle extends AbstractController {
 
     static final UUID VALVE_SERVICE = UUID.fromString("100f6c32-1735-4313-b402-38567131e5f3");
     private static final String VALVE_UUID_TAIL = "-1735-4313-b402-38567131e5f3";
+    // The same tail as the two halves of the 128-bit value: bits 31..0 of the MSB, and the LSB.
+    private static final long VALVE_UUID_MSB_TAIL = 0x17354313L;
+    private static final long VALVE_UUID_LSB = 0xb40238567131e5f3L;
     private static final long NOTIFY_SHORT_LOW = 0x100f6c75L;
     private static final long NOTIFY_SHORT_HIGH = 0x100f6c7aL;
     private static final long WRITE_SHORT_LOW = 0x100f6cb5L;
@@ -56,6 +59,8 @@ public class SteamControllerBle extends AbstractController {
     private static final long PING_SHORT = 0x100f6c79L;
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     private static final int DESIRED_MTU = 100;
+    /** Below this the 45-byte state report cannot fit one notification. */
+    private static final int STATE_REPORT_MTU = 48;
 
     // Command ids (hid-steam.c / SDL controller_constants.h)
     private static final byte ID_CLEAR_DIGITAL_MAPPINGS = (byte) 0x81;
@@ -156,6 +161,8 @@ public class SteamControllerBle extends AbstractController {
     private boolean closing;
     private boolean mtuRequested;
     private boolean announced;
+    // One warning per link when state reports arrive truncated (an MTU that stayed at 23).
+    private boolean shortReportLogged;
     private volatile boolean stopped;
     private int reconnectAttempts;
     private boolean everConnected;
@@ -189,6 +196,30 @@ public class SteamControllerBle extends AbstractController {
     private boolean rumbleActive;
     private long rumbleDeadline;
     private long lastRumbleWriteMs;
+
+    /** The one battery read after setup. It must not act on a link it was not posted for. */
+    private int batteryReadRetries;
+    private final Runnable batteryRead = new Runnable() {
+        @SuppressLint("MissingPermission")
+        @Override
+        public void run() {
+            BluetoothGatt current = gatt;
+            BluetoothGattCharacteristic ch = batteryChar;
+            if (current == null || ch == null || stopped) {
+                return;
+            }
+            boolean accepted = false;
+            try {
+                accepted = current.readCharacteristic(ch);
+            } catch (SecurityException | IllegalStateException ignored) {
+            }
+            if (!accepted && batteryReadRetries++ < 4) {
+                // Refused while a write is outstanding: try again shortly rather than
+                // never reporting the level until the controller pushes it.
+                handler.postDelayed(this, 250);
+            }
+        }
+    };
 
     private final Runnable keepAlive = new Runnable() {
         @Override
@@ -346,6 +377,11 @@ public class SteamControllerBle extends AbstractController {
             if (mtuRequested) {
                 mtuRequested = false;
                 LimeLog.info("Steam Controller BLE: MTU " + mtu);
+                if (mtu < STATE_REPORT_MTU) {
+                    // State reports are 45 bytes: a 23-byte MTU truncates every one of
+                    // them and the controller would look connected but stay silent.
+                    LimeLog.warning("Steam Controller BLE: MTU " + mtu + " is too small for state reports");
+                }
                 if (!g.discoverServices()) onLinkLost(g);
             }
         }
@@ -461,6 +497,9 @@ public class SteamControllerBle extends AbstractController {
                 // ack/ping-pong tied to our writes; nothing to do
             } else if (data.length >= 40) {
                 handleState(data);
+            } else if (!shortReportLogged) {
+                shortReportLogged = true;
+                LimeLog.warning("Steam Controller BLE: " + data.length + "-byte state report dropped (MTU too small?)");
             }
         }
     };
@@ -515,13 +554,9 @@ public class SteamControllerBle extends AbstractController {
         if (batteryChar != null) {
             // After the setup writes have had their turn: a read is refused while a write
             // is outstanding and would just be lost.
-            handler.postDelayed(() -> {
-                try {
-                    BluetoothGatt current = gatt;
-                    if (current != null && !stopped) current.readCharacteristic(batteryChar);
-                } catch (SecurityException ignored) {
-                }
-            }, 500);
+            batteryReadRetries = 0;
+            handler.removeCallbacks(batteryRead);
+            handler.postDelayed(batteryRead, 500);
         }
         handler.removeCallbacks(keepAlive);
         handler.postDelayed(keepAlive, KEEPALIVE_INTERVAL_MS);
@@ -541,6 +576,7 @@ public class SteamControllerBle extends AbstractController {
         handler.removeCallbacks(rumbleRefresh);
         handler.removeCallbacks(retryFlush);
         handler.removeCallbacks(writeWatchdog);
+        handler.removeCallbacks(batteryRead);
         synchronized (this) {
             writeQueue.clear();
             writeBusy = false;
@@ -551,6 +587,7 @@ public class SteamControllerBle extends AbstractController {
             subscribedNotifications = 0;
             rumbleActive = false;
             rumbleReport = null;
+            shortReportLogged = false;
         }
         if (announced) {
             announced = false;
@@ -1239,14 +1276,12 @@ public class SteamControllerBle extends AbstractController {
 
     /** The first 32 bits of a Valve characteristic UUID, or -1 when it is not one. */
     private static long shortUuid(UUID uuid) {
-        String s = uuid.toString().toLowerCase(Locale.ROOT);
-        if (!s.endsWith(VALVE_UUID_TAIL)) {
+        // Runs for every notification (250/s): compare the 128-bit value directly rather
+        // than formatting and parsing a string per report.
+        long msb = uuid.getMostSignificantBits();
+        if ((msb & 0xFFFFFFFFL) != VALVE_UUID_MSB_TAIL || uuid.getLeastSignificantBits() != VALVE_UUID_LSB) {
             return -1;
         }
-        try {
-            return Long.parseLong(s.substring(0, 8), 16);
-        } catch (NumberFormatException e) {
-            return -1;
-        }
+        return msb >>> 32;
     }
 }

@@ -269,6 +269,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             frameAvailable.set(false);
             currentlyRenderingMap = null;
             block = false;
+            flatMapUploaded = false;
             lastFpsTime = 0;
             totalDrawTime = 0;
             calcFps = 0;
@@ -471,7 +472,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     }
 
 
-    private volatile Boolean block = false;
+    private boolean block;
+    // No model on any backend: a flat depth map was uploaded once so the stream still shows.
+    private boolean flatMapUploaded;
 
     @Override
     public void onDrawFrame(GL10 gl) {
@@ -522,15 +525,28 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 // Synced mode waits for this frame's depth map, but a slow or failed model must
                 // not freeze the GL thread: give up after MOVIE_MODE_MAX_DEPTH_WAIT_NS or as
                 // soon as the inference thread is gone, and render with the previous map.
+                // The worker signals depthReady when it publishes; while this thread is
+                // parked here it must not also be asked to redraw for that same map.
                 long deadline = System.nanoTime() + MOVIE_MODE_MAX_DEPTH_WAIT_NS;
-                while ((newMap = depth.latestDepthMap.getAndSet(null)) == null
-                        && depth.isAiRunning.get() && System.nanoTime() < deadline) {
-                    try {
-                        Thread.sleep(1);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
+                depth.depthWaiting.set(true);
+                try {
+                    synchronized (depth.depthReady) {
+                        while ((newMap = depth.latestDepthMap.getAndSet(null)) == null
+                                && depth.isAiRunning.get()) {
+                            long remainingNs = deadline - System.nanoTime();
+                            if (remainingNs <= 0) {
+                                break;
+                            }
+                            try {
+                                depth.depthReady.wait(Math.max(1L, remainingNs / 1_000_000L));
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                        }
                     }
+                } finally {
+                    depth.depthWaiting.set(false);
                 }
                 if (newMap == null) {
                     block = false;
@@ -547,13 +563,19 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "DepthMap OutputSpeed " + (endTimeAi - startTimeAi) / 1_000_000 + " ms");
             }
 
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-            applyTwoPassGaussianBlur();
-            drawWithShader();
-            long endTime = System.nanoTime();
-
-            updatePerformanceStats(startTime, endTime, depth);
+        } else if (!flatMapUploaded) {
+            // No model on any backend: draw the stream flat (zero parallax) instead of
+            // leaving the entity black while the decoder keeps producing frames.
+            uploadLatestDepthMapToGpu(createFlatDepthMap());
+            flatMapUploaded = true;
         }
+
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+        applyTwoPassGaussianBlur();
+        drawWithShader();
+        long endTime = System.nanoTime();
+
+        updatePerformanceStats(startTime, endTime, depth);
     }
 
     private void updatePerformanceStats(long startTime, long endTime, DepthSession depth) {
@@ -993,6 +1015,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         private final AtomicInteger completedDepthFrames = new AtomicInteger();
         private final AtomicBoolean isAiResultHandlingRunning = new AtomicBoolean();
         private final AtomicReference<ByteBuffer> latestDepthMap = new AtomicReference<>();
+        // Synced mode parks the GL thread on depthReady until the worker publishes a map;
+        // depthWaiting tells the worker that no redraw request is needed for it.
+        private final Object depthReady = new Object();
+        private final AtomicBoolean depthWaiting = new AtomicBoolean();
         private GpuDelegate gpuDelegate;
         private volatile Interpreter tflite;
         private NnApiDelegate nnApiDelegate;
@@ -1294,7 +1320,12 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                             ByteBuffer superseded = latestDepthMap.getAndSet(resultBuffer);
                             resultBuffer = null;
                             if (superseded != null) freeSmoothedBuffers.offer(superseded);
-                            requestDepthRender();
+                            synchronized (depthReady) {
+                                depthReady.notifyAll();
+                            }
+                            // A GL thread parked in the synced-mode wait consumes this map in
+                            // its current draw; a second request would draw the same frame twice.
+                            if (!depthWaiting.get()) requestDepthRender();
 
                             previousPixelBuffer.rewind();
                             previousPixelBuffer.put(currentPixelBuffer);

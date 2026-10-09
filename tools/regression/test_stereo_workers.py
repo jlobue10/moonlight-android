@@ -26,6 +26,7 @@ PREFIX = r'''
 import java.nio.*; import java.io.*; import java.util.concurrent.*; import java.util.concurrent.atomic.*;
 public class StereoWorkers {
  int depthRequests; void requestDepthRender(){depthRequests++;}
+ final Object depthReady=new Object(); AtomicBoolean depthWaiting=new AtomicBoolean();
  boolean stopped=false,floatInput=false,floatOutput=false;
  int modelInputWidth=1,modelInputHeight=1,calcThreeDFps=0;float threeDFps=60;float ON_DRAW_CHANGE_TRESHOLD=2;
  Boolean isDebugMode=false; String renderer="CPU",backend="CPU"; DepthModel depthModel=DepthModel.MIDAS_V2_256;

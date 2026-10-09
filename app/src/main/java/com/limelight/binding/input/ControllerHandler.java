@@ -2987,6 +2987,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                                       float leftStickX, float leftStickY,
                                       float rightStickX, float rightStickY,
                                       float leftTrigger, float rightTrigger) {
+        if (stopped) {
+            return;
+        }
         GenericControllerContext context = usbDeviceContexts.get(controllerId);
         if (context == null) {
             return;
@@ -3023,8 +3026,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @Override
     public void reportControllerMotion(int controllerId, byte motionType, float motionX, float motionY, float motionZ) {
-        GenericControllerContext context = usbDeviceContexts.get(controllerId);
+        if (stopped) {
+            return;
+        }
+        UsbDeviceContext context = usbDeviceContexts.get(controllerId);
         if (context == null) {
+            return;
+        }
+        // Driver-fed controllers sample at their native rate (the Steam Controller's IMU
+        // at 250 Hz). Only forward what the host enabled; rate 0 means it never asked.
+        short reportRateHz = motionType == MoonBridge.LI_MOTION_TYPE_GYRO
+                ? context.gyroReportRateHz : context.accelReportRateHz;
+        if (reportRateHz == 0) {
             return;
         }
 
@@ -3034,6 +3047,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     @Override
     public void reportControllerTouch(int controllerId, byte touchpadIndex, byte eventType, int pointerId,
                                       float x, float y, float pressure) {
+        if (stopped) {
+            return;
+        }
         GenericControllerContext context = usbDeviceContexts.get(controllerId);
         if (context == null) {
             return;
@@ -3044,6 +3060,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @Override
     public void reportControllerBattery(int controllerId, byte batteryState, byte batteryPercentage) {
+        if (stopped) {
+            return;
+        }
         GenericControllerContext context = usbDeviceContexts.get(controllerId);
         if (context == null) {
             return;

@@ -82,6 +82,17 @@ public final class DepthModelDownloader {
             fail(listener, model, null, "cannot create " + dir);
             return;
         }
+        // A process killed mid-download leaves its private .part behind. Sweep the ones no
+        // live attempt can own (older than an hour) before writing another.
+        File[] stale = dir.listFiles((d, name) -> name.endsWith(".part"));
+        if (stale != null) {
+            long cutoff = System.currentTimeMillis() - 60L * 60L * 1000L;
+            for (File f : stale) {
+                if (f.lastModified() < cutoff && !f.delete()) {
+                    LimeLog.warning("Could not delete stale " + f);
+                }
+            }
+        }
         final File temp;
         try {
             // A cancelled attempt may still be unwinding when a retry starts.

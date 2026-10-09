@@ -1097,10 +1097,13 @@ namespace {
         // and hand the remaining records to the decoder in one piece (it parses
         // consecutive headers itself).
         bool pushRecordFrame(const uint8_t *data, size_t length) {
+            // Records are forwarded verbatim and only padding records are dropped, so
+            // until the first padding record the frame can be pushed in place: the copy
+            // into recordScratch starts lazily and a padding-free frame costs no memcpy.
             recordScratch.clear();
-            recordScratch.reserve(length);
             size_t offset = 0;
             bool sawSequenceHeader = false;
+            bool sawPadding = false;
             while (length - offset >= 8) {
                 const uint32_t word0 = readLe32(data + offset);
                 if (word0 == PADDING_MAGIC) {
@@ -1109,6 +1112,10 @@ namespace {
                     if (recordSize > length - offset) {
                         warnFraming("Dropping record frame: padding runs past the frame");
                         return false;
+                    }
+                    if (!sawPadding) {
+                        sawPadding = true;
+                        recordScratch.assign(data, data + offset);
                     }
                     offset += recordSize;
                     continue;
@@ -1139,15 +1146,19 @@ namespace {
                     warnFraming("Dropping record frame: record runs past the frame");
                     return false;
                 }
-                recordScratch.insert(recordScratch.end(), data + offset, data + offset + recordSize);
+                if (sawPadding) {
+                    recordScratch.insert(recordScratch.end(), data + offset, data + offset + recordSize);
+                }
                 offset += recordSize;
             }
             if (offset != length) {
                 warnFraming("Dropping record frame: trailing bytes");
                 return false;
             }
-            return sawSequenceHeader && !recordScratch.empty() &&
-                   pyrowave_decoder_push_packet(decoder, recordScratch.data(), recordScratch.size()) == PYROWAVE_SUCCESS;
+            const uint8_t *packet = sawPadding ? recordScratch.data() : data;
+            const size_t packetSize = sawPadding ? recordScratch.size() : length;
+            return sawSequenceHeader && packetSize != 0 &&
+                   pyrowave_decoder_push_packet(decoder, packet, packetSize) == PYROWAVE_SUCCESS;
         }
 
         // Framing problems repeat every frame; log the first few and then one per second.
@@ -1189,6 +1200,33 @@ namespace {
                 barriers[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             }
             vk.CmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 3, barriers);
+        }
+
+        // A draw that fails after vkAcquireNextImageKHR succeeded leaves the acquire
+        // semaphore with a pending signal, the image never presented and (after
+        // vkResetFences) the frame fence unsignalled; the next frame would acquire
+        // with a busy semaphore and wait 2 s on a fence nobody signals. Consume the
+        // pending signal with an empty submission, then start over with a signalled
+        // fence and a fresh swapchain (which releases the image).
+        bool recoverAfterAcquire() {
+            const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            VkSubmitInfo drain = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            drain.waitSemaphoreCount = 1;
+            drain.pWaitSemaphores = &acquireSemaphore;
+            drain.pWaitDstStageMask = &waitStage;
+            vk.QueueSubmit(queue, 1, &drain, VK_NULL_HANDLE);
+            vk.DeviceWaitIdle(device);
+            if (frameFence != VK_NULL_HANDLE) {
+                vk.DestroyFence(device, frameFence, nullptr);
+                frameFence = VK_NULL_HANDLE;
+            }
+            VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            if (!check(vk.CreateFence(device, &fenceInfo, nullptr, &frameFence), "vkCreateFence")) {
+                return false;
+            }
+            queriesPending = false;
+            return recreateSwapchain();
         }
 
         bool present() {
@@ -1271,8 +1309,10 @@ namespace {
                 return check(acquired, "vkAcquireNextImageKHR");
             }
 
-            vk.ResetCommandBuffer(commandBuffer, 0);
-            vk.BeginCommandBuffer(commandBuffer, &beginInfo);
+            if (!check(vk.ResetCommandBuffer(commandBuffer, 0), "vkResetCommandBuffer(draw)") ||
+                    !check(vk.BeginCommandBuffer(commandBuffer, &beginInfo), "vkBeginCommandBuffer(draw)")) {
+                return recoverAfterAcquire();
+            }
             // Barriers order against all earlier work on the queue, which covers the
             // decode submitted above.
             planeBarrier(commandBuffer, decodeWriteStage(), decodeWriteAccess(),
@@ -1311,7 +1351,7 @@ namespace {
                 vk.CmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 2);
             }
             if (!check(vk.EndCommandBuffer(commandBuffer), "vkEndCommandBuffer")) {
-                return false;
+                return recoverAfterAcquire();
             }
 
             const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1325,7 +1365,7 @@ namespace {
             submitInfo.pSignalSemaphores = &renderDone[imageIndex];
             vk.ResetFences(device, 1, &frameFence);
             if (!check(vk.QueueSubmit(queue, 1, &submitInfo, frameFence), "vkQueueSubmit")) {
-                return false;
+                return recoverAfterAcquire();
             }
             queriesPending = queryPool != VK_NULL_HANDLE;
 
