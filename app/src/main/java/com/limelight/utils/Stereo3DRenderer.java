@@ -225,7 +225,15 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             if (inferenceTask != null) inferenceTask.cancel(true);
             // Native inference may ignore interruption. Cleanup runs after it on
             // its owning thread, never concurrently after an arbitrary timeout.
-            inferenceExecutor.execute(this::closeTfLite);
+            // Detach the instances first: a surface re-created before that worker
+            // reaches the close must not have its fresh model closed under it.
+            final Interpreter closingInterpreter = tflite;
+            final GpuDelegate closingGpuDelegate = gpuDelegate;
+            final NnApiDelegate closingNnApiDelegate = nnApiDelegate;
+            tflite = null;
+            gpuDelegate = null;
+            nnApiDelegate = null;
+            inferenceExecutor.execute(() -> closeTfLite(closingInterpreter, closingGpuDelegate, closingNnApiDelegate));
             inferenceExecutor.shutdown();
         }
         LimeLog.info("Quit called. Shutting down 3dRenderer.");
@@ -836,9 +844,19 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     // All interpreter/delegate lifecycle operations run on inferenceExecutor.
     private void closeTfLite() {
-        if (tflite != null) { tflite.close(); tflite = null; }
-        if (gpuDelegate != null) { gpuDelegate.close(); gpuDelegate = null; }
-        if (nnApiDelegate != null) { nnApiDelegate.close(); nnApiDelegate = null; }
+        final Interpreter closingInterpreter = tflite;
+        final GpuDelegate closingGpuDelegate = gpuDelegate;
+        final NnApiDelegate closingNnApiDelegate = nnApiDelegate;
+        tflite = null;
+        gpuDelegate = null;
+        nnApiDelegate = null;
+        closeTfLite(closingInterpreter, closingGpuDelegate, closingNnApiDelegate);
+    }
+
+    private static void closeTfLite(Interpreter interpreter, GpuDelegate gpu, NnApiDelegate nnApi) {
+        if (interpreter != null) interpreter.close();
+        if (gpu != null) gpu.close();
+        if (nnApi != null) nnApi.close();
     }
 
     private void initializeTfLite() {
