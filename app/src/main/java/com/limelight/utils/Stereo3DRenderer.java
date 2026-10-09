@@ -40,6 +40,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -259,72 +260,91 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     }
 
     @Override
-    public synchronized void onSurfaceCreated(GL10 gl, EGLConfig config) {
-        if (depthSession != null) depthSession.stop();
-        if (videoSurface != null) videoSurface.release();
-        if (videoSurfaceTexture != null) videoSurfaceTexture.release();
-        ++glGeneration;
-        stopped = false;
-        frameAvailable.set(false);
-        currentlyRenderingMap = null;
-        block = false;
-        lastFpsTime = 0;
-        totalDrawTime = 0;
-        videoTextureId = createExternalOESTexture();
-        videoSurfaceTexture = new SurfaceTexture(videoTextureId);
-        // A SurfaceTexture's default buffer size is 1x1. MediaCodec sets its own buffer
-        // dimensions, but a Vulkan swapchain (PyroWave) takes the surface's current extent,
-        // which is this default size: every 3D PyroWave frame was decoded into one pixel and
-        // the quad showed a flat grey (fork.17 on the Galaxy XR). Size it to the stream.
-        if (prefConfig != null && prefConfig.width > 0 && prefConfig.height > 0) {
-            videoSurfaceTexture.setDefaultBufferSize(prefConfig.width, prefConfig.height);
-        }
-        videoSurfaceTexture.setOnFrameAvailableListener(this);
-        videoSurface = new Surface(videoSurfaceTexture);
+    public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+        final DepthSession depth;
+        final Future<?> initialization;
+        synchronized (this) {
+            if (depthSession != null) depthSession.stop();
+            if (videoSurface != null) videoSurface.release();
+            if (videoSurfaceTexture != null) videoSurfaceTexture.release();
+            ++glGeneration;
+            stopped = false;
+            frameAvailable.set(false);
+            currentlyRenderingMap = null;
+            block = false;
+            lastFpsTime = 0;
+            totalDrawTime = 0;
+            videoTextureId = createExternalOESTexture();
+            videoSurfaceTexture = new SurfaceTexture(videoTextureId);
+            // A SurfaceTexture's default buffer size is 1x1. MediaCodec sets its own buffer
+            // dimensions, but a Vulkan swapchain (PyroWave) takes the surface's current extent,
+            // which is this default size: every 3D PyroWave frame was decoded into one pixel and
+            // the quad showed a flat grey (fork.17 on the Galaxy XR). Size it to the stream.
+            if (prefConfig != null && prefConfig.width > 0 && prefConfig.height > 0) {
+                videoSurfaceTexture.setDefaultBufferSize(prefConfig.width, prefConfig.height);
+            }
+            videoSurfaceTexture.setOnFrameAvailableListener(this);
+            videoSurface = new Surface(videoSurfaceTexture);
 
-        // Load the model first: every buffer and FBO below is sized from its input tensor.
-        // The GPU delegate must be created, invoked and closed on one thread.
-        final DepthSession depth = new DepthSession();
-        depthSession = depth;
-        Future<?> initialization = depth.inferenceExecutor.submit(() -> {
-            depth.initializeTfLite();
-            depth.adoptTensorLayout();
-        });
+            // Load the model first: every buffer and FBO below is sized from its input tensor.
+            // The GPU delegate must be created, invoked and closed on one thread.
+            depth = new DepthSession();
+            depthSession = depth;
+            initialization = depth.inferenceExecutor.submit(() -> {
+                depth.initializeTfLite();
+                depth.adoptTensorLayout();
+            });
+            // Cancelling this future wakes the GL waiter even if native construction
+            // ignores interruption. Model close remains queued on its owner thread.
+            depth.inferenceTask = initialization;
+        }
+
+        // Never hold the teardown lock while waiting for native initialization.
         try {
             initialization.get();
         } catch (InterruptedException e) {
             initialization.cancel(true);
             Thread.currentThread().interrupt();
-            onSurfaceDestroyed();
+            stopFailedInitialization(depth);
             return;
+        } catch (CancellationException e) {
+            return; // The owning session was already retired by stop/replacement.
         } catch (ExecutionException e) {
             LimeLog.severe("Depth model initialization failed: " + e.getCause());
-            onSurfaceDestroyed();
+            stopFailedInitialization(depth);
             return;
         }
-        modelInputWidth = depth.modelInputWidth;
-        modelInputHeight = depth.modelInputHeight;
-        renderer = depth.backend;
+        synchronized (this) {
+            if (stopped || depthSession != depth || depth.stopped) return;
+            modelInputWidth = depth.modelInputWidth;
+            modelInputHeight = depth.modelInputHeight;
+            renderer = depth.backend;
 
-        depthMapTextureId = createEmptyTexture(modelInputWidth, modelInputHeight);
+            depthMapTextureId = createEmptyTexture(modelInputWidth, modelInputHeight);
 
-        simple3dProgram = createProgram(ShaderUtils.SIMPLE_VERTEX_SHADER, ShaderUtils.SIMPLE_FRAGMENT_SHADER);
-        bilateralBlurProgram = createProgram(ShaderUtils.VERTEX_SHADER, ShaderUtils.OPTIMIZED_SINGLE_PASS_GAUSSIAN_BLUR_SHADER);
-        dibr3dProgram = createProgram(ShaderUtils.VERTEX_SHADER, ShaderUtils.FRAGMENT_SHADER_3D);
+            simple3dProgram = createProgram(ShaderUtils.SIMPLE_VERTEX_SHADER, ShaderUtils.SIMPLE_FRAGMENT_SHADER);
+            bilateralBlurProgram = createProgram(ShaderUtils.VERTEX_SHADER, ShaderUtils.OPTIMIZED_SINGLE_PASS_GAUSSIAN_BLUR_SHADER);
+            dibr3dProgram = createProgram(ShaderUtils.VERTEX_SHADER, ShaderUtils.FRAGMENT_SHADER_3D);
 
-        initializeFilterFbo();
-        initializeIntermediateFbo();
-        initializeFbo();
-        depth.initBuffer();
-        initializePBOs();
-        previousFrameForComparison = ByteBuffer.allocateDirect(modelInputWidth * modelInputHeight * 4)
-                .order(ByteOrder.nativeOrder());
+            initializeFilterFbo();
+            initializeIntermediateFbo();
+            initializeFbo();
+            depth.initBuffer();
+            initializePBOs();
+            previousFrameForComparison = ByteBuffer.allocateDirect(modelInputWidth * modelInputHeight * 4)
+                    .order(ByteOrder.nativeOrder());
 
-        if (onSurfaceReadyListener != null) {
-            onSurfaceReadyListener.onStereo3DSurfaceReady(videoSurface);
+            if (onSurfaceReadyListener != null) {
+                onSurfaceReadyListener.onStereo3DSurfaceReady(videoSurface);
+            }
+            if (stopped || depthSession != depth) return;
+            depth.startWorkers();
+            isActive = true;
         }
-        depth.startWorkers();
-        isActive = true;
+    }
+
+    private synchronized void stopFailedInitialization(DepthSession depth) {
+        if (depthSession == depth) onSurfaceDestroyed();
     }
 
     private void initializeIntermediateFbo() {
