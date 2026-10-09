@@ -781,8 +781,19 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         return 0;
     }
 
+    private static int decoderFrameRate(int protocolFrameRate) {
+        // Apollo encodes fractional rates as millihertz in RTSP/SDP. The native
+        // setup callback echoes that protocol value, while MediaCodec and the
+        // pacing calculations need nominal frames per second.
+        if (protocolFrameRate > 1000) {
+            return Math.round(protocolFrameRate / 1000.0f);
+        }
+        return protocolFrameRate > 0 ? protocolFrameRate : 60;
+    }
+
     @Override
     public int setup(int format, int width, int height, int redrawRate) {
+        redrawRate = decoderFrameRate(redrawRate);
         this.targetFps = (redrawRate > 0 ? redrawRate : 60);
         // width/height are the negotiated stream dimensions: Game already swaps them for a
         // portrait stream, so they must not be swapped again here or the MediaFormat (and

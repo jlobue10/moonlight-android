@@ -20,8 +20,8 @@ public class PyroState {
  static class MoonBridge{static final int VIDEO_FORMAT_MASK_PYROWAVE=0xf0000,VIDEO_FORMAT_MASK_YUV444=0xa0000,VIDEO_FORMAT_MASK_10BIT=0xc0000;}
  static class LimeLog{static void info(String s){}static void severe(String s){}}
  int initializeDecoder(boolean b){return 0;}
- static class PyroWaveDecoderRenderer{boolean enabled;float peak;boolean dead;
- boolean setup(Object s,int w,int h,int fps,boolean chroma,boolean ten){return true;}
+ static class PyroWaveDecoderRenderer{boolean enabled;float peak;boolean dead;int frameRate;
+ boolean setup(Object s,int w,int h,int fps,boolean chroma,boolean ten){frameRate=fps;return true;}
  void setHdrMode(boolean e,float p){if(dead)throw new AssertionError("callback after destroy");enabled=e;peak=p;}
  void cleanup(){dead=true;}void release(){}}
 '''
@@ -33,11 +33,18 @@ SUFFIX=r'''
  state.setHdrMode(false,null);boolean disabled=!state.pyroWaveRenderer.enabled;
  state.cleanup();state.setHdrMode(true,metadata);
  System.out.println((disabled?"PASS ":"FAIL ")+"HDR can be disabled and callbacks after cleanup avoid the destroyed renderer");
- if(!early || !disabled)System.exit(1);}
+ boolean rates=true;
+ for(int[] sample:new int[][]{{60,60},{144,144},{59940,60},{23976,24},{119880,120},{0,60},{-1,60}}){
+  state.setup(0x40000,1920,1080,sample[0]);
+  rates &= state.refreshRate==sample[1] && state.pyroWaveRenderer.frameRate==sample[1];
+ }
+ System.out.println((rates?"PASS ":"FAIL ")+"protocol millihertz is normalized for decoder setup and pacing");
+ if(!early || !disabled || !rates)System.exit(1);}
 }
 '''
 markers=['    public int setup(', '    public void setHdrMode(', '    public void cleanup()']
 if '    private static float hdrPeakNits(' in source:markers.insert(0,'    private static float hdrPeakNits(')
+if '    private static int decoderFrameRate(' in source:markers.insert(0,'    private static int decoderFrameRate(')
 with tempfile.TemporaryDirectory(prefix='pyro-state-') as directory:
  w=pathlib.Path(directory);(w/'PyroState.java').write_text(PREFIX+'\n'.join(map(block,markers))+SUFFIX)
  subprocess.run(['java','com.sun.tools.javac.Main','-d',str(w),str(w/'PyroState.java')],check=True)

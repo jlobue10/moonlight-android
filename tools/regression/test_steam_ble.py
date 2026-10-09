@@ -16,7 +16,7 @@ STUBS = {
  'android/annotation/SuppressLint.java': 'package android.annotation; public @interface SuppressLint { String[] value(); }',
  'android/os/Build.java': 'package android.os; public class Build { public static class VERSION { public static int SDK_INT=35; } public static class VERSION_CODES { public static final int M=23; } }',
  'android/os/Looper.java': 'package android.os; public class Looper { public static Looper getMainLooper(){return new Looper();} }',
- 'android/os/SystemClock.java': 'package android.os; public class SystemClock { public static long uptimeMillis(){return 1000;} }',
+ 'android/os/SystemClock.java': 'package android.os; public class SystemClock { public static long now=1000; public static long uptimeMillis(){return now;} }',
  'android/os/Handler.java': '''package android.os; import java.util.*;
  public class Handler { public final List<Runnable> delayed=new ArrayList<>(); public Handler(Looper l){}
  public boolean post(Runnable r){r.run();return true;} public boolean postDelayed(Runnable r,long delay){delayed.add(r);return true;}
@@ -32,13 +32,13 @@ STUBS = {
  public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb){return next;}
  public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb,int transport){return next;} }''',
  'android/bluetooth/BluetoothGatt.java': '''package android.bluetooth; import java.util.*; public class BluetoothGatt {
- public static final int GATT_SUCCESS=0, CONNECTION_PRIORITY_HIGH=1; public boolean acceptDescriptor=true, closed;
+ public static final int GATT_SUCCESS=0, CONNECTION_PRIORITY_HIGH=1; public boolean acceptDescriptor=true, acceptWrite=true, closed;
  public BluetoothGattService service=new BluetoothGattService(); public List<byte[]> writes=new ArrayList<>();
  public boolean requestConnectionPriority(int p){return true;} public boolean requestMtu(int m){return true;}
  public boolean discoverServices(){return true;} public BluetoothGattService getService(UUID u){return service;}
  public boolean setCharacteristicNotification(BluetoothGattCharacteristic c,boolean b){return true;}
  public boolean writeDescriptor(BluetoothGattDescriptor d){return acceptDescriptor;}
- public boolean writeCharacteristic(BluetoothGattCharacteristic c){writes.add(c.value.clone());return true;}
+ public boolean writeCharacteristic(BluetoothGattCharacteristic c){if(!acceptWrite)return false;writes.add(c.value.clone());return true;}
  public boolean readCharacteristic(BluetoothGattCharacteristic c){return true;}
  public void close(){closed=true;} public void disconnect(){} }''',
  'android/bluetooth/BluetoothGattService.java': '''package android.bluetooth; import java.util.*; public class BluetoothGattService {
@@ -103,6 +103,27 @@ public class BleRegression {
   d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());set(d,"writeBusy",true);
   ((Runnable)get(d,"writeWatchdog")).run();
   check(old.closed && get(d,"gatt")==null,"write timeout retires its GATT generation before another write");
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(command());old.service.chars.add(notify);before=added;
+  BluetoothGattCallback callback=(BluetoothGattCallback)get(d,"gattCallback");
+  callback.onServicesDiscovered(old,0);
+  callback.onDescriptorWrite(old,notify.descriptor,133);
+  check(old.closed && added==before,"all failed notification subscriptions cannot announce a ready controller");
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(command());old.service.chars.add(notify);
+  BluetoothGattCharacteristic second=new BluetoothGattCharacteristic("100f6c76-1735-4313-b402-38567131e5f3",16);
+  second.descriptor=new BluetoothGattDescriptor(second);old.service.chars.add(second);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  callback.onDescriptorWrite(old,notify.descriptor,133);callback.onDescriptorWrite(old,second.descriptor,0);
+  check(!old.closed && added==before+1,"an optional subscription failure still permits a working notification channel");
+  d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());old.acceptWrite=false;
+  d.rumble((short)10000,(short)10000);
+  for(int i=0;i<45;i++){SystemClock.now+=50;((Runnable)get(d,"retryFlush")).run();}
+  check(old.closed && get(d,"gatt")==null && ((Deque<?>)get(d,"writeQueue")).isEmpty(),
+        "persistent synchronous write rejection retires the unusable link");
+  d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());old.acceptWrite=false;
+  d.rumble((short)10000,(short)10000);SystemClock.now+=50;old.acceptWrite=true;
+  ((Runnable)get(d,"retryFlush")).run();
+  check(!old.closed && old.writes.size()==1 && (boolean)get(d,"writeBusy"),
+        "a transient busy response retries without dropping the controller");
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
