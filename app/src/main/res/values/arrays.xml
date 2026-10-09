@@ -226,6 +226,14 @@
         <item>2000</item>
         <item>0</item>
     </string-array>
+    <string-array name="steam_controller_rumble_method_names">
+        <item>@string/steam_controller_rumble_method_rumble</item>
+        <item>@string/steam_controller_rumble_method_pulse</item>
+    </string-array>
+    <string-array name="steam_controller_rumble_method_values" translatable="false">
+        <item>rumble</item>
+        <item>pulse</item>
+    </string-array>
     <string-array name="xr_screen_width_values" translatable="false">
         <item>1.0</item>
         <item>1.5</item>

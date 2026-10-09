@@ -253,6 +253,10 @@
     <string name="steam_controller_rumble_hold_1000">1 s</string>
     <string name="steam_controller_rumble_hold_2000">2 s</string>
     <string name="steam_controller_rumble_hold_unlimited">Until the host says stop</string>
+    <string name="title_steam_controller_rumble_method">Rumble method</string>
+    <string name="summary_steam_controller_rumble_method">How plain rumble from the host is driven. The rumble command is the firmware\'s own motor drive; pulse trains are the earlier approach. Steam\'s own haptics on a Steam Controller host are replayed as sent either way.</string>
+    <string name="steam_controller_rumble_method_rumble">Rumble command (default)</string>
+    <string name="steam_controller_rumble_method_pulse">Haptic pulse trains</string>
     <string name="title_checkbox_steam_controller_stick_rim">Stretch sticks to a full circle</string>
     <string name="summary_checkbox_steam_controller_stick_rim">Learns each stick range from your pushes and stretches it to a perfect circle. Off by default: the wired Steam Controller reports a rounded square, with each axis parked at full deflection, and the Steam controller test accepts that shape but keeps waiting on a perfect circle delivered at 250 reports per second. Turn on only if a stick cannot reach the edge in some direction.</string>
     <string name="toast_steam_controller_permission">Bluetooth permission is needed for the Steam Controller driver. Enable it in the stream settings.</string>

@@ -39,19 +39,22 @@ public final class SteamControllerBleManager {
     private final boolean splitPads;
     private final int gripsMode;
     private final int rumbleHoldMs;
+    private final int rumbleMethod;
     private final boolean stickRim;
     private final Map<String, SteamControllerBle> drivers = new HashMap<>();
     private int nextDeviceId = BASE_DEVICE_ID;
     private BroadcastReceiver aclReceiver;
 
     public SteamControllerBleManager(Context context, UsbDriverListener listener, boolean motionEnabled,
-                                     boolean splitPads, int gripsMode, int rumbleHoldMs, boolean stickRim) {
+                                     boolean splitPads, int gripsMode, int rumbleHoldMs, int rumbleMethod,
+                                     boolean stickRim) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.motionEnabled = motionEnabled;
         this.splitPads = splitPads;
         this.gripsMode = gripsMode;
         this.rumbleHoldMs = rumbleHoldMs;
+        this.rumbleMethod = rumbleMethod;
         this.stickRim = stickRim;
     }
 
@@ -62,6 +65,12 @@ public final class SteamControllerBleManager {
         } catch (NumberFormatException e) {
             return 500;
         }
+    }
+
+    /** Maps the steam_controller_rumble_method preference value to a SteamControllerBle.RUMBLE_METHOD_* constant. */
+    public static int rumbleMethodFromPref(String value) {
+        if ("pulse".equals(value)) return SteamControllerBle.RUMBLE_METHOD_PULSES;
+        return SteamControllerBle.RUMBLE_METHOD_RUMBLE_CMD;
     }
 
     /** Maps the steam_controller_grips preference value to a SteamControllerBle.GRIPS_* constant. */
@@ -158,7 +167,7 @@ public final class SteamControllerBleManager {
             }
             return;
         }
-        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, stickRim);
+        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, rumbleMethod, stickRim);
         drivers.put(address, driver);
         if (!driver.start()) {
             drivers.remove(address);

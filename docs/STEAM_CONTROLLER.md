@@ -32,10 +32,17 @@ later (ACL connected broadcast). Each driver:
    USB offset is one less) into Moonlight's `ControllerPacket` flags, triggers, sticks, two
    touchpads (`LiSendControllerTouchEvent2`, pads 0 and 1), gyro/accel and battery;
 4. announces itself as `LI_CTYPE_STEAM` with `ANALOG_TRIGGERS | RUMBLE | TOUCHPAD | DUAL_TOUCHPAD |
-   BATTERY_STATE` (+ `GYRO | ACCEL`); rumble is done with `ID_TRIGGER_HAPTIC_PULSE` (0x8F) pulse
-   trains (~160 Hz, magnitude as duty cycle; firmware side 1 = left/low, 0 = right/high) that are
-   re-issued every 100 ms while the host's rumble is non-zero, the way Steam and the kernel driver
-   drive this controller, and stopped by a zero-repeat pulse;
+   BATTERY_STATE | GRIP_SENSE | STICK_TOUCH | STEAM_HAPTIC` (+ `GYRO | ACCEL`). Plain host rumble
+   is driven with `ID_TRIGGER_RUMBLE_CMD` (0xEB, the firmware's motor drive, re-sent every 40 ms
+   against its ~50 ms safety timeout) or, with the "Rumble method" setting, with
+   `ID_TRIGGER_HAPTIC_PULSE` (0x8F) pulse trains (~160 Hz, magnitude as duty cycle; firmware side
+   1 = left/low, 0 = right/high) re-issued every 100 ms. A Vibepollo host presenting the Steam
+   Controller profile sends Steam's own haptic output reports instead (fork.27, `LI_CCAP_STEAM_HAPTIC`,
+   control packet 0x5504): 0x80 rumble is replayed as 0xEB, 0x81 pulses as 0x8F
+   (`MsgFireHapticPulse`: pad, duration, interval, count, gain, priority) and 0x82 commands as
+   `ID_TRIGGER_HAPTIC_CMD` (0xEA, `MsgTriggerHaptic`: side mask, command, intensity, gain). Before
+   fork.27 the pulse message was sent without its length byte and last two fields, so the firmware
+   never parsed it;
 5. on stop restores the default digital mappings and settings so the controller works as a
    keyboard/mouse for the rest of the system again.
 
@@ -101,7 +108,9 @@ original; these were used as documentation.
   try adding a 0x85 write to the keep-alive.
 - Battery charge-state semantics (byte 0 of the battery characteristic; non-zero is treated as
   charging).
-- Rumble feel; stop is an explicit zero-repeat pulse.
+- Rumble feel of the 0xEB rumble command and the 0xEA click/tick replay over BLE (fork.27; the
+  constants are documented for the Deck's haptic engine, which the Triton's output reports mirror
+  field for field). If nothing is felt, switch "Rumble method" to pulse trains and report.
 - Rumble hold limit (fork.14): Vibepollo 2.0.0 presenting the controller as a DualSense forwards
   Steam's menu haptics as rumble but was observed never to send the matching "motors off" (stream
   log: `Rumble on gamepad 0: 6600 6600`, `7300 8000`, ... and no `0000 0000`), which with an

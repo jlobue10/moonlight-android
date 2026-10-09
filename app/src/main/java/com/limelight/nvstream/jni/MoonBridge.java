@@ -128,6 +128,7 @@ public class MoonBridge {
     public static final short LI_CCAP_DUAL_TOUCHPAD   = 0x100;
     public static final short LI_CCAP_GRIP_SENSE      = 0x200; // Vibepollo extension: grip touch as button flags
     public static final short LI_CCAP_STICK_TOUCH     = 0x400; // Vibepollo extension: stick touch as button flags
+    public static final short LI_CCAP_STEAM_HAPTIC    = 0x800; // Vibepollo extension: replays Steam Controller haptic reports
 
     public static final byte LI_MOTION_TYPE_ACCEL = 0x01;
     public static final byte LI_MOTION_TYPE_GYRO  = 0x02;
@@ -342,6 +343,12 @@ public class MoonBridge {
     public static void bridgeClSetControllerLED(short controllerNumber, byte r, byte g, byte b) {
         if (connectionListener != null) {
             connectionListener.setControllerLED(controllerNumber, r, g, b);
+        }
+    }
+
+    public static void bridgeClSteamHaptic(short controllerNumber, byte[] report) {
+        if (connectionListener != null) {
+            connectionListener.steamHaptic(controllerNumber, report);
         }
     }
 

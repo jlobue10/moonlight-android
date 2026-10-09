@@ -85,6 +85,13 @@ public abstract class AbstractController {
 
     public abstract void rumbleTriggers(short leftTrigger, short rightTrigger);
 
+    /**
+     * A Steam Controller (2026) haptic output report to replay, id first (0x80 rumble, 0x81
+     * pulse, 0x82 command, ...). Only sent to a controller that advertised LI_CCAP_STEAM_HAPTIC.
+     */
+    public void steamHaptic(byte[] report) {
+    }
+
     protected void notifyDeviceRemoved() {
         listener.deviceRemoved(this);
     }
