@@ -41,8 +41,13 @@ later (ACL connected broadcast). Each driver:
    control packet 0x5504): 0x80 rumble is replayed as 0xEB, 0x81 pulses as 0x8F
    (`MsgFireHapticPulse`: pad, duration, interval, count, gain, priority) and 0x82 commands as
    `ID_TRIGGER_HAPTIC_CMD` (0xEA, `MsgTriggerHaptic`: side mask, command, intensity, gain). Before
-   fork.27 the pulse message was sent without its length byte and last two fields, so the firmware
-   never parsed it;
+   fork.27 the pulse message was sent without its length byte, so the firmware never parsed it;
+   fork.28 frames it exactly as the Linux `hid-steam` driver does ({0x8F, 8, pad, duration,
+   interval, count, gain u8}). Writes go one at a time (the stack takes one GATT operation);
+   a refused write is retried after 50 ms, a completion that never comes is cleared after 2 s,
+   haptic commands go without response, a stall never evicts a motors-off, the keep-alive
+   re-sends the whole settings triple, and `stop()` restores lizard mode through the same queue
+   before closing the link (fork.28);
 5. on stop restores the default digital mappings and settings so the controller works as a
    keyboard/mouse for the rest of the system again.
 
