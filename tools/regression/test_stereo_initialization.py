@@ -37,7 +37,7 @@ public class StereoInitialization {
  AtomicBoolean frameAvailable=new AtomicBoolean();
  ByteBuffer currentlyRenderingMap,previousFrameForComparison;
  boolean block,isActive,blockFirst=true;
- long lastFpsTime,totalDrawTime; float drawDelay,calcFps,calcThreeDFps;
+ long lastFpsTime,totalDrawTime; float drawDelay,calcFps,calcThreeDFps,fps,threeDFps;
  String renderer; int modelInputWidth=1,modelInputHeight=1;
  int videoTextureId,depthMapTextureId,filteredDepthMapTextureId,fboTextureId,intermediateTextureId;
  int simple3dProgram,bilateralBlurProgram,dibr3dProgram,fboHandle,intermediateFboHandle,filterFboHandle;
