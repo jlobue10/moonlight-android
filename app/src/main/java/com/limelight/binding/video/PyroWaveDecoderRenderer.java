@@ -6,6 +6,8 @@ import android.view.Surface;
 import com.limelight.LimeLog;
 import com.limelight.nvstream.jni.MoonBridge;
 
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 /**
  * Decodes and presents PyroWave streams with Vulkan compute (native pyrowave-renderer).
  *
@@ -18,8 +20,14 @@ public class PyroWaveDecoderRenderer {
 
     private static final boolean LIBRARY_LOADED = loadLibrary();
 
-    private long handle;
-    private boolean lastFramePresented;
+    // setup/cleanup own the native handle exclusively; submitFrame, setHdrMode and the
+    // statistics getter share it. The HDR state is atomic on the native side, so the
+    // control-stream thread's setHdrMode must not queue behind a submitFrame that can
+    // block for seconds on a stalled surface: that same thread delivers rumble and
+    // Steam haptic callbacks in order.
+    private final ReentrantReadWriteLock handleLock = new ReentrantReadWriteLock();
+    private volatile long handle;
+    private volatile boolean lastFramePresented;
 
     private static boolean loadLibrary() {
         // Vulkan 1.3 loaders ship with newer Android releases; the native probe makes the
@@ -49,13 +57,18 @@ public class PyroWaveDecoderRenderer {
      * @param tenBit a 10-bit profile was negotiated: the planes hold 10-bit code values and the
      *               host's HDR mode message decides between HDR10 (BT.2020 PQ) and 10-bit SDR
      */
-    public synchronized boolean setup(Surface surface, int width, int height, int frameRate, boolean chroma444, boolean tenBit) {
-        cleanup();
-        if (!LIBRARY_LOADED || surface == null || !surface.isValid()) {
-            return false;
+    public boolean setup(Surface surface, int width, int height, int frameRate, boolean chroma444, boolean tenBit) {
+        handleLock.writeLock().lock();
+        try {
+            cleanup();
+            if (!LIBRARY_LOADED || surface == null || !surface.isValid()) {
+                return false;
+            }
+            handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
+            return handle != 0;
+        } finally {
+            handleLock.writeLock().unlock();
         }
-        handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
-        return handle != 0;
     }
 
     /**
@@ -63,39 +76,59 @@ public class PyroWaveDecoderRenderer {
      * presented as PQ; elsewhere the renderer tone-maps it to SDR using peakNits (MaxCLL or
      * the mastering display peak, 0 for the default).
      */
-    public synchronized void setHdrMode(boolean enabled, float peakNits) {
-        if (handle != 0) {
-            nativeSetHdrMode(handle, enabled, peakNits);
+    public void setHdrMode(boolean enabled, float peakNits) {
+        handleLock.readLock().lock();
+        try {
+            if (handle != 0) {
+                nativeSetHdrMode(handle, enabled, peakNits);
+            }
+        } finally {
+            handleLock.readLock().unlock();
         }
     }
 
-    public synchronized int submitFrame(byte[] data, int length) {
+    public int submitFrame(byte[] data, int length) {
         lastFramePresented = false;
-        if (handle == 0) {
-            return MoonBridge.DR_NEED_IDR;
+        handleLock.readLock().lock();
+        try {
+            if (handle == 0) {
+                return MoonBridge.DR_NEED_IDR;
+            }
+            // Skipped frames are fine: every frame is a keyframe, so the next one recovers.
+            // PyroWave has no IDR to request, so an error only asks for the next frame.
+            int result = nativeSubmitFrame(handle, data, length);
+            lastFramePresented = result == 0;
+            return result == SUBMIT_ERROR ? MoonBridge.DR_NEED_IDR : MoonBridge.DR_OK;
+        } finally {
+            handleLock.readLock().unlock();
         }
-        // Skipped frames are fine: every frame is a keyframe, so the next one recovers.
-        // PyroWave has no IDR to request, so an error only asks for the next frame.
-        int result = nativeSubmitFrame(handle, data, length);
-        lastFramePresented = result == 0;
-        return result == SUBMIT_ERROR ? MoonBridge.DR_NEED_IDR : MoonBridge.DR_OK;
     }
 
     /**
      * GPU time of the last completed decode in microseconds, or 0 when the GPU cannot report it.
      */
-    public synchronized int getLastGpuDecodeUs() {
-        return handle != 0 ? nativeGetLastGpuDecodeUs(handle) : 0;
+    public int getLastGpuDecodeUs() {
+        handleLock.readLock().lock();
+        try {
+            return handle != 0 ? nativeGetLastGpuDecodeUs(handle) : 0;
+        } finally {
+            handleLock.readLock().unlock();
+        }
     }
 
-    public synchronized boolean wasLastFramePresented() {
+    public boolean wasLastFramePresented() {
         return lastFramePresented;
     }
 
-    public synchronized void cleanup() {
-        if (handle != 0) {
-            nativeDestroy(handle);
-            handle = 0;
+    public void cleanup() {
+        handleLock.writeLock().lock();
+        try {
+            if (handle != 0) {
+                nativeDestroy(handle);
+                handle = 0;
+            }
+        } finally {
+            handleLock.writeLock().unlock();
         }
     }
 

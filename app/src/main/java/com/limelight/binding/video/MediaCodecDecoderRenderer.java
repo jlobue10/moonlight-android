@@ -1415,7 +1415,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 return;
             }
         }
-        videoDecoder.release();
+        // A failed PyroWave setup leaves neither renderer; nothing to release then.
+        if (videoDecoder != null) {
+            videoDecoder.release();
+        }
     }
 
     private static float hdrPeakNits(boolean enabled, byte[] metadata) {

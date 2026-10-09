@@ -31,7 +31,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 public class StereoDemand {
  Object frameLock=new Object(); AtomicBoolean frameAvailable=new AtomicBoolean();
- DepthSession depthSession=new DepthSession(); boolean stopped,block,isMovieMode,isDebugMode;
+ DepthSession depthSession=new DepthSession(); boolean stopped,block,isMovieMode,isDebugMode,flatMapUploaded;
+ ByteBuffer createFlatDepthMap(){return ByteBuffer.allocate(1);}
  String renderer; Host host=new Host(); Texture videoSurfaceTexture=new Texture();
  ByteBuffer previousFrameForComparison=ByteBuffer.allocate(4),currentlyRenderingMap;
  long lastFpsTime,totalDrawTime; float fps=60,calcFps,threeDFps,calcThreeDFps,drawDelay;
@@ -50,6 +51,7 @@ public class StereoDemand {
   ArrayBlockingQueue<ByteBuffer> freeInputBuffers=new ArrayBlockingQueue<>(10),freeSmoothedBuffers=new ArrayBlockingQueue<>(3);
   ArrayBlockingQueue<ByteBuffer> filledOutputBuffers=new ArrayBlockingQueue<>(6);
   ArrayBlockingQueue<RenderResult> inferenceInputQueue=new ArrayBlockingQueue<>(1);
+  final Object depthReady=new Object(); AtomicBoolean depthWaiting=new AtomicBoolean();
   DEPTH_REQUEST_METHOD
  }
  boolean readPixelsForAI_Async(ByteBuffer b){readbacks++;return true;}
