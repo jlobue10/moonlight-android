@@ -160,6 +160,7 @@ public class SteamControllerBle extends AbstractController {
     private final Handler handler;
 
     private volatile BluetoothGatt gatt;
+    private boolean connecting; // guarded by this; connectGatt itself runs outside the lock
     private volatile BluetoothGattCharacteristic writeChar;
     private BluetoothGattCharacteristic batteryChar;
     private final ArrayDeque<BluetoothGattCharacteristic> pendingSubscriptions = new ArrayDeque<>();
@@ -286,29 +287,50 @@ public class SteamControllerBle extends AbstractController {
     @SuppressLint("MissingPermission")   // the manager checks BLUETOOTH_CONNECT before creating us
     @Override
     public boolean start() {
-        stopped = false;
-        closing = false;
+        synchronized (this) {
+            if (stopped) return false;
+            if (connecting || gatt != null) return true;
+            connecting = true;
+            closing = false;
+        }
         LimeLog.info("Steam Controller BLE: connecting to " + device.getAddress());
+        BluetoothGatt connected = null;
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
+                connected = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
             } else {
-                gatt = device.connectGatt(context, false, gattCallback);
+                connected = device.connectGatt(context, false, gattCallback);
             }
         } catch (SecurityException e) {
             LimeLog.warning("Steam Controller BLE: no Bluetooth permission: " + e.getMessage());
-            return false;
         }
-        return gatt != null;
+        synchronized (this) {
+            connecting = false;
+            if (!stopped) {
+                gatt = connected;
+                return connected != null;
+            }
+        }
+        // stop() can retire the looper while connectGatt is inside the platform.
+        // A late result must not publish a connection on that retired instance.
+        if (connected != null) {
+            try {
+                connected.disconnect();
+                connected.close();
+            } catch (SecurityException | IllegalStateException e) {
+                LimeLog.warning("Steam Controller BLE: late connection close failed: " + e.getMessage());
+            }
+        }
+        return false;
     }
 
     @SuppressLint("MissingPermission")
     @Override
     public void stop() {
-        if (stopped) {
-            return;
+        synchronized (this) {
+            if (stopped) return;
+            stopped = true;
         }
-        stopped = true;
         handler.removeCallbacksAndMessages(null);
         saveStickExtents();
         BluetoothGatt g = gatt;
@@ -345,12 +367,11 @@ public class SteamControllerBle extends AbstractController {
             handler.removeCallbacks(this);
             BluetoothGatt g = gatt;
             gatt = null;
-            if (g == null) {
-                return;
-            }
             try {
-                g.disconnect();
-                g.close();
+                if (g != null) {
+                    g.disconnect();
+                    g.close();
+                }
             } catch (SecurityException | IllegalStateException e) {
                 LimeLog.warning("Steam Controller BLE: close failed: " + e.getMessage());
             }

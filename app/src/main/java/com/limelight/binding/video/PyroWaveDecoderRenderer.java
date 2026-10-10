@@ -32,6 +32,8 @@ public class PyroWaveDecoderRenderer {
     private final ReentrantReadWriteLock handleLock = new ReentrantReadWriteLock();
     private volatile long handle;
     private volatile boolean lastFramePresented;
+    // Changes whenever cleanup retires a session, including setup's replacement.
+    private long lifecycleGeneration;
 
     // Setup arguments and the last HDR mode, so recreate() can rebuild the renderer.
     private Surface surface;
@@ -148,6 +150,7 @@ public class PyroWaveDecoderRenderer {
     public int submitFrame(byte[] data, int length) {
         lastFramePresented = false;
         int result;
+        long generation;
         handleLock.readLock().lock();
         try {
             if (handle == 0) {
@@ -157,28 +160,38 @@ public class PyroWaveDecoderRenderer {
             // PyroWave has no IDR to request, so an error only asks for the next frame.
             result = nativeSubmitFrame(handle, data, length);
             lastFramePresented = result == 0;
+            generation = lifecycleGeneration;
+            if (result != SUBMIT_ERROR) consecutiveSubmitErrors = 0;
         } finally {
             handleLock.readLock().unlock();
         }
         if (result != SUBMIT_ERROR) {
-            consecutiveSubmitErrors = 0;
             return MoonBridge.DR_OK;
         }
-        // Outside the read lock: recreate() takes the write lock.
-        if (++consecutiveSubmitErrors == RECREATE_AFTER_ERRORS) {
-            if (recreated) {
-                LimeLog.severe("PyroWave renderer failed again after being rebuilt; giving up");
-                dead = true;
-            } else {
-                recreated = true;
-                LimeLog.warning("PyroWave renderer failed " + RECREATE_AFTER_ERRORS + " frames in a row; rebuilding it");
-                if (recreate()) {
-                    consecutiveSubmitErrors = 0;
-                } else {
-                    LimeLog.severe("PyroWave renderer could not be rebuilt");
+        // Cleanup or setup may run while upgrading from the read lock. Recovery
+        // belongs only to the session that produced the failed submission.
+        handleLock.writeLock().lock();
+        try {
+            if (generation != lifecycleGeneration || handle == 0) {
+                return MoonBridge.DR_NEED_IDR;
+            }
+            if (++consecutiveSubmitErrors == RECREATE_AFTER_ERRORS) {
+                if (recreated) {
+                    LimeLog.severe("PyroWave renderer failed again after being rebuilt; giving up");
                     dead = true;
+                } else {
+                    recreated = true;
+                    LimeLog.warning("PyroWave renderer failed " + RECREATE_AFTER_ERRORS + " frames in a row; rebuilding it");
+                    if (recreate()) {
+                        consecutiveSubmitErrors = 0;
+                    } else {
+                        LimeLog.severe("PyroWave renderer could not be rebuilt");
+                        dead = true;
+                    }
                 }
             }
+        } finally {
+            handleLock.writeLock().unlock();
         }
         return MoonBridge.DR_NEED_IDR;
     }
@@ -202,6 +215,11 @@ public class PyroWaveDecoderRenderer {
     public void cleanup() {
         handleLock.writeLock().lock();
         try {
+            ++lifecycleGeneration;
+            surface = null;
+            consecutiveSubmitErrors = 0;
+            recreated = false;
+            dead = false;
             if (handle != 0) {
                 nativeDestroy(handle);
                 handle = 0;

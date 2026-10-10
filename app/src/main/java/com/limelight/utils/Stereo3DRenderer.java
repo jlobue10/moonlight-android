@@ -42,7 +42,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Future;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1087,15 +1086,23 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
         /**
          * Closes a partially built model on its owner thread so the session can run without
-         * one. Returns false only when interrupted, in which case nothing may be reused.
+         * one. Teardown cancels the GL wait while native close remains on its owner.
          */
         private boolean discardModelAfterFailedInitialization() {
+            final Future<?> cleanup;
+            synchronized (this) {
+                if (stopped) return false;
+                cleanup = inferenceExecutor.submit(this::closeTfLite);
+                inferenceTask = cleanup;
+            }
             try {
-                inferenceExecutor.submit(this::closeTfLite).get();
+                cleanup.get();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;
-            } catch (ExecutionException | CancellationException | RejectedExecutionException e) {
+            } catch (CancellationException e) {
+                return false;
+            } catch (ExecutionException e) {
                 LimeLog.warning("Closing the failed depth model also failed: " + e);
                 tflite = null;
             }

@@ -6,6 +6,10 @@ start a stream, or load Android native libraries. They compile production
 sources or extract production methods verbatim, with deterministic platform
 boundaries. See each script for the exact boundary being replaced.
 
+- `test_pyrowave_recovery.py`: renderer rebuilds, cleanup/replacement during recovery,
+  HDR restoration and the terminal error budget, with JNI calls recorded.
+- `test_depth_failure_cleanup.py`: failed-model cleanup blocked across stop; the GL
+  waiter exits while native cleanup remains on its owning executor.
 - `test_steam_ble.py`: actual BLE driver; queue limits, stale callbacks,
   disconnected rumble, subscription failures and write timeout recovery.
 - `test_ble_start_lifecycle.py`: actual activity driver-start method; late

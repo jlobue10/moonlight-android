@@ -32,9 +32,9 @@ STUBS = {
  public static class Editor { public Editor putFloat(String k,float v){return this;} public void apply(){} } }''',
  'android/bluetooth/BluetoothProfile.java': 'package android.bluetooth; public interface BluetoothProfile { int STATE_CONNECTED=2, STATE_DISCONNECTED=0; }',
  'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth; import android.content.Context; public class BluetoothDevice {
- public static final int TRANSPORT_LE=2; public BluetoothGatt next = new BluetoothGatt(); public String getAddress(){return "00:00:00:00:00:01";}
- public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb){return next;}
- public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb,int transport){return next;} }''',
+ public static final int TRANSPORT_LE=2; public boolean deny; public Runnable onConnect; public BluetoothGatt next = new BluetoothGatt(); public String getAddress(){return "00:00:00:00:00:01";}
+ public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb){if(deny)throw new SecurityException();if(onConnect!=null){Runnable r=onConnect;onConnect=null;r.run();}return next;}
+ public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb,int transport){return connectGatt(c,a,cb);} }''',
  'android/bluetooth/BluetoothGatt.java': '''package android.bluetooth; import java.util.*; public class BluetoothGatt {
  public static final int GATT_SUCCESS=0, CONNECTION_PRIORITY_HIGH=1; public boolean acceptDescriptor=true, acceptWrite=true, closed;
  public BluetoothGattService service=new BluetoothGattService(); public List<byte[]> writes=new ArrayList<>();
@@ -72,13 +72,14 @@ public class BleRegression {
  static void check(boolean ok,String name){checks++;System.out.println((ok?"PASS ":"FAIL ")+name);if(!ok)failed++;}
  static Object get(Object o,String name)throws Exception{Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(o);}
  static void set(Object o,String name,Object v)throws Exception{Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);f.set(o,v);}
- static SteamControllerBle make()throws Exception{
+ static SteamControllerBle create(BluetoothDevice device)throws Exception{
   SteamControllerBle d=new SteamControllerBle(1,new UsbDriverListener(){
    public void reportControllerState(int i,int b,float x,float y,float z,float w,float l,float r){states++;}
    public void reportControllerMotion(int i,byte t,float x,float y,float z){}
    public void deviceRemoved(AbstractController c){} public void deviceAdded(AbstractController c){added++;}
-  },new Context(),new BluetoothDevice(),false,false,0,0,0,false);d.start();return d;
+  },new Context(),device,false,false,0,0,0,false);return d;
  }
+ static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
  static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",8);}
  public static void main(String[] args)throws Exception{
   SteamControllerBle d=make();set(d,"writeChar",command());set(d,"writeBusy",true);
@@ -140,9 +141,36 @@ public class BleRegression {
   }
   check(silentPulse && ((Deque<?>)get(d,"writeQueue")).size()<=32,
         "zero-duration stop survives BLE effect overload with nonzero repeat count");
+
+  d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onConnectionStateChange(old,0,0);
+  before=HandlerThread.quits;d.stop();check(HandlerThread.quits==before+1,"stop after disconnect quits the handler thread even without GATT");
+  for(boolean denied:new boolean[]{false,true}){
+   BluetoothDevice device=new BluetoothDevice();device.next=null;device.deny=denied;before=HandlerThread.quits;
+   new ManagerHarness().start(device);
+   check(HandlerThread.quits==before+1,"failed initial connection releases its unregistered driver thread; denied="+denied);
+  }
+  BluetoothDevice connecting=new BluetoothDevice();d=create(connecting);SteamControllerBle target=d;
+  connecting.onConnect=target::stop;before=HandlerThread.quits;boolean started=d.start();
+  check(!started&&get(d,"gatt")==null&&connecting.next.closed&&HandlerThread.quits==before+1,
+        "stop during connect rejects and closes the late GATT result");
+  check(!d.start()&&get(d,"gatt")==null,"a stopped driver cannot restart on its retired looper");
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
+
+manager_path='app/src/main/java/com/limelight/binding/input/driver/ble/SteamControllerBleManager.java'
+manager=(subprocess.check_output(['git','show','HEAD:'+manager_path],cwd=ROOT,text=True)
+         if '--baseline' in sys.argv else (ROOT/manager_path).read_text())
+start=manager.index('    private void startDriver(');end=manager.index('{',start);depth=1
+while depth:
+    end+=1;depth+=(manager[end]=='{')-(manager[end]=='}')
+STUBS['com/limelight/binding/input/driver/ble/ManagerHarness.java'] = """package com.limelight.binding.input.driver.ble;
+import java.util.*;import android.bluetooth.*;import android.content.*;import com.limelight.binding.input.driver.*;
+public class ManagerHarness {
+ final Map<String,SteamControllerBle> drivers=new HashMap<>();int nextDeviceId;
+ Context context=new Context();UsbDriverListener listener;boolean motionEnabled,splitPads,stickRim;
+ int gripsMode,rumbleHoldMs,rumbleMethod;public void start(BluetoothDevice d){startDriver(d);}
+""" + manager[start:end+1] + '}'
 
 with tempfile.TemporaryDirectory(prefix='ble-regression-') as directory:
     work = pathlib.Path(directory)
