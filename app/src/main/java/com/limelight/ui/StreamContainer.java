@@ -8,6 +8,7 @@ import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.text.Editable;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -35,6 +36,9 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         boolean handleKeyDown(KeyEvent event);
         boolean handleCommitText(CharSequence text);
         boolean handleDeleteSurroundingText(int beforeLength, int afterLength);
+        // Key events the IME itself synthesises (Enter from performEditorAction, arrows,
+        // backspace as a key): they must queue behind the text already committed.
+        boolean handleImeKeyEvent(KeyEvent event);
         boolean handleFocusChange(boolean hasWindowFocus);
     }
 
@@ -336,13 +340,39 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         outAttrs.inputType = android.text.InputType.TYPE_CLASS_TEXT;
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI;
         return new BaseInputConnection(this, false) {
+            // The base class is in "fallback" mode: it keeps its own copy of the
+            // text (composing text lands there through setComposingText) and
+            // finishComposingText()/commitText() replay that copy as key events.
+            // Every commit the callbacks accept has to clear that copy, or the
+            // composing text it replaced is typed a second time on the next
+            // finishComposingText(); and composing text that is finished rather
+            // than committed has to go through the same ordered queue.
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
-                return mInputCallbacks != null && mInputCallbacks.handleCommitText(text) || super.commitText(text, newCursorPosition);
+                if (mInputCallbacks != null && mInputCallbacks.handleCommitText(text)) {
+                    getEditable().clear();
+                    return true;
+                }
+                return super.commitText(text, newCursorPosition);
+            }
+            @Override
+            public boolean finishComposingText() {
+                Editable editable = getEditable();
+                if (editable != null && editable.length() > 0 && mInputCallbacks != null &&
+                        mInputCallbacks.handleCommitText(editable.toString())) {
+                    editable.clear();
+                    return true;
+                }
+                return super.finishComposingText();
             }
             @Override
             public boolean deleteSurroundingText(int beforeLength, int afterLength) {
                 return mInputCallbacks != null && mInputCallbacks.handleDeleteSurroundingText(beforeLength, afterLength) || super.deleteSurroundingText(beforeLength, afterLength);
+            }
+            @Override
+            public boolean sendKeyEvent(KeyEvent event) {
+                // performEditorAction() (Enter) arrives here too.
+                return mInputCallbacks != null && mInputCallbacks.handleImeKeyEvent(event) || super.sendKeyEvent(event);
             }
         };
     }

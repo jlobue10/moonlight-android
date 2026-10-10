@@ -336,6 +336,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     // Main-thread IME operations: text chunks and deletions share one ordered queue.
     private static final int UTF8_CHUNK_SIZE = 512;
+    // Deletions per IME request and key pairs per 15 ms flush step (32 packets, well
+    // under common-c's 150-packet input queue at any plausible drain rate).
+    private static final int MAX_IME_DELETE = 512;
+    private static final int IME_KEYS_PER_STEP = 16;
     private final Queue<Runnable> commitTextQueue = new ArrayDeque<>();
     private final Handler commitTextHandler = new Handler(Looper.getMainLooper());
     private boolean commitTextStopped;
@@ -4545,22 +4549,51 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         if (!prefConfig.enableCommitText || conn == null || !connected || commitTextStopped) {
             return false;
         }
-        if (beforeLength > 0 || afterLength > 0) {
-            // Sending immediately lets a deletion overtake text chunks waiting on
-            // the Handler, breaking autocorrection and edits during a long paste.
-            enqueueTextInput(() -> {
-                short backspaceCode = keyboardTranslator.translate(KeyEvent.KEYCODE_DEL, 0, -1);
-                for (int i = 0; i < beforeLength; i++) {
-                    conn.sendKeyboardInput(backspaceCode, com.limelight.nvstream.input.KeyboardPacket.KEY_DOWN, (byte)0, (byte)0);
-                    conn.sendKeyboardInput(backspaceCode, com.limelight.nvstream.input.KeyboardPacket.KEY_UP, (byte)0, (byte)0);
-                }
-                short deleteCode = keyboardTranslator.translate(KeyEvent.KEYCODE_FORWARD_DEL, 0, -1);
-                for (int i = 0; i < afterLength; i++) {
-                    conn.sendKeyboardInput(deleteCode, com.limelight.nvstream.input.KeyboardPacket.KEY_DOWN, (byte)0, (byte)0);
-                    conn.sendKeyboardInput(deleteCode, com.limelight.nvstream.input.KeyboardPacket.KEY_UP, (byte)0, (byte)0);
-                }
-            });
+        // Sending immediately lets a deletion overtake text chunks waiting on the
+        // Handler, breaking autocorrection and edits during a long paste, so the
+        // key pairs go through the same queue. They are paced in steps: common-c's
+        // input queue holds 150 packets and silently drops the rest, so one
+        // runnable sending 2 x n packets lost everything past ~75 characters, and
+        // an IME "clear the field" count spun the main thread.
+        int before = Math.min(Math.max(beforeLength, 0), MAX_IME_DELETE);
+        int after = Math.min(Math.max(afterLength, 0), MAX_IME_DELETE);
+        for (int i = 0; i < before; i += IME_KEYS_PER_STEP) {
+            enqueueTextInput(sendImeKeys(KeyEvent.KEYCODE_DEL, Math.min(IME_KEYS_PER_STEP, before - i)));
         }
+        for (int i = 0; i < after; i += IME_KEYS_PER_STEP) {
+            enqueueTextInput(sendImeKeys(KeyEvent.KEYCODE_FORWARD_DEL, Math.min(IME_KEYS_PER_STEP, after - i)));
+        }
+        return true;
+    }
+
+    private Runnable sendImeKeys(int keyCode, int count) {
+        return () -> {
+            short code = keyboardTranslator.translate(keyCode, 0, -1);
+            for (int i = 0; i < count; i++) {
+                conn.sendKeyboardInput(code, com.limelight.nvstream.input.KeyboardPacket.KEY_DOWN, (byte)0, (byte)0);
+                conn.sendKeyboardInput(code, com.limelight.nvstream.input.KeyboardPacket.KEY_UP, (byte)0, (byte)0);
+            }
+        };
+    }
+
+    @Override
+    public boolean handleImeKeyEvent(KeyEvent event) {
+        if (!prefConfig.enableCommitText || conn == null || !connected || commitTextStopped || event == null) {
+            return false;
+        }
+        // Enter (performEditorAction), arrows, Tab and an IME's backspace-as-key
+        // used to reach handleKeyDown synchronously and overtake text chunks
+        // waiting on the Handler; hardware keyboards never enter the
+        // InputConnection and keep their direct path.
+        enqueueTextInput(() -> {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                handleKeyDown(event);
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                handleKeyUp(event);
+            } else {
+                handleKeyMultiple(event);
+            }
+        });
         return true;
     }
 

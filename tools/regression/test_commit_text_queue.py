@@ -22,7 +22,7 @@ deletion = block('    public boolean handleDeleteSurroundingText(').replace(
     'com.limelight.nvstream.input.KeyboardPacket.', 'KeyboardPacket.')
 stop = block('    private void stopConnection(').replace('Game.this', 'CommitTextRegression.this')
 helpers = '\n'.join(block(marker) for marker in (
-    '    private void enqueueTextInput(', '    private void stopCommitText(')
+    '    private void enqueueTextInput(', '    private void stopCommitText(', '    private Runnable sendImeKeys(')
     if marker in source)
 queue_field = re.search(r'private final Queue<[^;]+;', source).group()
 stopped_field = 'private boolean commitTextStopped;' if 'commitTextStopped' in source else ''
@@ -35,14 +35,16 @@ public class CommitTextRegression {
         boolean post(Runnable r) { pending.add(r); return true; }
         boolean postDelayed(Runnable r, long delay) { pending.add(r); return true; }
         void removeCallbacksAndMessages(Object token) { pending.clear(); }
-        void drain() { while (!pending.isEmpty()) pending.remove(0).run(); }
+        void drain() { while (!pending.isEmpty()) { Conn.inFlush = 0; pending.remove(0).run(); } }
     }
     static class Conn {
         static final List<String> hostInput = new ArrayList<>();
         final List<String> sent = new ArrayList<>();
         void sendUtf8Text(String s) { sent.add(s); hostInput.add("text:" + s); }
+        static int inFlush, maxInFlush;
         void sendKeyboardInput(short code, byte action, byte mods, byte flags) {
             hostInput.add((action == KeyboardPacket.KEY_DOWN ? "down:" : "up:") + code);
+            if (++inFlush > maxInFlush) maxInFlush = inFlush;
         }
         void stop() {}
     }
@@ -73,6 +75,8 @@ public class CommitTextRegression {
     Translator keyboardTranslator = new Translator();
     Pref prefConfig = new Pref();
     private static final int UTF8_CHUNK_SIZE = 512;
+    private static final int MAX_IME_DELETE = 512;
+    private static final int IME_KEYS_PER_STEP = 16;
     // QUEUE_FIELD
     private final Handler commitTextHandler = new Handler();
     Conn conn = new Conn();
@@ -127,6 +131,22 @@ suffix = r'''
         check(Conn.hostInput.equals(Arrays.asList("down:67", "up:67", "down:112", "up:112", "down:112", "up:112")),
               "deleteSurroundingText also deletes the requested following characters");
 
+        // Deletions are paced: never more than one step's key pairs per flush, and an
+        // IME "clear the field" count is bounded instead of spinning the main thread.
+        Conn.hostInput.clear(); Conn.maxInFlush = 0;
+        r.handleDeleteSurroundingText(200, 0);
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.size() == 400 && Conn.maxInFlush <= 32,
+              "a long deletion is spread over flush steps (" + Conn.maxInFlush + " packets per step)");
+        Conn.hostInput.clear();
+        r.handleDeleteSurroundingText(Integer.MAX_VALUE, Integer.MAX_VALUE);
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.size() == 4 * 512, "an unbounded deletion request is clamped");
+        Conn.hostInput.clear();
+        r.handleDeleteSurroundingText(-5, 0);
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.isEmpty(), "a negative deletion count sends nothing");
+
         Conn.hostInput.clear();
         r.enqueueCommitText(big);
         r.handleDeleteSurroundingText(1, 0);
@@ -136,8 +156,11 @@ suffix = r'''
         // NvConnection's JNI input entry points address the active native session;
         // an old Java wrapper is not a session fence. Model that new destination.
         Conn.hostInput.clear();
+        r.commitTextQueue.add(() -> r.conn.sendUtf8Text("stale"));
+        r.commitTextHandler.pending.add(r.flushCommitTextQueue);
         r.commitTextHandler.drain();
-        check(Conn.hostInput.isEmpty(), "a retired queue cannot type into the next native session");
+        check(Conn.hostInput.isEmpty() && r.commitTextQueue.isEmpty(),
+              "a retired queue cannot type into the next native session even if its flush still runs");
         r.enqueueCommitText("late");
         r.handleDeleteSurroundingText(1, 0);
         r.commitTextHandler.drain();
