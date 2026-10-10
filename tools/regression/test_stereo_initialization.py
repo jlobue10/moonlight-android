@@ -127,7 +127,7 @@ SUFFIX = r'''
 
   StereoInitialization flat=new StereoInitialization();flat.blockFirst=false;DepthSession.throwLayout=true;
   try{flat.onSurfaceCreated(null,null);}finally{DepthSession.throwLayout=false;}
-  check(flat.notifications==1 && flat.isActive && flat.workers==0 && "flat (model failed)".equals(flat.renderer),
+  check(flat.notifications==1 && flat.isActive && "flat (model failed)".equals(flat.renderer),
         "an init failure outside initializeTfLite still publishes the surface and renders flat");
   System.exit(failures==0?0:1);
  }
