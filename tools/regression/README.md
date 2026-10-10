@@ -69,3 +69,13 @@ APKs for all supported ABIs (including NDK and R8), and runs Android unit tests.
 `StereoSessionTest` runs the real stereo worker and teardown with native
 inference/pixel boundaries mocked. It holds inference or initialization across
 surface replacement and verifies buffer/flag isolation and deferred model close.
+
+# Codec initialization and HDR launch selection
+
+- `test_codec_fallback.py`: production low-latency option builder and retry loop
+  with rejecting codecs; bounded MediaTek failure, NVIDIA option removal, and
+  successful first-attempt behavior across codec families.
+- `test_hdr_selection.py`: compares the Java HDR launch decision with the actual
+  codec-selection block from the pinned common-C submodule across 2,025 client
+  and host capability combinations. SDP advertises compatible codec profiles;
+  capability changes after launch are outside this test's scope.
