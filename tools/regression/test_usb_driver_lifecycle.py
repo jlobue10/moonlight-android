@@ -78,6 +78,7 @@ public class UsbDriverService {
   static boolean canClaimDevice(UsbDevice d){return false;}
  }
  static class Prefs {boolean bindAllUsb;}
+ private static final String ACTION_USB_PERMISSION = "com.limelight.USB_PERMISSION";
  static boolean shouldClaimDevice(UsbDevice d,boolean all){return true;}
  final UsbManager usbManager=new UsbManager();
  final Prefs prefConfig=new Prefs();
