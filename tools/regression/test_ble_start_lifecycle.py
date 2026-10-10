@@ -18,7 +18,7 @@ usb_bind='    void bindUsbDriver() {\n'+cs[ub:ue]+'    }\n'
 od=block('    protected void onDestroy()')
 us=od.index('        if (usbDriverBindRequested) {');ue2=od.index('        }\n',us)+len('        }\n')
 usb_unbind='    void unbindUsbDriver() {\n'+od[us:ue2]+'    }\n'
-method=method+'\n'+usb_bind+usb_unbind
+method=(method+'\n'+usb_bind+usb_unbind).replace('Game.this','BleStartLifecycle.this')
 prefix=r'''
 public class BleStartLifecycle {
  boolean finishing,destroyed;Object controllerHandler=new Object();int requests;
