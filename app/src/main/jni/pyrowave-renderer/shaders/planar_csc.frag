@@ -25,7 +25,6 @@ layout(push_constant) uniform Params {
     int output_pq;         // 1 = swapchain colour space is HDR10 ST 2084
     float peak_nits;       // tone mapping: content peak (MaxCLL or mastering peak)
     float sdr_white_nits;  // where SDR reference white sits on the PQ scale
-    int output_srgb;      // 1 = the attachment itself applies the sRGB OETF
 } p;
 
 // SMPTE ST 2084 constants
@@ -61,17 +60,6 @@ vec3 srgb_oetf(vec3 l) {
     vec3 lo = l * 12.92;
     vec3 hi = 1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055;
     return mix(lo, hi, step(vec3(0.0031308), l));
-}
-
-// Preserve the encoded signal when an sRGB attachment re-encodes shader output.
-// UNORM and floating-point attachments receive the encoded values directly.
-vec3 attachment_color(vec3 encoded) {
-    return p.output_srgb != 0 ? srgb_eotf(encoded) : encoded;
-}
-
-vec3 sdr_attachment_color(vec3 linear) {
-    // Avoid an OETF/EOTF round trip after tone mapping on an sRGB attachment.
-    return p.output_srgb != 0 ? clamp(linear, 0.0, 1.0) : srgb_oetf(linear);
 }
 
 // Linear BT.2020 -> linear BT.709 primaries (rows apply to a column vector)
@@ -114,7 +102,7 @@ void main() {
 
     if (p.content_pq == p.output_pq) {
         // Same encoding on both sides: the swapchain colour space carries the meaning.
-        frag = vec4(attachment_color(rgb), 1.0);
+        frag = vec4(rgb, 1.0);
         return;
     }
 
@@ -128,7 +116,7 @@ void main() {
         float mapped = m * (1.0 + m / (peak * peak)) / (1.0 + m);
         vec3 lin = lin2020 * (m > 0.0 ? mapped / m : 0.0);
         vec3 lin709 = BT2020_TO_BT709 * lin;
-        frag = vec4(sdr_attachment_color(lin709), 1.0);
+        frag = vec4(srgb_oetf(lin709), 1.0);
     } else {
         // SDR picture on an HDR10 swapchain: place SDR white at sdr_white_nits.
         vec3 lin709 = srgb_eotf(rgb) * p.sdr_white_nits / 10000.0;
