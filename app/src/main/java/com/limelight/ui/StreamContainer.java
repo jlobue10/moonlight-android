@@ -340,10 +340,21 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         };
     }
 
+    // The stereo surface becomes ready on the GL thread while onCreate installs the
+    // callback on the main thread; both sides must observe the other's write or the
+    // stream never starts (or starts twice).
+    private final Object surfaceReadyLock = new Object();
+
     public void setOnSurfaceAvailable(Runnable callback) {
-        this.onSurfaceAvailable = callback;
-        if (isSurfaceReady && onSurfaceAvailable != null) {
-            onSurfaceAvailable.run();
+        Runnable ready = null;
+        synchronized (surfaceReadyLock) {
+            this.onSurfaceAvailable = callback;
+            if (isSurfaceReady) {
+                ready = callback;
+            }
+        }
+        if (ready != null) {
+            ready.run();
         }
     }
 
@@ -365,9 +376,13 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     }
 
     private void notifySurfaceReady() {
-        isSurfaceReady = true;
-        if (onSurfaceAvailable != null) {
-            onSurfaceAvailable.run();
+        Runnable callback;
+        synchronized (surfaceReadyLock) {
+            isSurfaceReady = true;
+            callback = onSurfaceAvailable;
+        }
+        if (callback != null) {
+            callback.run();
         }
     }
 

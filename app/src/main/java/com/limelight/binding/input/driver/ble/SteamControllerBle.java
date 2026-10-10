@@ -82,7 +82,10 @@ public class SteamControllerBle extends AbstractController {
     /** The firmware re-arms lizard mode when it thinks Steam is gone; keep telling it otherwise. */
     private static final long KEEPALIVE_INTERVAL_MS = 1000;
     private static final long RECONNECT_DELAY_MS = 2000;
-    private static final int MAX_RECONNECT_ATTEMPTS = 5;
+    // Each direct reconnect scans at high duty cycle until the stack gives up (~30 s), and a
+    // bonded controller that is switched back on reconnects through the system anyway
+    // (the manager restarts the driver on ACL_CONNECTED). Two attempts cover a radio glitch.
+    private static final int MAX_RECONNECT_ATTEMPTS = 2;
     /** Haptic pulse period (~160 Hz); magnitude is expressed as duty cycle. */
     private static final int RUMBLE_PERIOD_US = 6250;
     /**
@@ -188,6 +191,8 @@ public class SteamControllerBle extends AbstractController {
     private float rightExtentX = STICK_EXTENT_FLOOR, rightExtentY = STICK_EXTENT_FLOOR;
     private boolean extentsDirty;
     private boolean leftPadTouched, rightPadTouched;
+    // Last forwarded pad position per pad, to skip MOVE packets that carry no change.
+    private final float[] lastTouchX = new float[2], lastTouchY = new float[2], lastTouchPressure = new float[2];
     // Rumble state; only touched on the handler thread.
     private float rumbleLow, rumbleHigh;
     private int rumbleLowRaw, rumbleHighRaw;
@@ -1108,6 +1113,13 @@ public class SteamControllerBle extends AbstractController {
                 x = pad == 0 ? x * 0.5f : 0.5f + x * 0.5f;
             }
             float pressure = clamp01(rawPressure / 32768f);
+            if (wasTouched && x == lastTouchX[pad] && y == lastTouchY[pad] && pressure == lastTouchPressure[pad]) {
+                // A resting finger produced 250 identical MOVE packets per second per pad.
+                return true;
+            }
+            lastTouchX[pad] = x;
+            lastTouchY[pad] = y;
+            lastTouchPressure[pad] = pressure;
             reportTouch(touchpadIndex, wasTouched ? MoonBridge.LI_TOUCH_EVENT_MOVE : MoonBridge.LI_TOUCH_EVENT_DOWN, pointerId, x, y, pressure);
         } else if (wasTouched) {
             reportTouch(touchpadIndex, MoonBridge.LI_TOUCH_EVENT_UP, pointerId, 0, 0, 0);
