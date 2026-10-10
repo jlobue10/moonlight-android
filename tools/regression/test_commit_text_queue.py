@@ -23,7 +23,7 @@ deletion = block('    public boolean handleDeleteSurroundingText(').replace(
 stop = block('    private void stopConnection(').replace('Game.this', 'CommitTextRegression.this')
 helpers = '\n'.join(block(marker) for marker in (
     '    private void enqueueTextInput(', '    private void stopCommitText(', '    private Runnable sendImeKeys(')
-    if marker in source)
+    if marker in source).replace('com.limelight.nvstream.input.KeyboardPacket.', 'KeyboardPacket.')
 queue_field = re.search(r'private final Queue<[^;]+;', source).group()
 stopped_field = 'private boolean commitTextStopped;' if 'commitTextStopped' in source else ''
 prefix = r'''
