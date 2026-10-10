@@ -16,6 +16,10 @@ STUBS = {
  'android/annotation/SuppressLint.java': 'package android.annotation; public @interface SuppressLint { String[] value(); }',
  'android/os/Build.java': 'package android.os; public class Build { public static class VERSION { public static int SDK_INT=35; } public static class VERSION_CODES { public static final int M=23; } }',
  'android/os/Looper.java': 'package android.os; public class Looper { public static Looper getMainLooper(){return new Looper();} }',
+ 'android/os/HandlerThread.java': '''package android.os; public class HandlerThread extends Thread { public static int quits;
+ public HandlerThread(String n){} public HandlerThread(String n,int p){} public Looper getLooper(){return new Looper();}
+ public boolean quitSafely(){++quits;return true;} }''',
+ 'android/os/Process.java': 'package android.os; public class Process { public static final int THREAD_PRIORITY_URGENT_DISPLAY=-8; }',
  'android/os/SystemClock.java': 'package android.os; public class SystemClock { public static long now=1000; public static long uptimeMillis(){return now;} }',
  'android/os/Handler.java': '''package android.os; import java.util.*;
  public class Handler { public final List<Runnable> delayed=new ArrayList<>(); public Handler(Looper l){}

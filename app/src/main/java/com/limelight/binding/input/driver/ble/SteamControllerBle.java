@@ -12,8 +12,9 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Process;
 import android.os.SystemClock;
-import android.os.Looper;
 
 import com.limelight.LimeLog;
 import com.limelight.binding.input.driver.AbstractController;
@@ -150,7 +151,13 @@ public class SteamControllerBle extends AbstractController {
     private final int rumbleHoldMs;
     private final int rumbleMethod;
     private final boolean stickRim;
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    // The driver's own thread: rumble and Steam haptic reports from the host, the write
+    // queue retries, the keep-alive and the watchdog all run here, so haptic latency no
+    // longer tracks main-thread load (perf overlay, toasts, layout). Quits once the link
+    // is closed after stop(); an instance is never started again after that.
+    private final HandlerThread handlerThread =
+            new HandlerThread("SteamControllerBle", Process.THREAD_PRIORITY_URGENT_DISPLAY);
+    private final Handler handler;
 
     private volatile BluetoothGatt gatt;
     private volatile BluetoothGattCharacteristic writeChar;
@@ -253,6 +260,8 @@ public class SteamControllerBle extends AbstractController {
         this.rumbleHoldMs = Math.max(0, rumbleHoldMs);
         this.rumbleMethod = rumbleMethod;
         this.stickRim = stickRim;
+        handlerThread.start();
+        handler = new Handler(handlerThread.getLooper());
         loadStickExtents();
         this.type = MoonBridge.LI_CTYPE_STEAM;
         this.capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
@@ -344,6 +353,10 @@ public class SteamControllerBle extends AbstractController {
                 g.close();
             } catch (SecurityException | IllegalStateException e) {
                 LimeLog.warning("Steam Controller BLE: close failed: " + e.getMessage());
+            }
+            if (stopped) {
+                // Last use of the thread: the restore writes are done (or given up on).
+                handlerThread.quitSafely();
             }
         }
     };

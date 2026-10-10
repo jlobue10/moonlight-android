@@ -42,6 +42,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -312,9 +313,15 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         } catch (CancellationException e) {
             return; // The owning session was already retired by stop/replacement.
         } catch (ExecutionException e) {
-            LimeLog.severe("Depth model initialization failed: " + e.getCause());
-            stopFailedInitialization(depth);
-            return;
+            // initializeTfLite swallows its own failures, so this is adoptTensorLayout or
+            // something unforeseen. Drop whatever the owner thread built and carry on with
+            // no model: the stream still needs its surface, and the draw path already shows
+            // the picture flat while tflite is null (same as "no backend available").
+            LimeLog.severe("Depth model initialization failed; rendering flat: " + e.getCause());
+            if (!depth.discardModelAfterFailedInitialization()) {
+                stopFailedInitialization(depth);
+                return;
+            }
         }
         synchronized (this) {
             if (stopped || depthSession != depth || depth.stopped) return;
@@ -1076,6 +1083,24 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 if (!depthWaiting.get()) requestDepthRender();
             }
             if (superseded != null) freeSmoothedBuffers.offer(superseded);
+        }
+
+        /**
+         * Closes a partially built model on its owner thread so the session can run without
+         * one. Returns false only when interrupted, in which case nothing may be reused.
+         */
+        private boolean discardModelAfterFailedInitialization() {
+            try {
+                inferenceExecutor.submit(this::closeTfLite).get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            } catch (ExecutionException | CancellationException | RejectedExecutionException e) {
+                LimeLog.warning("Closing the failed depth model also failed: " + e);
+                tflite = null;
+            }
+            backend = "flat (model failed)";
+            return true;
         }
 
         private void closeTfLite() {
