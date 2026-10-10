@@ -698,7 +698,7 @@ public class NvConnection {
 
     public void sendUtf8Text(final String text) {
         if (!isMonkey) {
-            MoonBridge.sendUtf8Text(text);
+            MoonBridge.sendUtf8Text(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
     }
 

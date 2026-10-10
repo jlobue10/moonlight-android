@@ -334,33 +334,35 @@ public class SteamControllerBle extends AbstractController {
     @SuppressLint("MissingPermission")
     @Override
     public void stop() {
+        BluetoothGatt g;
+        boolean restore;
         synchronized (this) {
             if (stopped) return;
             stopped = true;
-            // From here on every write completion must still clear writeBusy and let the
-            // restore writes drain. A completion that landed between `stopped` and the
-            // later `closing` was dropped by onCharacteristicWrite, so the motors-off and
-            // default-mapping restores never went out and the fallback closed the link
-            // with the controller left out of lizard mode.
-            closing = true;
-        }
-        handler.removeCallbacksAndMessages(null);
-        saveStickExtents();
-        BluetoothGatt g = gatt;
-        if (g != null && writeChar != null) {
             // Give the controller its keyboard/mouse emulation back for the rest of the
             // system. The stack takes one GATT operation at a time, so the restore commands
             // go through the queue (behind a motors-off) and the link closes from the last
             // completion, or after a fallback delay if the link is already gone. With the
             // firmware's Steam watchdog disabled, a restore that never arrives leaves the
             // controller without keyboard/mouse until it is power-cycled.
-            synchronized (this) {
+            //
+            // `closing` and the restore queue are published in the same critical section:
+            // a write completion that lands while stop() is still running must find the
+            // restore commands queued, or it computes "closing and drained" and closes the
+            // link before the motors-off and the restores exist.
+            g = gatt;
+            restore = g != null && writeChar != null;
+            closing = restore;
+            if (restore) {
                 writeQueue.clear();
-                closing = true;
                 writeQueue.add(rumbleCommand(0, 0));
                 writeQueue.add(new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS});
                 writeQueue.add(new byte[]{ID_LOAD_DEFAULT_SETTINGS});
             }
+        }
+        handler.removeCallbacksAndMessages(null);
+        saveStickExtents();
+        if (restore) {
             flushWrites();
             handler.postDelayed(closeLink, CLOSE_FALLBACK_MS);
         } else {

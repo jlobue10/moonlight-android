@@ -419,7 +419,10 @@ public class MoonBridge {
 
     public static native void sendMouseHighResHScroll(short scrollAmount);
 
-    public static native void sendUtf8Text(String text);
+    // Bytes, not a String: GetStringUTFChars yields modified UTF-8 (CESU-8 surrogate
+    // pairs for supplementary characters, C0 80 for NUL), which is not valid UTF-8 on
+    // the host.
+    public static native void sendUtf8Text(byte[] utf8);
 
     public static native String getStageName(int stage);
 

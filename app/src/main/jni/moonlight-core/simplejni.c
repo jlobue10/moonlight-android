@@ -134,10 +134,22 @@ Java_com_limelight_nvstream_jni_MoonBridge_sendMouseHighResHScroll(JNIEnv *env, 
 }
 
 JNIEXPORT void JNICALL
-Java_com_limelight_nvstream_jni_MoonBridge_sendUtf8Text(JNIEnv *env, jclass clazz, jstring text) {
-    const char* utf8Text = (*env)->GetStringUTFChars(env, text, NULL);
-    LiSendUtf8TextEvent(utf8Text, strlen(utf8Text));
-    (*env)->ReleaseStringUTFChars(env, text, utf8Text);
+Java_com_limelight_nvstream_jni_MoonBridge_sendUtf8Text(JNIEnv *env, jclass clazz, jbyteArray text) {
+    // Real UTF-8 from the Java side; GetStringUTFChars would hand us modified UTF-8
+    // (CESU-8 surrogates for anything above U+FFFF), invalid on the host.
+    if (text == NULL) {
+        return;
+    }
+    jsize length = (*env)->GetArrayLength(env, text);
+    if (length <= 0) {
+        return;
+    }
+    jbyte* utf8Text = (*env)->GetByteArrayElements(env, text, NULL);
+    if (utf8Text == NULL) {
+        return;
+    }
+    LiSendUtf8TextEvent((const char*)utf8Text, (unsigned int)length);
+    (*env)->ReleaseByteArrayElements(env, text, utf8Text, JNI_ABORT);
 }
 
 JNIEXPORT void JNICALL
