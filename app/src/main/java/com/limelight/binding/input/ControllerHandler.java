@@ -143,6 +143,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     private final PreferenceConfiguration prefConfig;
     private short currentControllers, initialControllers;
+    // The number masks are reserved from the main thread (InputDevice events) and from
+    // driver binder threads (USB, Steam Controller BLE); one lock keeps two first-input
+    // events from taking the same slot or losing a release.
+    private final Object controllerMaskLock = new Object();
 
     public ControllerHandler(Activity activityContext, NvConnection conn, GameGestures gestures, PreferenceConfiguration prefConfig) {
         this.activityContext = activityContext;
@@ -424,7 +428,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         // If we reserved a controller number, remove that reservation
         if (context.reservedControllerNumber) {
             LimeLog.info("Controller number "+context.controllerNumber+" is now available");
-            currentControllers &= ~(1 << context.controllerNumber);
+            synchronized (controllerMaskLock) {
+                currentControllers &= ~(1 << context.controllerNumber);
+            }
         }
 
         // If this device sent data as a gamepad, zero the values before removing.
@@ -477,17 +483,19 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             if (context instanceof UsbDeviceContext) {
                 if (prefConfig.multiController) {
                     LimeLog.info("Reserving the next available controller number for USB device");
-                    for (short i = 0; i < MAX_GAMEPADS; i++) {
-                        if ((currentControllers & (1 << i)) == 0) {
-                            // Found an unused controller value
-                            currentControllers |= (1 << i);
+                    synchronized (controllerMaskLock) {
+                        for (short i = 0; i < MAX_GAMEPADS; i++) {
+                            if ((currentControllers & (1 << i)) == 0) {
+                                // Found an unused controller value
+                                currentControllers |= (1 << i);
 
-                            // Take this value out of the initial gamepad set
-                            initialControllers &= ~(1 << i);
+                                // Take this value out of the initial gamepad set
+                                initialControllers &= ~(1 << i);
 
-                            context.controllerNumber = i;
-                            context.reservedControllerNumber = true;
-                            break;
+                                context.controllerNumber = i;
+                                context.reservedControllerNumber = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -510,17 +518,19 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 }
                 else if (prefConfig.multiController && devContext.hasJoystickAxes) {
                     LimeLog.info("Reserving the next available controller number");
-                    for (short i = 0; i < MAX_GAMEPADS; i++) {
-                        if ((currentControllers & (1 << i)) == 0) {
-                            // Found an unused controller value
-                            currentControllers |= (1 << i);
+                    synchronized (controllerMaskLock) {
+                        for (short i = 0; i < MAX_GAMEPADS; i++) {
+                            if ((currentControllers & (1 << i)) == 0) {
+                                // Found an unused controller value
+                                currentControllers |= (1 << i);
 
-                            // Take this value out of the initial gamepad set
-                            initialControllers &= ~(1 << i);
+                                // Take this value out of the initial gamepad set
+                                initialControllers &= ~(1 << i);
 
-                            context.controllerNumber = i;
-                            context.reservedControllerNumber = true;
-                            break;
+                                context.controllerNumber = i;
+                                context.reservedControllerNumber = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -1096,7 +1106,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     private short getActiveControllerMask() {
         if (prefConfig.multiController) {
-            return (short)(currentControllers | initialControllers | (prefConfig.onscreenController ? 1 : 0));
+            synchronized (controllerMaskLock) {
+                return (short)(currentControllers | initialControllers | (prefConfig.onscreenController ? 1 : 0));
+            }
         }
         else {
             // Only Player 1 is active with multi-controller disabled
@@ -3007,9 +3019,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
 
-        // Local vectors: this runs on the driver's binder thread while handleMotionEvent
-        // uses the cached one on the main thread.
-        Vector2d leftStickVector = new Vector2d();
+        // Per-device scratch vectors: this runs on the driver's binder thread (one per
+        // device) while handleMotionEvent uses the handler's cached one on the main thread.
+        // A Steam Controller reports at 250 Hz; allocating two per report is needless churn.
+        Vector2d leftStickVector = context.driverLeftStick;
         leftStickVector.initialize(leftStickX, leftStickY);
 
         handleDeadZone(leftStickVector, context.leftStickDeadzoneRadius);
@@ -3017,7 +3030,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         context.leftStickX = driverStickAxis(leftStickVector.getX());
         context.leftStickY = driverStickAxis(-leftStickVector.getY());
 
-        Vector2d rightStickVector = new Vector2d();
+        Vector2d rightStickVector = context.driverRightStick;
         rightStickVector.initialize(rightStickX, rightStickY);
 
         handleDeadZone(rightStickVector, context.rightStickDeadzoneRadius);
@@ -3152,6 +3165,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         public boolean assignedControllerNumber;
         public boolean reservedControllerNumber;
         public short controllerNumber;
+
+        // Scratch for reportControllerState (driver binder thread only).
+        final Vector2d driverLeftStick = new Vector2d();
+        final Vector2d driverRightStick = new Vector2d();
 
         public int inputMap = 0;
         public byte leftTrigger = 0x00;

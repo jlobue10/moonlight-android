@@ -2042,6 +2042,18 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         long submitStartUs = SystemClock.elapsedRealtimeNanos() / 1000;
         int result = pyroWaveRenderer.submitFrame(decodeUnitData, decodeUnitLength);
         long submitEndUs = SystemClock.elapsedRealtimeNanos() / 1000;
+        if (pyroWaveRenderer.isDead()) {
+            // The GPU device is gone and a rebuilt renderer failed the same way. Treat it
+            // like a MediaCodec that died: audio and input would otherwise keep running
+            // behind a frozen picture with nothing telling the user.
+            IllegalStateException exception = new IllegalStateException(
+                    "PyroWave renderer failed repeatedly and could not be rebuilt");
+            if (!reportedCrash) {
+                reportedCrash = true;
+                crashListener.notifyCrash(exception);
+            }
+            throw new RendererException(this, exception);
+        }
         if (result == MoonBridge.DR_OK && pyroWaveRenderer.wasLastFramePresented()) {
             // Report the GPU decode time (of the last completed frame) as decoder time.
             // Wall time would include waiting for the display, which is not decoding.

@@ -233,6 +233,10 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
             // no window yet; the log line is enough
         }
         if (!(mSurfaceView instanceof GLSurfaceView) && mStereoRenderer == null) {
+            // The plain app window must stop reporting: once the GLSurfaceView carries the
+            // stream, a window surface recreation (the Home Space return does one) would
+            // otherwise reach surfaceDestroyed() and end the connection.
+            mSurfaceView.getHolder().removeCallback(this);
             createFlatStereoView();
             mSurfaceView.getHolder().addCallback(this);
         }
@@ -452,6 +456,13 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
             mStereoRenderer.onSurfaceDestroyed();   // queues its GL cleanup on the host thread
             mStereoRenderer = null;
         }
+        if (xrPresenter != null) {
+            // Dispose the entity before joining the GL thread: a swap blocked on a consumer
+            // that stopped acquiring (the activity is already stopped) returns once the
+            // surface is gone, instead of holding the UI thread for the whole join timeout.
+            xrPresenter.stop();                     // disposes the entity, back to Home Space
+            xrPresenter = null;
+        }
         if (xrGlThread != null) {
             xrGlThread.shutdown();                  // drains that cleanup, then releases EGL
             xrGlThread = null;
@@ -459,10 +470,6 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
         if (xrTestPattern != null) {
             xrTestPattern.shutdown();
             xrTestPattern = null;
-        }
-        if (xrPresenter != null) {
-            xrPresenter.stop();                     // disposes the entity, back to Home Space
-            xrPresenter = null;
         }
         xrStereo = false;
     }
