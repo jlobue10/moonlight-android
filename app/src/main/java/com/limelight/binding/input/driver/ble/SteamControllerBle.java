@@ -610,6 +610,9 @@ public class SteamControllerBle extends AbstractController {
             announced = true;
             LimeLog.info("Steam Controller BLE: ready, reporting as LI_CTYPE_STEAM");
             notifyDeviceAdded();
+            // The listener now owns a fresh context. States received during setup,
+            // or delivered to the previous connection, cannot satisfy this one.
+            reportedStateValid = false;
         }
     }
 
