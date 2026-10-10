@@ -58,7 +58,7 @@ public class StereoWorkers {
  static class LimeLog{static void severe(String s){}static void info(String s){}}
  static class Log{static void d(String a,String b){}}
  static class CvType{static final int CV_32FC1=1,CV_8UC1=2,CV_8U=2;}
- static class Mat{Mat(){}Mat(int a,int b,int c,ByteBuffer d){}public Mat clone(){return new Mat();}void release(){}void copyTo(Mat m,Mat mask){}void get(int a,int b,byte[] out){out[0]=42;}}
+ static class Mat{Mat(){}Mat(int a,int b,int c,ByteBuffer d){}public Mat clone(){return new Mat();}void release(){}void copyTo(Mat m,Mat mask){}void copyTo(Mat m){}void get(int a,int b,byte[] out){out[0]=42;}}
  static class Core{static final int NORM_MINMAX=1;static class MinMaxLocResult{double maxVal=1;}
  static void normalize(Mat a,Mat b,int c,int d,int e,int f){}static void absdiff(Mat a,Mat b,Mat c){}
  static MinMaxLocResult minMaxLoc(Mat a){return new MinMaxLocResult();}static void addWeighted(Mat a,double b,Mat c,double d,double e,Mat f){}static void bitwise_not(Mat a,Mat b){}}

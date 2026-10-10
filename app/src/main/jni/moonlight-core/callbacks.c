@@ -344,8 +344,9 @@ void BridgeClSetHdrMode(bool enabled) {
     jbyteArray hdrMetadataByteArray = NULL;
     SS_HDR_METADATA hdrMetadata;
 
-    // Check if HDR metadata was provided
-    if (enabled && LiGetHdrMetadata(&hdrMetadata)) {
+    // One snapshot of enabled + metadata: the flag queued with this callback and the
+    // metadata of a later packet must not be mixed (that forced a decoder restart).
+    if (LiGetHdrState(&enabled, &hdrMetadata)) {
         hdrMetadataByteArray = (*env)->NewByteArray(env, sizeof(SS_HDR_METADATA));
         (*env)->SetByteArrayRegion(env, hdrMetadataByteArray, 0, sizeof(SS_HDR_METADATA), (jbyte*)&hdrMetadata);
     }

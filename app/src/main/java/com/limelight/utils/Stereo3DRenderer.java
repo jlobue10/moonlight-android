@@ -333,6 +333,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             initializeFbo();
             depth.initBuffer();
             initializePBOs();
+            host.setContinuousRendering(false);
 
             if (onSurfaceReadyListener != null) {
                 onSurfaceReadyListener.onStereo3DSurfaceReady(videoSurface);
@@ -483,9 +484,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         renderer = depth.backend;
         long startTime = System.nanoTime();
 
-        // A newly decoded image and a completed depth map each request a draw.
-        // Redrawing for depth/settings must not submit the same image to AI again.
-        host.setContinuousRendering(false);
+        // A newly decoded image and a completed depth map each request a draw (the host
+        // is put in on-demand mode once, in onSurfaceCreated). Redrawing for depth or
+        // settings must not submit the same image to AI again.
         final boolean newVideoFrame;
         synchronized (frameLock) {
             newVideoFrame = frameAvailable.getAndSet(false);
@@ -502,7 +503,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
         long startTimeAi = System.nanoTime();
         long endTimeAi = System.nanoTime();
-        if (depth.tflite != null) {
+        // A worker that gave up (broken CPU model) leaves tflite set: without this check
+        // every new frame would still pay a readback for an input nobody consumes.
+        if (depth.tflite != null && depth.isAiRunning.get()) {
             boolean inputSubmitted = false;
             ByteBuffer pixelBufferForAI = newVideoFrame ? depth.freeInputBuffers.poll() : null;
             if (pixelBufferForAI != null) {
@@ -534,7 +537,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                     depth.depthWaiting.set(true);
                     try {
                         while ((newMap = depth.latestDepthMap.getAndSet(null)) == null
-                                && depth.isAiRunning.get()) {
+                                && depth.isAiRunning.get() && !depth.stopped) {
                             long remainingNs = deadline - System.nanoTime();
                             if (remainingNs <= 0) {
                                 break;
@@ -1049,6 +1052,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         private synchronized void stop() {
             if (stopped) return;
             stopped = true;
+            synchronized (depthReady) {
+                // A GL thread parked in the synced-mode wait must not sleep out its budget.
+                depthReady.notifyAll();
+            }
             if (inferenceTask != null) inferenceTask.cancel(true);
             // Capture the session, not the renderer's current fields. This also
             // closes a model whose native constructor finishes after cancellation.
@@ -1235,7 +1242,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         pixelBuffer = null;
                         outputBuffer = null;
                     } catch (InterruptedException e) {
-                        LimeLog.severe("AI inference failed: " + e.getMessage());
+                        // Normal teardown: stop() cancels the task.
                         Thread.currentThread().interrupt();
                     } catch (Exception e) {
                         LimeLog.severe("AI inference failed: " + e.getMessage());
@@ -1254,7 +1261,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         if (Boolean.TRUE.equals(isDebugMode)) Log.d("Stereo3DRenderer", "CalculateTime AiDepthMap: " + duration + " ms " + filledOutputBuffers.remainingCapacity() + " " + waitTimeText + " ms" + "aitime: " + aitimeText);
                     }
                 }
-                isAiRunning.set(false);
+                synchronized (depthReady) {
+                    // Wake a GL thread parked in the synced-mode wait: no map will come.
+                    isAiRunning.set(false);
+                    depthReady.notifyAll();
+                }
             }
         }
 
@@ -1266,9 +1277,12 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             private static final double MIN_SMOOTHING_FACTOR = 0.005;
 
             // --- Member Fields ---
-            private final byte[] processedDataArray = new byte[modelInputWidth * modelInputHeight];
             private Mat previousSmoothedMat;
             private boolean isFirstFrame = true;
+            // Scratch Mats reused across frames: allocating them per depth result was five
+            // native allocations plus two full-map copies for every published map.
+            private final Mat processedMat = new Mat();
+            private final Mat diff = new Mat(), validMask = new Mat(), blended = new Mat(), inverseMask = new Mat();
 
             @Override
             public void run() {
@@ -1279,8 +1293,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         long startTime = System.nanoTime();
                         long waitTime = System.nanoTime();
                         Mat rawMat = null;
-                        Mat processedMat = null;
-                        Mat diff = null, validMask = null, blended = null, inverseMask = null;
+                        Mat resultMat = null;
                         try {
                             result = filledOutputBuffers.take();
                             resultBuffer = freeSmoothedBuffers.take();
@@ -1300,7 +1313,6 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
                             rawDepthBuffer.rewind();
                             rawMat = new Mat(modelInputHeight, modelInputWidth, floatOutput ? CvType.CV_32FC1 : CvType.CV_8UC1, rawDepthBuffer);
-                            processedMat = new Mat();
                             // Min-max normalise to 8 bit; the rest of the pipeline is 8-bit whatever the model emits
                             Core.normalize(rawMat, processedMat, 0, 255, Core.NORM_MINMAX, CvType.CV_8U);
 
@@ -1312,22 +1324,19 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                             double smoothing = (imageDifference * 10) / (Math.max(1.0f, threeDFps) * 3);
                             smoothing = Math.min(smoothing, MAX_SMOOTHING_FACTOR);
                             smoothing = Math.max(smoothing, MIN_SMOOTHING_FACTOR);
-                            diff = new Mat();
                             Core.absdiff(processedMat, previousSmoothedMat, diff);
                             Core.MinMaxLocResult mmr = Core.minMaxLoc(diff);
                             double thresholdValue = Math.max(1, mmr.maxVal * ((1.0 - smoothing)) * 0.1);
-                            validMask = new Mat();
                             Imgproc.threshold(diff, validMask, thresholdValue, 255, Imgproc.THRESH_BINARY_INV);
                             processedMat.copyTo(previousSmoothedMat, validMask);
-                            blended = new Mat();
                             Core.addWeighted(processedMat, smoothing, previousSmoothedMat, 1.0 - smoothing, 0.0, blended);
-                            inverseMask = new Mat();
                             Core.bitwise_not(validMask, inverseMask);
                             blended.copyTo(previousSmoothedMat, inverseMask);
-                            previousSmoothedMat.get(0, 0, processedDataArray);
-                            // Straight into the 8-bit map buffer: the raw buffer may be float32 and 4x larger
+                            // Straight into the 8-bit map buffer (the raw buffer may be float32 and
+                            // 4x larger): a Mat header over the direct buffer, one native copy.
                             resultBuffer.clear();
-                            resultBuffer.put(processedDataArray);
+                            resultMat = new Mat(modelInputHeight, modelInputWidth, CvType.CV_8UC1, resultBuffer);
+                            previousSmoothedMat.copyTo(resultMat);
                             resultBuffer.rewind();
                             // Transfer ownership to the GL consumer. Only an unpublished
                             // superseded map may return to the producer's pool here.
@@ -1341,16 +1350,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         } catch (Exception e) {
                             LimeLog.severe("AI exception " + e.getMessage());
                         } finally {
-                            if (diff != null) diff.release();
-                            if (validMask != null) validMask.release();
-                            if (blended != null) blended.release();
-                            if (inverseMask != null) inverseMask.release();
-                            if (rawMat != null) {
-                                rawMat.release();
-                            }
-                            if (processedMat != null) {
-                                processedMat.release();
-                            }
+                            if (rawMat != null) rawMat.release();
+                            if (resultMat != null) resultMat.release();
                             if (resultBuffer != null) {
                                 freeSmoothedBuffers.offer(resultBuffer);
                             }
@@ -1365,6 +1366,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                     }
                 } finally {
                     if (previousSmoothedMat != null) previousSmoothedMat.release();
+                    processedMat.release();
+                    diff.release();
+                    validMask.release();
+                    blended.release();
+                    inverseMask.release();
                     isAiResultHandlingRunning.set(false);
                 }
             }

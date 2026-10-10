@@ -47,6 +47,8 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
     private final ArrayDeque<Runnable> events = new ArrayDeque<>();
     private boolean renderRequested;
     private boolean continuous;
+    // eglSwapBuffers failed: the consumer is gone, so draw requests are dropped.
+    private boolean swapFailed;
     private boolean quit;
 
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
@@ -158,6 +160,12 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
                         break;
                     }
                     event = events.poll();
+                    if (swapFailed) {
+                        // Every decoded frame still requests a draw; do not redraw a full
+                        // stereo frame into a dead surface for each of them.
+                        renderRequested = false;
+                        continuous = false;
+                    }
                     draw = event == null && !quit && (renderRequested || continuous);
                     if (draw) {
                         renderRequested = false;
@@ -174,6 +182,7 @@ public final class SurfaceGlThread extends Thread implements Stereo3DRenderer.Re
                         LimeLog.warning("eglSwapBuffers failed: 0x" + Integer.toHexString(EGL14.eglGetError()));
                         // The consumer is gone (entity disposed); stop drawing but keep draining events.
                         synchronized (lock) {
+                            swapFailed = true;
                             continuous = false;
                             renderRequested = false;
                         }

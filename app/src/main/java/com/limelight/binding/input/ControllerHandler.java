@@ -27,6 +27,8 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.util.SparseArray;
+
+import java.util.concurrent.ConcurrentHashMap;
 import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.KeyEvent;
@@ -114,7 +116,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private final Vector2d inputVector = new Vector2d();
 
     private final SparseArray<InputDeviceContext> inputDeviceContexts = new SparseArray<>();
-    private final SparseArray<UsbDeviceContext> usbDeviceContexts = new SparseArray<>();
+    // Written from the Bluetooth binder thread, the main thread and the connection
+    // callback thread; SparseArray's lazy compaction is not safe across them.
+    private final ConcurrentHashMap<Integer, UsbDeviceContext> usbDeviceContexts = new ConcurrentHashMap<>();
 
     private final NvConnection conn;
     private final Activity activityContext;
@@ -288,8 +292,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             deviceContext.destroy();
         }
 
-        for (int i = 0; i < usbDeviceContexts.size(); i++) {
-            UsbDeviceContext deviceContext = usbDeviceContexts.valueAt(i);
+        for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
             deviceContext.destroy();
         }
 
@@ -1254,8 +1257,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 rightStickY |= maxByMagnitude(rightStickY, context.rightStickY);
             }
         }
-        for (int i = 0; i < usbDeviceContexts.size(); i++) {
-            GenericControllerContext context = usbDeviceContexts.valueAt(i);
+        for (GenericControllerContext context : usbDeviceContexts.values()) {
             if (context.assignedControllerNumber &&
                     context.controllerNumber == controllerNumber &&
                     context.mouseEmulationActive == originalContext.mouseEmulationActive) {
@@ -2216,8 +2218,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             }
         }
 
-        for (int i = 0; i < usbDeviceContexts.size(); i++) {
-            UsbDeviceContext deviceContext = usbDeviceContexts.valueAt(i);
+        for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
 
             if (deviceContext.controllerNumber == controllerNumber) {
                 foundMatchingDevice = vibrated = true;
@@ -2272,8 +2273,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             }
         }
 
-        for (int i = 0; i < usbDeviceContexts.size(); i++) {
-            UsbDeviceContext deviceContext = usbDeviceContexts.valueAt(i);
+        for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
 
             if (deviceContext.controllerNumber == controllerNumber) {
                 deviceContext.device.rumbleTriggers(leftTrigger, rightTrigger);
@@ -2289,8 +2289,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         if (stopped || report == null) {
             return;
         }
-        for (int i = 0; i < usbDeviceContexts.size(); i++) {
-            UsbDeviceContext deviceContext = usbDeviceContexts.valueAt(i);
+        for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
             if (deviceContext.controllerNumber == controllerNumber) {
                 deviceContext.device.steamHaptic(report);
             }
@@ -2387,16 +2386,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
 
         // Report rate is restricted to <= 200 Hz without the HIGH_SAMPLING_RATE_SENSORS permission
-        reportRateHz = (short) Math.min(200, reportRateHz);
+        // The Steam Controller's IMU reports at 250 Hz and the host asks for that rate.
+        reportRateHz = (short) Math.min(250, reportRateHz);
 
-        for (int i = 0; i < inputDeviceContexts.size() + usbDeviceContexts.size(); i++) {
-            InputDeviceContext deviceContext;
-            if (i < inputDeviceContexts.size()) {
-                deviceContext = inputDeviceContexts.valueAt(i);
-            } else {
-                deviceContext = usbDeviceContexts.valueAt(i - inputDeviceContexts.size());
-            }
-
+        ArrayList<InputDeviceContext> motionContexts = new ArrayList<>(inputDeviceContexts.size() + usbDeviceContexts.size());
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            motionContexts.add(inputDeviceContexts.valueAt(i));
+        }
+        motionContexts.addAll(usbDeviceContexts.values());
+        for (InputDeviceContext deviceContext : motionContexts) {
             if (deviceContext.controllerNumber == controllerNumber) {
                 // Store the desired report rate even if we don't have sensors. In some cases,
                 // input devices can be reconfigured at runtime which results in a change where
@@ -2410,6 +2408,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                         deviceContext.gyroReportRateHz = reportRateHz;
                         break;
                 }
+                deviceContext.nextGyroReportNs = 0;
+                deviceContext.nextAccelReportNs = 0;
 
                 backgroundThreadHandler.removeCallbacks(deviceContext.enableSensorRunnable);
 
@@ -2995,14 +2995,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
 
-        Vector2d leftStickVector = populateCachedVector(leftStickX, leftStickY);
+        // Local vectors: this runs on the driver's binder thread while handleMotionEvent
+        // uses the cached one on the main thread.
+        Vector2d leftStickVector = new Vector2d();
+        leftStickVector.initialize(leftStickX, leftStickY);
 
         handleDeadZone(leftStickVector, context.leftStickDeadzoneRadius);
 
         context.leftStickX = driverStickAxis(leftStickVector.getX());
         context.leftStickY = driverStickAxis(-leftStickVector.getY());
 
-        Vector2d rightStickVector = populateCachedVector(rightStickX, rightStickY);
+        Vector2d rightStickVector = new Vector2d();
+        rightStickVector.initialize(rightStickX, rightStickY);
 
         handleDeadZone(rightStickVector, context.rightStickDeadzoneRadius);
 
@@ -3039,6 +3043,23 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 ? context.gyroReportRateHz : context.accelReportRateHz;
         if (reportRateHz == 0) {
             return;
+        }
+        // Decimate to the requested rate: the IMU reports at 250 Hz, the host asks for what
+        // its virtual pad consumes (the Steam profile asks for the native rate). Deadlines
+        // advance from the previous slot so jitter does not slow the average rate, with a
+        // quarter-period tolerance for samples that arrive slightly early.
+        long now = System.nanoTime();
+        boolean gyro = motionType == MoonBridge.LI_MOTION_TYPE_GYRO;
+        long periodNs = 1_000_000_000L / reportRateHz;
+        long due = gyro ? context.nextGyroReportNs : context.nextAccelReportNs;
+        if (now + periodNs / 4 < due) {
+            return;
+        }
+        long next = (due == 0 || now - due > periodNs) ? now + periodNs : due + periodNs;
+        if (gyro) {
+            context.nextGyroReportNs = next;
+        } else {
+            context.nextAccelReportNs = next;
         }
 
         conn.sendControllerMotionEvent((byte)context.controllerNumber, motionType, motionX, motionY, motionZ);
@@ -3192,6 +3213,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         public short gyroReportRateHz;
         public SensorEventListener accelListener;
         public short accelReportRateHz;
+        // Driver-fed motion is decimated to the requested rate (System.nanoTime deadlines).
+        public long nextGyroReportNs, nextAccelReportNs;
 
         public InputDevice inputDevice;
 

@@ -1408,12 +1408,16 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     @Override
     public void cleanup() {
+        // Detach under the lock, release outside it: a renderer teardown can wait on an
+        // in-flight present, and the control-stream thread's setHdrMode takes this lock.
+        PyroWaveDecoderRenderer renderer;
         synchronized (pyroWaveStateLock) {
-            if (pyroWaveRenderer != null) {
-                pyroWaveRenderer.cleanup();
-                pyroWaveRenderer = null;
-                return;
-            }
+            renderer = pyroWaveRenderer;
+            pyroWaveRenderer = null;
+        }
+        if (renderer != null) {
+            renderer.cleanup();
+            return;
         }
         // A failed PyroWave setup leaves neither renderer; nothing to release then.
         if (videoDecoder != null) {
