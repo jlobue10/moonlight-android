@@ -41,6 +41,7 @@ public class StreamShutdown {
  static class SurfaceView {Holder getHolder(){return new Holder();}}
  static class GLSurfaceView extends SurfaceView {}
  static class Holder {void addCallback(Object o){} void removeCallback(Object o){}}
+ static class Game {int viewSwaps; void onStreamViewReplaced(Object v){viewSwaps++;}} Game game=new Game();
  static class Stereo3DRenderer {int stops;void onSurfaceDestroyed(){stops++;}}
  static class SurfaceGlThread {void shutdown(){}}
  static class CanvasTestPattern {void shutdown(){}}
