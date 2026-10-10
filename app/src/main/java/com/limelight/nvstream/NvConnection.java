@@ -262,6 +262,29 @@ public class NvConnection {
         return (int) Math.max(500.0, Math.min(10_000_000.0, kbps));
     }
 
+    // Mirror RTSP's codec priority using the advertised capabilities. A matching
+    // lower-priority HDR codec does not make a higher-priority SDR codec HDR.
+    // RTSP still validates SDP/bitstream compatibility later in the handshake.
+    private static boolean shouldRequestHdr(int formats, int scm) {
+        if ((scm & 0x00800000) != 0) {
+            if (((formats & MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10_444) != 0 && (scm & 0x04000000) != 0) ||
+                    ((formats & MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10) != 0 && (scm & 0x02000000) != 0)) {
+                return true;
+            }
+            if (((formats & MoonBridge.VIDEO_FORMAT_PYROWAVE_444) != 0 && (scm & 0x01000000) != 0) ||
+                    (formats & MoonBridge.VIDEO_FORMAT_PYROWAVE) != 0) {
+                return false;
+            }
+        }
+        if ((formats & MoonBridge.VIDEO_FORMAT_MASK_AV1) != 0 && (scm & 0xF0000) != 0) {
+            return (formats & MoonBridge.VIDEO_FORMAT_AV1_MAIN10) != 0 && (scm & 0x20000) != 0;
+        }
+        if ((formats & MoonBridge.VIDEO_FORMAT_MASK_H265) != 0 && (scm & 0xF00) != 0) {
+            return (formats & MoonBridge.VIDEO_FORMAT_H265_MAIN10) != 0 && (scm & 0x200) != 0;
+        }
+        return false;
+    }
+
     private boolean startApp() throws XmlPullParserException, IOException
     {
         NvHTTP h = new NvHTTP(context.serverAddress, context.httpsPort, uniqueId, context.serverCert, cryptoProvider);
@@ -287,21 +310,13 @@ public class NvConnection {
 
         context.serverCodecModeSupport = (int)h.getServerCodecModeSupport(serverInfo);
 
-        // The launch's HDR flag switches the host display to HDR, so it must only be set when a
-        // 10-bit format the client offers matches a 10-bit mode the host has. Offering only
-        // PyroWave HDR10 to a host without PyroWave (or only HEVC Main10 to a host with AV1
-        // Main10 only) negotiates an 8-bit SDR stream, and an HDR host display then looks
-        // washed out.
+        // The launch flag changes the host display; request HDR only for the codec
+        // that wins negotiation, not merely any mutually supported 10-bit codec.
         int formats = context.streamConfig.getSupportedVideoFormats();
-        int scm = context.serverCodecModeSupport;
-        boolean hevcHdr = (formats & MoonBridge.VIDEO_FORMAT_H265_MAIN10) != 0 && (scm & 0x200) != 0;
-        boolean av1Hdr = (formats & MoonBridge.VIDEO_FORMAT_AV1_MAIN10) != 0 && (scm & 0x20000) != 0;
-        boolean pyroWaveHdr = (formats & (MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10 | MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10_444)) != 0 &&
-                (scm & 0x00800000) != 0 && (scm & (0x02000000 | 0x04000000)) != 0;
         boolean wantedHdr = (formats & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0;
-        context.negotiatedHdr = hevcHdr || av1Hdr || pyroWaveHdr;
+        context.negotiatedHdr = shouldRequestHdr(formats, context.serverCodecModeSupport);
         if (wantedHdr && !context.negotiatedHdr) {
-            context.connListener.displayTransientMessage("Your PC GPU does not support streaming HDR with the codecs this device offers. The stream will be SDR.");
+            context.connListener.displayTransientMessage("The selected streaming codec does not support HDR with this device and host. The stream will be SDR.");
         }
         
         //
