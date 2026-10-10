@@ -98,6 +98,7 @@ if '    private static double hasSceneChangedFast(' in source:
 if '    private void closeTfLite()' in source: markers.insert(0,'    private void closeTfLite()')
 if '    private static void closeModel(' in source: markers.insert(0,'    private static void closeModel(')
 if '    private static void closeTfLite(' in source: markers.insert(0,'    private static void closeTfLite(')
+if '    private void publishDepthMap(' in source: markers.insert(0,'    private void publishDepthMap(')
 with tempfile.TemporaryDirectory(prefix='stereo-workers-') as directory:
     work=pathlib.Path(directory)
     (work/'StereoWorkers.java').write_text(PREFIX+'\n'.join(map(block,markers))+SUFFIX)

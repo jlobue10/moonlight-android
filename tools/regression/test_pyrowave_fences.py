@@ -47,7 +47,10 @@ TEST = r'''
 #include <memory>
 #include <mutex>
 #include <vector>
+#include <map>
 #include <cstdio>
+#include <unistd.h>
+#include <sys/wait.h>
 #define private public
 #include "renderer.cpp"
 #undef private
@@ -55,6 +58,10 @@ static bool pending=false;
 static VkFence pendingFence=VK_NULL_HANDLE;
 static int invalidResets=0, submits=0, waits=0;
 static uint64_t queryTicks[3];
+static std::map<VkFence,int> fenceStates;
+static VkResult submitError=VK_SUCCESS, idleError=VK_SUCCESS;
+static int orphanWaits=0,destroyedFences=0;
+static VkImageLayout lastPlaneLayout;
 // The baseline renderer discarded timestampValidBits. Let it run the same
 // wrapping-counter fixtures without a test-only change to its implementation.
 template<class T> auto setTimestampMask(T& r,uint64_t mask,int) -> decltype(r.timestampMask=mask,void()) {r.timestampMask=mask;}
@@ -73,21 +80,37 @@ int main(){
  auto &vk=renderer.vk;
  vk.CreateCommandPool=[](VkDevice,const VkCommandPoolCreateInfo*,const VkAllocationCallbacks*,VkCommandPool*){return VK_SUCCESS;};
  vk.AllocateCommandBuffers=[](VkDevice,const VkCommandBufferAllocateInfo*,VkCommandBuffer* b){b[0]=(VkCommandBuffer)1;b[1]=(VkCommandBuffer)2;return VK_SUCCESS;};
- vk.CreateFence=[](VkDevice,const VkFenceCreateInfo*,const VkAllocationCallbacks*,VkFence* f){static uintptr_t next=0;*f=(VkFence)++next;return VK_SUCCESS;};
+ vk.CreateFence=[](VkDevice,const VkFenceCreateInfo* info,const VkAllocationCallbacks*,VkFence* f){static uintptr_t next=0;*f=(VkFence)++next;fenceStates[*f]=(info->flags & VK_FENCE_CREATE_SIGNALED_BIT)?1:0;return VK_SUCCESS;};
  vk.CreateSemaphore=[](VkDevice,const VkSemaphoreCreateInfo*,const VkAllocationCallbacks*,VkSemaphore*){return VK_SUCCESS;};
  vk.WaitForFences=[](VkDevice,uint32_t count,const VkFence* fences,VkBool32,uint64_t){
-   ++waits;for(uint32_t i=0;i<count;i++)if(pendingFence!=VK_NULL_HANDLE && fences[i]==pendingFence)pending=false;
+   ++waits;for(uint32_t i=0;i<count;i++){
+     if(fenceStates[fences[i]]==0){++orphanWaits;return VK_TIMEOUT;}
+     fenceStates[fences[i]]=1;
+     if(pendingFence!=VK_NULL_HANDLE && fences[i]==pendingFence)pending=false;
+   }
    return VK_SUCCESS;};
- vk.ResetFences=[](VkDevice,uint32_t,const VkFence*){return VK_SUCCESS;};
+ vk.ResetFences=[](VkDevice,uint32_t n,const VkFence* f){for(uint32_t i=0;i<n;i++)fenceStates[f[i]]=0;return VK_SUCCESS;};
+ vk.DestroyFence=[](VkDevice,VkFence f,const VkAllocationCallbacks*){fenceStates.erase(f);++destroyedFences;};
+ vk.DeviceWaitIdle=[](VkDevice){if(idleError!=VK_SUCCESS)return idleError;pending=false;for(auto &f:fenceStates)if(f.second==2)f.second=1;return VK_SUCCESS;};
+ vk.GetPhysicalDeviceSurfaceCapabilitiesKHR=[](VkPhysicalDevice,VkSurfaceKHR,VkSurfaceCapabilitiesKHR*){return VK_ERROR_OUT_OF_DATE_KHR;};
  vk.ResetCommandBuffer=[](VkCommandBuffer,VkCommandBufferResetFlags){if(pending)++invalidResets;return VK_SUCCESS;};
  vk.BeginCommandBuffer=[](VkCommandBuffer,const VkCommandBufferBeginInfo*){return VK_SUCCESS;};
  vk.EndCommandBuffer=[](VkCommandBuffer){return VK_SUCCESS;};
- vk.CmdPipelineBarrier=[](VkCommandBuffer,VkPipelineStageFlags,VkPipelineStageFlags,VkDependencyFlags,uint32_t,const VkMemoryBarrier*,uint32_t,const VkBufferMemoryBarrier*,uint32_t,const VkImageMemoryBarrier*){};
- vk.QueueSubmit=[](VkQueue,uint32_t,const VkSubmitInfo*,VkFence fence){pending=true;pendingFence=fence;++submits;return VK_SUCCESS;};
+ vk.CmdPipelineBarrier=[](VkCommandBuffer,VkPipelineStageFlags,VkPipelineStageFlags,VkDependencyFlags,uint32_t,const VkMemoryBarrier*,uint32_t,const VkBufferMemoryBarrier*,uint32_t,const VkImageMemoryBarrier* b){lastPlaneLayout=b[0].oldLayout;};
+ vk.QueueSubmit=[](VkQueue,uint32_t,const VkSubmitInfo*,VkFence fence){++submits;if(submitError!=VK_SUCCESS)return submitError;pending=true;pendingFence=fence;if(fence!=VK_NULL_HANDLE)fenceStates[fence]=2;return VK_SUCCESS;};
  vk.AcquireNextImageKHR=[](VkDevice,VkSwapchainKHR,uint64_t,VkSemaphore,VkFence,uint32_t*){return VK_TIMEOUT;};
  if(!renderer.createFrameResources() || !renderer.present() || !renderer.present())return 2;
  printf("%s two acquire timeouts: %d pending command-buffer resets (%d submits, %d waits)\n",
         invalidResets?"FAIL":"PASS",invalidResets,submits,waits);
+ bool initialOk=invalidResets==0 && submits==2 && waits==2;
+ // Exercise the exact parser with 32-bit size arithmetic, independent of host ABI.
+ const uint8_t hugePadding[]={255,255,255,255,254,255,255,63};
+ pid_t child=fork();
+ if(child==0){alarm(2);_exit(renderer.pushRecordFrame32(hugePadding,sizeof(hugePadding))?1:0);}
+ int childStatus=0;waitpid(child,&childStatus,0);
+ bool paddingOk=WIFEXITED(childStatus) && WEXITSTATUS(childStatus)==0;
+ printf("%s padding overflow is rejected with 32-bit size arithmetic\n",paddingOk?"PASS":"FAIL");
+ initialOk &= paddingOk;
  // Exercise all container dispatch paths with deterministic malformed inputs.
  const uint8_t prefixed[]={1,0,0,0,1,0,0,0,42};
  const uint8_t pyrw[]={'P','Y','R','W',1,0,1,0,0,0,0,1,42};
@@ -119,8 +142,30 @@ int main(){
    }
  }
  printf("%s decode/draw timestamp wrap at 36, 40, 48 and 64 valid bits\n",timestampsOk?"PASS":"FAIL");
+ bool recoveryOk=true;
+ for(auto error:{VK_ERROR_OUT_OF_HOST_MEMORY,VK_ERROR_OUT_OF_DEVICE_MEMORY}) {
+   vk.DeviceWaitIdle(VK_NULL_HANDLE);
+   Renderer r;r.vk=vk;r.createFrameResources();int oldOrphans=orphanWaits;
+   submitError=error;bool failed=!r.present();bool uninitialized=!r.planesInitialized;
+   submitError=VK_SUCCESS;bool resumed=r.present();
+   bool ok=failed && uninitialized && resumed && orphanWaits==oldOrphans && lastPlaneLayout==VK_IMAGE_LAYOUT_UNDEFINED;
+   recoveryOk &= ok;
+   printf("%s decode submission error %d leaves no orphan fence or false image layout\n",ok?"PASS":"FAIL",error);
+ }
+ for(bool failDrain:{true,false}) {
+   vk.DeviceWaitIdle(VK_NULL_HANDLE);
+   Renderer r;r.vk=vk;r.createFrameResources();int beforeDestroy=destroyedFences;
+   submitError=failDrain?VK_ERROR_OUT_OF_DEVICE_MEMORY:VK_SUCCESS;
+   idleError=failDrain?VK_SUCCESS:VK_ERROR_DEVICE_LOST;
+   bool failed=!r.recoverAfterAcquire();int beforeWait=waits,beforeSubmit=submits;
+   submitError=idleError=VK_SUCCESS;
+   bool stopped=!r.present();
+   bool ok=failed && stopped && destroyedFences==beforeDestroy && waits==beforeWait && submits==beforeSubmit;
+   recoveryOk &= ok;
+   printf("%s failed %s recovery stops before destroying or reusing resources\n",ok?"PASS":"FAIL",failDrain?"drain":"idle");
+ }
  // device remains null: these are fake handles, not native allocations.
- return invalidResets!=0 || submits!=2 || waits!=2 || !timestampsOk;
+ return !initialOk || !timestampsOk || !recoveryOk;
 }
 '''
 with tempfile.TemporaryDirectory(prefix='pyrowave-fences-') as directory:
@@ -131,6 +176,14 @@ with tempfile.TemporaryDirectory(prefix='pyrowave-fences-') as directory:
         path.write_text(source)
     source = (subprocess.check_output(['git','show','HEAD:app/src/main/jni/pyrowave-renderer/pyrowave_renderer.cpp'],cwd=ROOT,text=True)
               if '--baseline' in sys.argv else (RENDERER/'pyrowave_renderer.cpp').read_text())
+    # Duplicate the actual method using uint32_t where Android ARMv7 uses size_t.
+    start = source.index('        bool pushRecordFrame(')
+    end = source.index('{', start); depth = 1
+    while depth:
+        end += 1
+        depth += (source[end] == '{') - (source[end] == '}')
+    parser32 = source[start:end+1].replace('pushRecordFrame(', 'pushRecordFrame32(').replace('size_t', 'uint32_t')
+    source = source[:start] + parser32 + '\n' + source[start:]
     (work/'renderer.cpp').write_text(source)
     (work/'test.cpp').write_text(TEST)
     subprocess.run(['g++','-std=c++17','-O1','-g','-fsanitize=address,undefined',
