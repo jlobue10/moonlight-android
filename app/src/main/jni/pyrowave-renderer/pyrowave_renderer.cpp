@@ -739,21 +739,35 @@ namespace {
             info.oldSwapchain = swapchain;
 
             VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
-            if (!check(vk.CreateSwapchainKHR(device, &info, nullptr, &newSwapchain), "vkCreateSwapchainKHR")) {
-                return false;
-            }
+            const auto created = vk.CreateSwapchainKHR(device, &info, nullptr, &newSwapchain);
+            // Passing oldSwapchain retires it even if creation fails. recreateSwapchain()
+            // already waited for idle, so release it on both paths and retry with null.
             destroySwapchainResources();
             if (swapchain != VK_NULL_HANDLE) {
                 vk.DestroySwapchainKHR(device, swapchain, nullptr);
+            }
+            swapchain = VK_NULL_HANDLE;
+            swapchainImages.clear();
+            if (!check(created, "vkCreateSwapchainKHR")) {
+                return false;
             }
             swapchain = newSwapchain;
             swapchainExtent = caps.currentExtent;
             LOGI("Swapchain %ux%u for a %ux%u stream", swapchainExtent.width, swapchainExtent.height, width, height);
 
             uint32_t count = 0;
-            vk.GetSwapchainImagesKHR(device, swapchain, &count, nullptr);
+            if (!check(vk.GetSwapchainImagesKHR(device, swapchain, &count, nullptr), "swapchain image count") || count == 0) {
+                renderFailed = true;
+                return false;
+            }
             swapchainImages.resize(count);
-            vk.GetSwapchainImagesKHR(device, swapchain, &count, swapchainImages.data());
+            if (!check(vk.GetSwapchainImagesKHR(device, swapchain, &count, swapchainImages.data()), "swapchain images") || count == 0) {
+                // Failed or incomplete enumeration cannot be indexed by acquired image IDs.
+                swapchainImages.clear();
+                renderFailed = true;
+                return false;
+            }
+            swapchainImages.resize(count);
             if (renderPass != VK_NULL_HANDLE && !createSwapchainResources()) {
                 // A view, framebuffer or semaphore failed part-way: framebuffers[] and
                 // renderDone[] are shorter than swapchainImages, and the next acquire

@@ -2385,9 +2385,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
 
-        // Report rate is restricted to <= 200 Hz without the HIGH_SAMPLING_RATE_SENSORS permission
-        // The Steam Controller's IMU reports at 250 Hz and the host asks for that rate.
-        reportRateHz = (short) Math.min(250, reportRateHz);
+        // The wire rate is uint16_t, even though JNI represents it as a Java short.
+        // Driver-fed IMUs may use 250 Hz; Android-managed sensors remain capped below.
+        reportRateHz = (short) Math.min(250, reportRateHz & 0xFFFF);
 
         ArrayList<InputDeviceContext> motionContexts = new ArrayList<>(inputDeviceContexts.size() + usbDeviceContexts.size());
         for (int i = 0; i < inputDeviceContexts.size(); i++) {
@@ -2400,19 +2400,24 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 // input devices can be reconfigured at runtime which results in a change where
                 // sensors disappear and reappear. By storing the desired report rate, we can
                 // reapply the desired motion sensor configuration after they reappear.
-                switch (motionType) {
-                    case MoonBridge.LI_MOTION_TYPE_ACCEL:
-                        deviceContext.accelReportRateHz = reportRateHz;
-                        break;
-                    case MoonBridge.LI_MOTION_TYPE_GYRO:
-                        deviceContext.gyroReportRateHz = reportRateHz;
-                        break;
+                synchronized (deviceContext) {
+                    // Publish the rate and deadline together to the driver's binder thread.
+                    switch (motionType) {
+                        case MoonBridge.LI_MOTION_TYPE_ACCEL:
+                            deviceContext.accelReportRateHz = reportRateHz;
+                            deviceContext.nextAccelReportNs = 0;
+                            break;
+                        case MoonBridge.LI_MOTION_TYPE_GYRO:
+                            deviceContext.gyroReportRateHz = reportRateHz;
+                            deviceContext.nextGyroReportNs = 0;
+                            break;
+                    }
                 }
-                deviceContext.nextGyroReportNs = 0;
-                deviceContext.nextAccelReportNs = 0;
 
                 backgroundThreadHandler.removeCallbacks(deviceContext.enableSensorRunnable);
 
+                // Android 12+ rejects faster than 200 Hz without HIGH_SAMPLING_RATE_SENSORS.
+                // This limit applies only to SensorManager, not BLE/USB motion forwarding.
                 SensorManager sm = deviceContext.sensorManager;
                 if (sm == null) {
                     continue;
@@ -2429,7 +2434,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                         Sensor accelSensor = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
                         if (reportRateHz != 0 && accelSensor != null) {
                             deviceContext.accelListener = createSensorListener(controllerNumber, motionType, sm == deviceSensorManager);
-                            sm.registerListener(deviceContext.accelListener, accelSensor, 1000000 / reportRateHz);
+                            sm.registerListener(deviceContext.accelListener, accelSensor, 1000000 / Math.min(200, reportRateHz));
                         }
                         break;
                     case MoonBridge.LI_MOTION_TYPE_GYRO:
@@ -2442,7 +2447,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                         Sensor gyroSensor = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
                         if (reportRateHz != 0 && gyroSensor != null) {
                             deviceContext.gyroListener = createSensorListener(controllerNumber, motionType, sm == deviceSensorManager);
-                            sm.registerListener(deviceContext.gyroListener, gyroSensor, 1000000 / reportRateHz);
+                            sm.registerListener(deviceContext.gyroListener, gyroSensor, 1000000 / Math.min(200, reportRateHz));
                         }
                         break;
                 }
@@ -3037,29 +3042,31 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         if (context == null) {
             return;
         }
-        // Driver-fed controllers sample at their native rate (the Steam Controller's IMU
-        // at 250 Hz). Only forward what the host enabled; rate 0 means it never asked.
-        short reportRateHz = motionType == MoonBridge.LI_MOTION_TYPE_GYRO
-                ? context.gyroReportRateHz : context.accelReportRateHz;
-        if (reportRateHz == 0) {
-            return;
-        }
-        // Decimate to the requested rate: the IMU reports at 250 Hz, the host asks for what
-        // its virtual pad consumes (the Steam profile asks for the native rate). Deadlines
-        // advance from the previous slot so jitter does not slow the average rate, with a
-        // quarter-period tolerance for samples that arrive slightly early.
-        long now = System.nanoTime();
-        boolean gyro = motionType == MoonBridge.LI_MOTION_TYPE_GYRO;
-        long periodNs = 1_000_000_000L / reportRateHz;
-        long due = gyro ? context.nextGyroReportNs : context.nextAccelReportNs;
-        if (now + periodNs / 4 < due) {
-            return;
-        }
-        long next = (due == 0 || now - due > periodNs) ? now + periodNs : due + periodNs;
-        if (gyro) {
-            context.nextGyroReportNs = next;
-        } else {
-            context.nextAccelReportNs = next;
+        synchronized (context) {
+            // Driver-fed controllers sample at their native rate (the Steam Controller's IMU
+            // at 250 Hz). Only forward what the host enabled; rate 0 means it never asked.
+            short reportRateHz = motionType == MoonBridge.LI_MOTION_TYPE_GYRO
+                    ? context.gyroReportRateHz : context.accelReportRateHz;
+            if (reportRateHz == 0) {
+                return;
+            }
+            // Decimate to the requested rate: the IMU reports at 250 Hz, the host asks for what
+            // its virtual pad consumes (the Steam profile asks for the native rate). Deadlines
+            // advance from the previous slot so jitter does not slow the average rate, with a
+            // quarter-period tolerance for samples that arrive slightly early.
+            long now = System.nanoTime();
+            boolean gyro = motionType == MoonBridge.LI_MOTION_TYPE_GYRO;
+            long periodNs = 1_000_000_000L / reportRateHz;
+            long due = gyro ? context.nextGyroReportNs : context.nextAccelReportNs;
+            if (now + periodNs / 4 < due) {
+                return;
+            }
+            long next = (due == 0 || now - due > periodNs) ? now + periodNs : due + periodNs;
+            if (gyro) {
+                context.nextGyroReportNs = next;
+            } else {
+                context.nextAccelReportNs = next;
+            }
         }
 
         conn.sendControllerMotionEvent((byte)context.controllerNumber, motionType, motionX, motionY, motionZ);
@@ -3210,10 +3217,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
         public SensorManager sensorManager;
         public SensorEventListener gyroListener;
-        public short gyroReportRateHz;
+        public volatile short gyroReportRateHz;
         public SensorEventListener accelListener;
-        public short accelReportRateHz;
-        // Driver-fed motion is decimated to the requested rate (System.nanoTime deadlines).
+        public volatile short accelReportRateHz;
+        // Driver-fed deadlines are guarded by this context; rates also reach the sensor handler.
         public long nextGyroReportNs, nextAccelReportNs;
 
         public InputDevice inputDevice;

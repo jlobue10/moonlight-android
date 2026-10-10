@@ -164,6 +164,55 @@ int main(){
    recoveryOk &= ok;
    printf("%s failed %s recovery stops before destroying or reusing resources\n",ok?"PASS":"FAIL",failDrain?"drain":"idle");
  }
+
+ // Recreate failures retire oldSwapchain even when allocation fails (Vulkan WSI).
+ // The fake rejects a second use of a retired handle, independently of our policy.
+ static bool failCreate=false, reusedRetired=false;
+ static std::map<VkSwapchainKHR,bool> retired;
+ static int imageFailure=0,invalidViews=0;
+ auto swapVk=vk;
+ swapVk.GetPhysicalDeviceSurfaceCapabilitiesKHR=[](VkPhysicalDevice,VkSurfaceKHR,VkSurfaceCapabilitiesKHR* c){
+   *c={};c->currentExtent={1920,1080};c->minImageCount=1;c->maxImageCount=3;
+   c->supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+   c->supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;return VK_SUCCESS;};
+ swapVk.CreateSwapchainKHR=[](VkDevice,const VkSwapchainCreateInfoKHR* ci,const VkAllocationCallbacks*,VkSwapchainKHR* out){
+   if(ci->oldSwapchain!=VK_NULL_HANDLE){
+     if(retired[ci->oldSwapchain]){reusedRetired=true;return VK_ERROR_INITIALIZATION_FAILED;}
+     retired[ci->oldSwapchain]=true;
+   }
+   if(failCreate)return VK_ERROR_OUT_OF_HOST_MEMORY;
+   static uintptr_t next=100;*out=(VkSwapchainKHR)++next;return VK_SUCCESS;};
+ swapVk.DestroySwapchainKHR=[](VkDevice,VkSwapchainKHR,const VkAllocationCallbacks*){};
+ swapVk.GetSwapchainImagesKHR=[](VkDevice,VkSwapchainKHR,uint32_t* n,VkImage* out){
+   if(out==nullptr){if(imageFailure==1)return VK_ERROR_OUT_OF_HOST_MEMORY;*n=2;return VK_SUCCESS;}
+   if(imageFailure==2)return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   out[0]=(VkImage)1;
+   if(imageFailure==3){*n=1;return VK_INCOMPLETE;}
+   out[1]=(VkImage)2;return VK_SUCCESS;};
+ swapVk.CreateImageView=[](VkDevice,const VkImageViewCreateInfo* ci,const VkAllocationCallbacks*,VkImageView* out){
+   if(ci->image==VK_NULL_HANDLE)++invalidViews;*out=(VkImageView)1;return VK_SUCCESS;};
+ swapVk.CreateFramebuffer=[](VkDevice,const VkFramebufferCreateInfo*,const VkAllocationCallbacks*,VkFramebuffer* out){*out=(VkFramebuffer)1;return VK_SUCCESS;};
+ swapVk.CreateSemaphore=[](VkDevice,const VkSemaphoreCreateInfo*,const VkAllocationCallbacks*,VkSemaphore* out){*out=(VkSemaphore)1;return VK_SUCCESS;};
+ swapVk.DestroyImageView=[](VkDevice,VkImageView,const VkAllocationCallbacks*){};
+ swapVk.DestroyFramebuffer=[](VkDevice,VkFramebuffer,const VkAllocationCallbacks*){};
+ swapVk.DestroySemaphore=[](VkDevice,VkSemaphore,const VkAllocationCallbacks*){};
+ {
+   Renderer r;r.vk=swapVk;r.swapchain=(VkSwapchainKHR)99;
+   r.swapchainFormat=VK_FORMAT_R8G8B8A8_UNORM;r.renderPass=(VkRenderPass)1;
+   failCreate=true;bool rejected=!r.recreateSwapchain();failCreate=false;
+   bool recovered=r.recreateSwapchain();
+   bool ok=rejected && recovered && !reusedRetired && r.framebuffers.size()==2;
+   recoveryOk &= ok;
+   printf("%s failed swapchain replacement never reuses the retired handle\n",ok?"PASS":"FAIL");
+ }
+ for(int failure:{1,2,3}){
+   Renderer r;r.vk=swapVk;r.swapchainFormat=VK_FORMAT_R8G8B8A8_UNORM;r.renderPass=(VkRenderPass)1;
+   imageFailure=failure;invalidViews=0;bool rejected=!r.recreateSwapchain();
+   bool ok=rejected && invalidViews==0 && r.framebuffers.empty();
+   recoveryOk &= ok;
+   printf("%s incomplete swapchain enumeration is rejected before creating views (case %d)\n",ok?"PASS":"FAIL",failure);
+ }
+ imageFailure=0;
  // device remains null: these are fake handles, not native allocations.
  return !initialOk || !timestampsOk || !recoveryOk;
 }
