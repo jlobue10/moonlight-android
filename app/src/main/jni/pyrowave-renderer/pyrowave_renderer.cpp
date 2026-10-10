@@ -283,7 +283,7 @@ namespace {
         return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
     }
 
-    // Push constants of planar_csc.frag (std430: two vec2, three int, two float).
+    // Push constants of planar_csc.frag (std430: two vec2, three int, two float, one int).
     struct CscParams {
         float yScale, yOffset;
         float cScale, cOffset;
@@ -292,8 +292,9 @@ namespace {
         int32_t outputPq;     // swapchain colour space is HDR10 ST 2084
         float peakNits;
         float sdrWhiteNits;
+        int32_t outputSrgb;   // attachment hardware applies the sRGB transfer function
     };
-    static_assert(sizeof(CscParams) == 36, "CscParams must match the shader's push constant block");
+    static_assert(sizeof(CscParams) == 40, "CscParams must match the shader's push constant block");
 
     // SDR reference white on the PQ scale (ITU-R BT.2408).
     constexpr float SDR_WHITE_NITS = 203.0f;
@@ -693,14 +694,22 @@ namespace {
 
             if (swapchainFormat == VK_FORMAT_UNDEFINED) {
                 uint32_t formatCount = 0;
-                vk.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
+                if (!check(vk.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr),
+                           "surface format count")) {
+                    return false;
+                }
                 std::vector<VkSurfaceFormatKHR> formats(formatCount);
-                vk.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data());
+                if (formatCount != 0 &&
+                    !check(vk.GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data()),
+                           "surface formats")) {
+                    return false;
+                }
+                formats.resize(formatCount);
                 if (formats.empty()) {
                     LOGE("Surface reports no formats");
                     return false;
                 }
-                // UNORM, not sRGB: the shader already outputs display-encoded values (gamma BT.709
+                // Prefer UNORM: the shader produces display-encoded values (gamma BT.709
                 // for an sRGB swapchain, PQ BT.2020 for an HDR10 one). An HDR10 swapchain is only
                 // offered by surfaces that reach an HDR-capable display, so 10-bit streams try it
                 // first; otherwise the shader tone-maps.
@@ -746,14 +755,26 @@ namespace {
                     }
                 }
                 if (!found) {
-                    // Last resort: anything that is not an sRGB-encoded format, which would
-                    // apply a second transfer function to the shader's display-encoded output.
+                    // Some surfaces offer only sRGB attachments. Their fixed-function
+                    // write encodes sRGB, so cscParams() asks the shader for linear values.
+                    // Do not select an arbitrary colour space the shader cannot produce.
                     for (const auto &format : formats) {
-                        if (format.format != VK_FORMAT_R8G8B8A8_SRGB && format.format != VK_FORMAT_B8G8R8A8_SRGB) {
+                        if (format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
+                            (format.format == VK_FORMAT_R8G8B8A8_SRGB ||
+                             format.format == VK_FORMAT_B8G8R8A8_SRGB ||
+                             format.format == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ||
+                             format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                             format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 ||
+                             format.format == VK_FORMAT_R16G16B16A16_SFLOAT)) {
                             chosen = format;
+                            found = true;
                             break;
                         }
                     }
+                }
+                if (!found) {
+                    LOGE("Surface offers no supported SDR or HDR10 colour format");
+                    return false;
                 }
                 swapchainFormat = chosen.format;
                 swapchainColorSpace = chosen.colorSpace;
@@ -1541,6 +1562,9 @@ namespace {
             c.outputPq = outputPq ? 1 : 0;
             c.peakNits = peakNitsAtomic.load();
             c.sdrWhiteNits = SDR_WHITE_NITS;
+            c.outputSrgb = swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
+                           swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB ||
+                           swapchainFormat == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
             return c;
         }
 
