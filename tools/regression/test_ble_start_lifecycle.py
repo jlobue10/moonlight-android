@@ -13,7 +13,9 @@ prefix=r'''
 public class BleStartLifecycle {
  boolean finishing,destroyed;Object controllerHandler=new Object();int requests;
  SteamControllerBleManager steamControllerBle;Prefs prefConfig=new Prefs();
- static final int REQUEST_STEAM_CONTROLLER_BLUETOOTH=1;
+ static final int REQUEST_STEAM_CONTROLLER_BLUETOOTH=1,MODE_PRIVATE=0;
+ static class SharedPreferences {static boolean denied; boolean getBoolean(String k,boolean d){return denied;}}
+ SharedPreferences getSharedPreferences(String n,int m){return new SharedPreferences();}
  boolean isFinishing(){return finishing;}boolean isDestroyed(){return destroyed;}
  void requestPermissions(String[] names,int request){++requests;}
  static class Build {static class VERSION {static int SDK_INT=35;}static class VERSION_CODES {static final int M=23;}}
@@ -32,6 +34,7 @@ public class BleStartLifecycle {
 '''
 suffix=r'''
  public static void main(String[] args){
+  {BleStartLifecycle g=new BleStartLifecycle();SteamControllerBleManager.permission=false;SteamControllerBleManager.starts=0;SharedPreferences.denied=true;g.startSteamControllerDriver();check(g.requests==0 && SteamControllerBleManager.starts==0,"a remembered permission denial neither asks again nor starts the driver");SharedPreferences.denied=false;}
   for(int mode=0;mode<3;mode++){
    BleStartLifecycle g=new BleStartLifecycle();g.finishing=mode!=1;g.destroyed=mode==1;
    SteamControllerBleManager.starts=0;SteamControllerBleManager.permission=mode!=2;
