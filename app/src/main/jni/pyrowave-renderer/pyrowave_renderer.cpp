@@ -283,7 +283,7 @@ namespace {
         return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
     }
 
-    // Push constants of planar_csc.frag (std430: two vec2, three int, two float, one int).
+    // Push constants of planar_csc.frag (std430: two vec2, three int, two float).
     struct CscParams {
         float yScale, yOffset;
         float cScale, cOffset;
@@ -292,9 +292,8 @@ namespace {
         int32_t outputPq;     // swapchain colour space is HDR10 ST 2084
         float peakNits;
         float sdrWhiteNits;
-        int32_t outputSrgb;   // attachment hardware applies the sRGB transfer function
     };
-    static_assert(sizeof(CscParams) == 40, "CscParams must match the shader's push constant block");
+    static_assert(sizeof(CscParams) == 36, "CscParams must match the shader's push constant block");
 
     // SDR reference white on the PQ scale (ITU-R BT.2408).
     constexpr float SDR_WHITE_NITS = 203.0f;
@@ -755,15 +754,12 @@ namespace {
                     }
                 }
                 if (!found) {
-                    // Some surfaces offer only sRGB attachments. Their fixed-function
-                    // write encodes sRGB, so cscParams() asks the shader for linear values.
-                    // Do not select an arbitrary colour space the shader cannot produce.
+                    // AOSP always offers 8-bit UNORM. For other implementations,
+                    // accept only formats and colour spaces this shader can produce.
+                    // An sRGB attachment would encode the shader output a second time.
                     for (const auto &format : formats) {
                         if (format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
-                            (format.format == VK_FORMAT_R8G8B8A8_SRGB ||
-                             format.format == VK_FORMAT_B8G8R8A8_SRGB ||
-                             format.format == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ||
-                             format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                            (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
                              format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32 ||
                              format.format == VK_FORMAT_R16G16B16A16_SFLOAT)) {
                             chosen = format;
@@ -1562,9 +1558,6 @@ namespace {
             c.outputPq = outputPq ? 1 : 0;
             c.peakNits = peakNitsAtomic.load();
             c.sdrWhiteNits = SDR_WHITE_NITS;
-            c.outputSrgb = swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
-                           swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB ||
-                           swapchainFormat == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
             return c;
         }
 
