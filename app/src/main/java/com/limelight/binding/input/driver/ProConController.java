@@ -271,7 +271,9 @@ public class ProConController extends AbstractController {
         }
 
         if (lowFreqMotor != 0) {
-            data[4] = data[8] = (byte)(0x50 - (lowFreqMotor & 0xFFFF >> 12));
+            // (x & 0xFFFF) >> 12: `>>` binds tighter than `&`, so the old form took the
+            // low nibble of the amplitude and the low motor's strength never changed.
+            data[4] = data[8] = (byte)(0x50 - ((lowFreqMotor & 0xFFFF) >> 12));
             data[5] = data[9] = (byte)((((lowFreqMotor & 0xFFFF) >> 8) / 5) + 0x40);
         }
         if (highFreqMotor != 0) {
