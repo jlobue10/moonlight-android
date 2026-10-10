@@ -232,11 +232,20 @@ namespace {
         VkPhysicalDeviceVulkan13Features f13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
         VkPhysicalDeviceVulkan12Features f12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         f12.pNext = &f13;
+        VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+        f11.pNext = &f12;
         VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        f2.pNext = &f12;
+        f2.pNext = &f11;
         vk.GetPhysicalDeviceFeatures2(device, &f2);
 
-        probe.ok = f2.features.shaderInt16 && f12.storageBuffer8BitAccess && f12.timelineSemaphore &&
+        // The decoder's dequant/IDWT shaders write storage images declared without a
+        // format qualifier, and on devices without large texel buffers they read the
+        // coefficients from a 16-bit SSBO. Both are optional features that the library
+        // never enables itself (it inherits our device), so require and enable them here
+        // instead of relying on drivers that tolerate the omission.
+        probe.ok = f2.features.shaderInt16 && f2.features.shaderStorageImageWriteWithoutFormat &&
+                   f11.storageBuffer16BitAccess &&
+                   f12.storageBuffer8BitAccess && f12.timelineSemaphore &&
                    f13.subgroupSizeControl && f13.computeFullSubgroups && f13.synchronization2;
         probe.float16 = f12.shaderFloat16;
         return probe;
@@ -452,7 +461,10 @@ namespace {
                 for (uint32_t i = 0; i < familyCount; ++i) {
                     VkBool32 presentable = VK_FALSE;
                     vk.GetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentable);
-                    if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && presentable) {
+                    // The library maps its compute and transfer queues onto this family and
+                    // refuses one without COMPUTE, so require it up front.
+                    if ((families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
+                                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT) && presentable) {
                         physicalDevice = device;
                         queueFamily = i;
                         timestampsSupported = families[i].timestampValidBits > 0;
@@ -486,9 +498,13 @@ namespace {
             features12.timelineSemaphore = VK_TRUE;
             features12.storageBuffer8BitAccess = VK_TRUE;
             features12.shaderFloat16 = chosenProbe.float16 ? VK_TRUE : VK_FALSE;
+            features11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+            features11.pNext = &features12;
+            features11.storageBuffer16BitAccess = VK_TRUE;
             features2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-            features2.pNext = &features12;
+            features2.pNext = &features11;
             features2.features.shaderInt16 = VK_TRUE;
+            features2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
 
             deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
             deviceInfo.pNext = &features2;
@@ -582,6 +598,19 @@ namespace {
             plane.height = planeHeight;
 
             VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            VkFormatProperties formatProps = {};
+            vk.GetPhysicalDeviceFormatProperties(physicalDevice, planeFormat(), &formatProps);
+            const VkFormatFeatureFlags needed =
+                    (fragmentPath ? VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT : VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) |
+                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+            if ((formatProps.optimalTilingFeatures & needed) != needed) {
+                // Storage-image support for R8/R16 is optional in the spec; creating the image
+                // anyway would be invalid use rather than a clean failure.
+                LOGE("Plane format %u lacks the %s support this path needs (features 0x%x)",
+                     unsigned(planeFormat()), fragmentPath ? "colour attachment" : "storage image",
+                     unsigned(formatProps.optimalTilingFeatures));
+                return false;
+            }
             imageInfo.imageType = VK_IMAGE_TYPE_2D;
             imageInfo.format = planeFormat();
             imageInfo.extent = {planeWidth, planeHeight, 1};
@@ -691,10 +720,35 @@ namespace {
                         LOGI("Surface offers no HDR10 swapchain; HDR will be tone-mapped to SDR");
                     }
                 }
+                if (!found && tenBit) {
+                    // 10-bit content on an SDR display: Android surfaces usually offer a
+                    // 10-bit UNORM swapchain too, which keeps the gradients the decoder
+                    // produced instead of banding them at the swapchain.
+                    for (const auto &format : formats) {
+                        if (format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
+                            (format.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+                             format.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32)) {
+                            chosen = format;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
                 if (!found) {
                     for (const auto &format : formats) {
                         if (format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
                             (format.format == VK_FORMAT_R8G8B8A8_UNORM || format.format == VK_FORMAT_B8G8R8A8_UNORM)) {
+                            chosen = format;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    // Last resort: anything that is not an sRGB-encoded format, which would
+                    // apply a second transfer function to the shader's display-encoded output.
+                    for (const auto &format : formats) {
+                        if (format.format != VK_FORMAT_R8G8B8A8_SRGB && format.format != VK_FORMAT_B8G8R8A8_SRGB) {
                             chosen = format;
                             break;
                         }
@@ -1553,6 +1607,7 @@ namespace {
         float queuePriority = 1.0f;
         VkDeviceQueueCreateInfo queueInfo = {};
         VkPhysicalDeviceVulkan13Features features13 = {};
+        VkPhysicalDeviceVulkan11Features features11 = {};
         VkPhysicalDeviceVulkan12Features features12 = {};
         VkPhysicalDeviceFeatures2 features2 = {};
         VkDeviceCreateInfo deviceInfo = {};
@@ -1612,7 +1667,7 @@ namespace {
 
     public:
         // GPU decode time of the most recently completed frame, or 0 when unknown.
-        uint32_t lastGpuDecodeUs = 0;
+        std::atomic<uint32_t> lastGpuDecodeUs {0};  // written by the decode thread, read by any
 
     private:
         struct {
@@ -1640,8 +1695,9 @@ namespace {
             // Even VK_QUERY_RESULT_64_BIT returns only timestampValidBits
             // meaningful bits. Subtract modulo that counter's width so a wrap
             // does not turn a short decode/draw into an enormous duration.
-            lastGpuDecodeUs = uint32_t(toUs((ticks[1] - ticks[0]) & timestampMask));
-            stats.gpuDecodeUs += lastGpuDecodeUs;
+            const uint32_t decodeUs = uint32_t(toUs((ticks[1] - ticks[0]) & timestampMask));
+            lastGpuDecodeUs.store(decodeUs, std::memory_order_relaxed);
+            stats.gpuDecodeUs += decodeUs;
             stats.gpuDrawUs += toUs((ticks[2] - ticks[1]) & timestampMask);
             stats.gpuSamples++;
         }
@@ -1781,7 +1837,7 @@ Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeSubmitFrame(JNIEn
 JNIEXPORT jint JNICALL
 Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeGetLastGpuDecodeUs(JNIEnv *, jclass, jlong handle) {
     auto *renderer = reinterpret_cast<Renderer *>(handle);
-    return renderer != nullptr ? jint(renderer->lastGpuDecodeUs) : 0;
+    return renderer != nullptr ? jint(renderer->lastGpuDecodeUs.load(std::memory_order_relaxed)) : 0;
 }
 
 JNIEXPORT void JNICALL
