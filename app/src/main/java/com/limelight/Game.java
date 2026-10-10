@@ -334,21 +334,23 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private boolean isZoomButtonMoving = false;
     private float zoomButtonStartX, zoomButtonStartY;
 
-    // Queue for batching commitText payloads
+    // Main-thread IME operations: text chunks and deletions share one ordered queue.
     private static final int UTF8_CHUNK_SIZE = 512;
-    private final Queue<String> commitTextQueue = new ArrayDeque<>();
+    private final Queue<Runnable> commitTextQueue = new ArrayDeque<>();
     private final Handler commitTextHandler = new Handler(Looper.getMainLooper());
+    private boolean commitTextStopped;
 
     private final Runnable flushCommitTextQueue = new Runnable() {
         @Override
         public void run() {
+            if (commitTextStopped || !connected || conn == null) {
+                commitTextQueue.clear();
+                return;
+            }
             if (commitTextQueue.isEmpty()) {
                 return;
             }
-            String chunk = commitTextQueue.poll();
-            if (conn != null) {
-                conn.sendUtf8Text(chunk);
-            }
+            commitTextQueue.poll().run();
             if (!commitTextQueue.isEmpty()) {
                 commitTextHandler.postDelayed(this, 15);
             }
@@ -1787,6 +1789,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         instance = null;
         StreamLog.stop();
         timerHandler.removeCallbacksAndMessages(null);
+        stopCommitText();
 
         if (prefConfig.enableFullExDisplay) handleDisplayRemoved();
         unregisterExternalDisplayListener();
@@ -3614,6 +3617,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     private void stopConnection() {
+        // NvConnection input uses the process-wide native session. Retire pending
+        // IME work before asynchronous teardown can let another stream start.
+        stopCommitText();
         if (connecting || connected) {
             connecting = connected = false;
             updatePipAutoEnter();
@@ -4527,7 +4533,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleCommitText(CharSequence text) {
-        if (!prefConfig.enableCommitText || conn == null) {
+        if (!prefConfig.enableCommitText || conn == null || !connected || commitTextStopped) {
             return false;
         }
         enqueueCommitText(text.toString());
@@ -4536,30 +4542,33 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleDeleteSurroundingText(int beforeLength, int afterLength) {
-        if (!prefConfig.enableCommitText || conn == null) {
+        if (!prefConfig.enableCommitText || conn == null || !connected || commitTextStopped) {
             return false;
         }
-        // Send backspace events for deleted preceding characters
-        if (beforeLength > 0) {
-            short backspaceCode = keyboardTranslator.translate(KeyEvent.KEYCODE_DEL, 0, -1);
-            for (int i = 0; i < beforeLength; i++) {
-                conn.sendKeyboardInput(backspaceCode, com.limelight.nvstream.input.KeyboardPacket.KEY_DOWN, (byte)0, (byte)0);
-                conn.sendKeyboardInput(backspaceCode, com.limelight.nvstream.input.KeyboardPacket.KEY_UP, (byte)0, (byte)0);
-            }
+        if (beforeLength > 0 || afterLength > 0) {
+            // Sending immediately lets a deletion overtake text chunks waiting on
+            // the Handler, breaking autocorrection and edits during a long paste.
+            enqueueTextInput(() -> {
+                short backspaceCode = keyboardTranslator.translate(KeyEvent.KEYCODE_DEL, 0, -1);
+                for (int i = 0; i < beforeLength; i++) {
+                    conn.sendKeyboardInput(backspaceCode, com.limelight.nvstream.input.KeyboardPacket.KEY_DOWN, (byte)0, (byte)0);
+                    conn.sendKeyboardInput(backspaceCode, com.limelight.nvstream.input.KeyboardPacket.KEY_UP, (byte)0, (byte)0);
+                }
+                short deleteCode = keyboardTranslator.translate(KeyEvent.KEYCODE_FORWARD_DEL, 0, -1);
+                for (int i = 0; i < afterLength; i++) {
+                    conn.sendKeyboardInput(deleteCode, com.limelight.nvstream.input.KeyboardPacket.KEY_DOWN, (byte)0, (byte)0);
+                    conn.sendKeyboardInput(deleteCode, com.limelight.nvstream.input.KeyboardPacket.KEY_UP, (byte)0, (byte)0);
+                }
+            });
         }
         return true;
     }
 
     private void enqueueCommitText(String text) {
-        if (text == null || text.isEmpty()) {
+        if (text == null || text.isEmpty() || commitTextStopped || !connected || conn == null) {
             return;
         }
         byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
-        // The flush runnable re-posts itself while the queue is non-empty, so it only
-        // needs a kick on the idle -> busy transition. Deciding that after the loop
-        // (queue size == 1) missed every commit that split into two or more chunks,
-        // which left the queue stuck for the rest of the session.
-        boolean wasIdle = commitTextQueue.isEmpty();
         int offset = 0;
         while (offset < utf8.length) {
             int end = Math.min(offset + UTF8_CHUNK_SIZE, utf8.length);
@@ -4568,13 +4577,27 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 end--; // step back until we are at start of code point
             }
             String chunk = new String(utf8, offset, end - offset, StandardCharsets.UTF_8);
-            commitTextQueue.add(chunk);
+            enqueueTextInput(() -> conn.sendUtf8Text(chunk));
             offset = end;
         }
-        // Kick off flushing if not already scheduled
-        if (wasIdle && !commitTextQueue.isEmpty()) {
+    }
+
+    private void enqueueTextInput(Runnable operation) {
+        if (commitTextStopped || !connected || conn == null) {
+            return;
+        }
+        // Only an idle queue needs a kick; a busy flush schedules its successor.
+        boolean wasIdle = commitTextQueue.isEmpty();
+        commitTextQueue.add(operation);
+        if (wasIdle) {
             commitTextHandler.post(flushCommitTextQueue);
         }
+    }
+
+    private void stopCommitText() {
+        commitTextStopped = true;
+        commitTextHandler.removeCallbacksAndMessages(null);
+        commitTextQueue.clear();
     }
 
     /** Helper ricorsivo per trovare la prima SurfaceView nel layout corrente */

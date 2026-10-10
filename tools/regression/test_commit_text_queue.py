@@ -4,7 +4,7 @@
 A commit that splits into more than one chunk must still schedule the flush; the queue
 used to stay stuck for the session after any commit over 512 UTF-8 bytes.
 """
-import pathlib, subprocess, sys, tempfile
+import pathlib, re, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PATH = 'app/src/main/java/com/limelight/Game.java'
 source = (subprocess.check_output(['git', 'show', 'HEAD:' + PATH], cwd=ROOT, text=True, encoding='utf-8')
@@ -18,6 +18,14 @@ def block(marker):
 
 flush = block('    private final Runnable flushCommitTextQueue') + ';'
 enqueue = block('    private void enqueueCommitText(')
+deletion = block('    public boolean handleDeleteSurroundingText(').replace(
+    'com.limelight.nvstream.input.KeyboardPacket.', 'KeyboardPacket.')
+stop = block('    private void stopConnection(').replace('Game.this', 'CommitTextRegression.this')
+helpers = '\n'.join(block(marker) for marker in (
+    '    private void enqueueTextInput(', '    private void stopCommitText(')
+    if marker in source)
+queue_field = re.search(r'private final Queue<[^;]+;', source).group()
+stopped_field = 'private boolean commitTextStopped;' if 'commitTextStopped' in source else ''
 prefix = r'''
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -26,11 +34,46 @@ public class CommitTextRegression {
         final List<Runnable> pending = new ArrayList<>();
         boolean post(Runnable r) { pending.add(r); return true; }
         boolean postDelayed(Runnable r, long delay) { pending.add(r); return true; }
+        void removeCallbacksAndMessages(Object token) { pending.clear(); }
         void drain() { while (!pending.isEmpty()) pending.remove(0).run(); }
     }
-    static class Conn { final List<String> sent = new ArrayList<>(); void sendUtf8Text(String s) { sent.add(s); } }
+    static class Conn {
+        static final List<String> hostInput = new ArrayList<>();
+        final List<String> sent = new ArrayList<>();
+        void sendUtf8Text(String s) { sent.add(s); hostInput.add("text:" + s); }
+        void sendKeyboardInput(short code, byte action, byte mods, byte flags) {
+            hostInput.add((action == KeyboardPacket.KEY_DOWN ? "down:" : "up:") + code);
+        }
+        void stop() {}
+    }
+    static class KeyEvent { static final int KEYCODE_DEL = 67, KEYCODE_FORWARD_DEL = 112; }
+    static class KeyboardPacket { static final byte KEY_DOWN = 3, KEY_UP = 4; }
+    static class Translator { short translate(int key, int modifiers, int id) { return (short)key; } }
+    static class Pref { boolean enableCommitText = true; }
+    static class Controller { void stop() {} }
+    static class UiHelper { static void notifyStreamEnded(Object owner) {} }
+    // The background network teardown is outside this fixture. The production
+    // main-thread stopConnection path, including queue cancellation, runs normally.
+    static class Thread { public void run() {} void start() {} void sleep(int millis) {} }
+    static class Http { void quitApp() {} }
+    static class Toast {
+        static final int LENGTH_LONG = 1;
+        static Toast makeText(Object context, String text, int length) { return new Toast(); }
+        void show() {}
+    }
+    static class R { static class string { static final int applist_quit_success = 1; } }
+    static class Resources { String getString(int id) { return ""; } }
+    Resources getResources() { return new Resources(); }
+    void runOnUiThread(Runnable task) {}
+    void updatePipAutoEnter() {}
+    boolean connected = true, connecting, quitOnStop;
+    String appName = "fixture";
+    Http httpConn;
+    Controller controllerHandler = new Controller();
+    Translator keyboardTranslator = new Translator();
+    Pref prefConfig = new Pref();
     private static final int UTF8_CHUNK_SIZE = 512;
-    private final Queue<String> commitTextQueue = new ArrayDeque<>();
+    // QUEUE_FIELD
     private final Handler commitTextHandler = new Handler();
     Conn conn = new Conn();
     static int checks, failures;
@@ -61,6 +104,44 @@ suffix = r'''
         r.enqueueCommitText(""); r.enqueueCommitText(null);
         r.commitTextHandler.drain();
         check(r.conn.sent.size() == 8, "empty and null commits send nothing");
+
+        Conn.hostInput.clear();
+        r.enqueueCommitText("abc");
+        r.handleDeleteSurroundingText(1, 0);
+        r.enqueueCommitText("d");
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.equals(Arrays.asList("text:abc", "down:67", "up:67", "text:d")),
+              "commit, delete, replacement retain IME order before the first flush");
+
+        Conn.hostInput.clear();
+        r.enqueueCommitText(big);
+        r.commitTextHandler.pending.remove(0).run();
+        r.handleDeleteSurroundingText(1, 0);
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.size() == 4 && Conn.hostInput.get(1).startsWith("text:") &&
+              Conn.hostInput.get(2).equals("down:67"), "delete waits for the remaining paste chunks");
+
+        Conn.hostInput.clear();
+        r.handleDeleteSurroundingText(1, 2);
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.equals(Arrays.asList("down:67", "up:67", "down:112", "up:112", "down:112", "up:112")),
+              "deleteSurroundingText also deletes the requested following characters");
+
+        Conn.hostInput.clear();
+        r.enqueueCommitText(big);
+        r.handleDeleteSurroundingText(1, 0);
+        r.stopConnection();
+        check(r.commitTextQueue.isEmpty() && r.commitTextHandler.pending.isEmpty(),
+              "disconnect cancels pending IME work and releases queued payloads");
+        // NvConnection's JNI input entry points address the active native session;
+        // an old Java wrapper is not a session fence. Model that new destination.
+        Conn.hostInput.clear();
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.isEmpty(), "a retired queue cannot type into the next native session");
+        r.enqueueCommitText("late");
+        r.handleDeleteSurroundingText(1, 0);
+        r.commitTextHandler.drain();
+        check(Conn.hostInput.isEmpty(), "late IME callbacks after disconnect cannot revive the queue");
         System.out.println(checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);
     }
@@ -69,6 +150,7 @@ suffix = r'''
 with tempfile.TemporaryDirectory(prefix='commit-text-') as directory:
     work = pathlib.Path(directory)
     path = work / 'CommitTextRegression.java'
-    path.write_text(prefix + flush + '\n' + enqueue + '\n' + suffix, encoding='utf-8')
+    prefix = prefix.replace('// QUEUE_FIELD', queue_field + '\n' + stopped_field)
+    path.write_text(prefix + flush + '\n' + enqueue + '\n' + deletion + '\n' + stop + '\n' + helpers + '\n' + suffix, encoding='utf-8')
     subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(work), str(path)], check=True)
     raise SystemExit(subprocess.run(['java', '-cp', str(work), 'CommitTextRegression']).returncode)
