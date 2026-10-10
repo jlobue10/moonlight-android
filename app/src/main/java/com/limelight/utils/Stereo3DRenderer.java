@@ -503,6 +503,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         long startTimeAi = System.nanoTime();
         long endTimeAi = System.nanoTime();
         if (depth.tflite != null) {
+            boolean inputSubmitted = false;
             ByteBuffer pixelBufferForAI = newVideoFrame ? depth.freeInputBuffers.poll() : null;
             if (pixelBufferForAI != null) {
                 // Double-buffered PBO readback (one frame of latency, no GL stall); the
@@ -512,6 +513,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                         : readPixelsForAI(pixelBufferForAI);
                 if (success) {
                     if (depth.inferenceInputQueue.offer(new RenderResult(pixelBufferForAI))) {
+                        inputSubmitted = true;
                         if (Boolean.TRUE.equals(isDebugMode)) Log.d("AiTask", "Success: The AI will now process this buffer.");
                     } else {
                         depth.freeInputBuffers.offer(pixelBufferForAI);
@@ -521,16 +523,16 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 }
             }
             ByteBuffer newMap = null;
-            if (block && isMovieMode) {
+            if (block && isMovieMode && inputSubmitted) {
                 // Synced mode waits for this frame's depth map, but a slow or failed model must
                 // not freeze the GL thread: give up after MOVIE_MODE_MAX_DEPTH_WAIT_NS or as
                 // soon as the inference thread is gone, and render with the previous map.
                 // The worker signals depthReady when it publishes; while this thread is
                 // parked here it must not also be asked to redraw for that same map.
                 long deadline = System.nanoTime() + MOVIE_MODE_MAX_DEPTH_WAIT_NS;
-                depth.depthWaiting.set(true);
-                try {
-                    synchronized (depth.depthReady) {
+                synchronized (depth.depthReady) {
+                    depth.depthWaiting.set(true);
+                    try {
                         while ((newMap = depth.latestDepthMap.getAndSet(null)) == null
                                 && depth.isAiRunning.get()) {
                             long remainingNs = deadline - System.nanoTime();
@@ -544,9 +546,11 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                                 break;
                             }
                         }
+                    } finally {
+                        // Withdraw while still holding the publication lock: a map
+                        // arriving after this draw stops waiting needs its own redraw.
+                        depth.depthWaiting.set(false);
                     }
-                } finally {
-                    depth.depthWaiting.set(false);
                 }
                 if (newMap == null) {
                     block = false;
@@ -1057,6 +1061,16 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             if (!stopped && depthSession == this) host.requestRender();
         }
 
+        private void publishDepthMap(ByteBuffer map) {
+            ByteBuffer superseded;
+            synchronized (depthReady) {
+                superseded = latestDepthMap.getAndSet(map);
+                depthReady.notifyAll();
+                if (!depthWaiting.get()) requestDepthRender();
+            }
+            if (superseded != null) freeSmoothedBuffers.offer(superseded);
+        }
+
         private void closeTfLite() {
             final Interpreter closingInterpreter = tflite;
             final GpuDelegate closingGpuDelegate = gpuDelegate;
@@ -1317,15 +1331,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                             resultBuffer.rewind();
                             // Transfer ownership to the GL consumer. Only an unpublished
                             // superseded map may return to the producer's pool here.
-                            ByteBuffer superseded = latestDepthMap.getAndSet(resultBuffer);
+                            publishDepthMap(resultBuffer);
                             resultBuffer = null;
-                            if (superseded != null) freeSmoothedBuffers.offer(superseded);
-                            synchronized (depthReady) {
-                                depthReady.notifyAll();
-                            }
-                            // A GL thread parked in the synced-mode wait consumes this map in
-                            // its current draw; a second request would draw the same frame twice.
-                            if (!depthWaiting.get()) requestDepthRender();
 
                             previousPixelBuffer.rewind();
                             previousPixelBuffer.put(currentPixelBuffer);

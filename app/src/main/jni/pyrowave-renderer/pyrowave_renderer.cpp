@@ -826,7 +826,10 @@ namespace {
         }
 
         bool recreateSwapchain() {
-            vk.DeviceWaitIdle(device);
+            if (!check(vk.DeviceWaitIdle(device), "vkDeviceWaitIdle(recreate)")) {
+                renderFailed = true;
+                return false;
+            }
             return createSwapchain();
         }
 
@@ -1108,11 +1111,13 @@ namespace {
                 const uint32_t word0 = readLe32(data + offset);
                 if (word0 == PADDING_MAGIC) {
                     const size_t zeroWords = readLe32(data + offset + 4);
-                    const size_t recordSize = 8 + zeroWords * 4;
-                    if (recordSize > length - offset) {
+                    // Check before multiplying: size_t is 32-bit on armeabi-v7a,
+                    // where a malicious padding count could wrap to a zero stride.
+                    if (zeroWords > (length - offset - 8) / 4) {
                         warnFraming("Dropping record frame: padding runs past the frame");
                         return false;
                     }
+                    const size_t recordSize = 8 + zeroWords * 4;
                     if (!sawPadding) {
                         sawPadding = true;
                         recordScratch.assign(data, data + offset);
@@ -1208,21 +1213,34 @@ namespace {
         // with a busy semaphore and wait 2 s on a fence nobody signals. Consume the
         // pending signal with an empty submission, then start over with a signalled
         // fence and a fresh swapchain (which releases the image).
+        bool restoreUnsubmittedFence(VkFence &fence) {
+            if (fence != VK_NULL_HANDLE) {
+                vk.DestroyFence(device, fence, nullptr);
+                fence = VK_NULL_HANDLE;
+            }
+            VkFenceCreateInfo info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            if (!check(vk.CreateFence(device, &info, nullptr, &fence), "vkCreateFence(recovery)")) {
+                renderFailed = true;
+                return false;
+            }
+            return true;
+        }
+
         bool recoverAfterAcquire() {
             const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             VkSubmitInfo drain = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             drain.waitSemaphoreCount = 1;
             drain.pWaitSemaphores = &acquireSemaphore;
             drain.pWaitDstStageMask = &waitStage;
-            vk.QueueSubmit(queue, 1, &drain, VK_NULL_HANDLE);
-            vk.DeviceWaitIdle(device);
-            if (frameFence != VK_NULL_HANDLE) {
-                vk.DestroyFence(device, frameFence, nullptr);
-                frameFence = VK_NULL_HANDLE;
+            if (!check(vk.QueueSubmit(queue, 1, &drain, VK_NULL_HANDLE), "vkQueueSubmit(acquire drain)") ||
+                    !check(vk.DeviceWaitIdle(device), "vkDeviceWaitIdle(acquire drain)")) {
+                // The semaphore may still be signalled/in use. Do not reuse it or
+                // destroy resources under an uncompleted submission.
+                renderFailed = true;
+                return false;
             }
-            VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-            if (!check(vk.CreateFence(device, &fenceInfo, nullptr, &frameFence), "vkCreateFence")) {
+            if (!restoreUnsubmittedFence(frameFence)) {
                 return false;
             }
             queriesPending = false;
@@ -1230,6 +1248,9 @@ namespace {
         }
 
         bool present() {
+            if (renderFailed) {
+                return false;
+            }
             const uint64_t frameStart = nowUs();
 
             // A display acquire can time out after decode was submitted, without a
@@ -1279,7 +1300,6 @@ namespace {
                 vk.EndCommandBuffer(decodeCommandBuffer);
                 return false;
             }
-            planesInitialized = true;
             if (queryPool != VK_NULL_HANDLE) {
                 vk.CmdWriteTimestamp(decodeCommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 1);
             }
@@ -1289,10 +1309,23 @@ namespace {
             VkSubmitInfo decodeSubmit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             decodeSubmit.commandBufferCount = 1;
             decodeSubmit.pCommandBuffers = &decodeCommandBuffer;
-            if (!check(vk.ResetFences(device, 1, &decodeFence), "vkResetFences(decode)") ||
-                    !check(vk.QueueSubmit(queue, 1, &decodeSubmit, decodeFence), "vkQueueSubmit(decode)")) {
+            if (!check(vk.ResetFences(device, 1, &decodeFence), "vkResetFences(decode)")) {
+                renderFailed = true;
                 return false;
             }
+            const auto decodeResult = vk.QueueSubmit(queue, 1, &decodeSubmit, decodeFence);
+            if (!check(decodeResult, "vkQueueSubmit(decode)")) {
+                // OOM leaves synchronization and resource state unchanged. The reset
+                // fence has no submission to signal it, so restore its initial state.
+                // Device loss does not provide that guarantee: fail without reuse.
+                if (decodeResult == VK_ERROR_OUT_OF_HOST_MEMORY || decodeResult == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+                    restoreUnsubmittedFence(decodeFence);
+                } else {
+                    renderFailed = true;
+                }
+                return false;
+            }
+            planesInitialized = true;
 
             uint32_t imageIndex = 0;
             const uint64_t beforeAcquire = nowUs();
@@ -1363,8 +1396,16 @@ namespace {
             submitInfo.pCommandBuffers = &commandBuffer;
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = &renderDone[imageIndex];
-            vk.ResetFences(device, 1, &frameFence);
-            if (!check(vk.QueueSubmit(queue, 1, &submitInfo, frameFence), "vkQueueSubmit")) {
+            if (!check(vk.ResetFences(device, 1, &frameFence), "vkResetFences(draw)")) {
+                renderFailed = true;
+                return false;
+            }
+            const auto drawResult = vk.QueueSubmit(queue, 1, &submitInfo, frameFence);
+            if (!check(drawResult, "vkQueueSubmit")) {
+                if (drawResult != VK_ERROR_OUT_OF_HOST_MEMORY && drawResult != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+                    renderFailed = true;
+                    return false;
+                }
                 return recoverAfterAcquire();
             }
             queriesPending = queryPool != VK_NULL_HANDLE;
@@ -1497,6 +1538,7 @@ namespace {
         pyrowave_decoder decoder = nullptr;
         Plane planes[3];
         bool planesInitialized = false;
+        bool renderFailed = false;
         bool framePresented = false;
         bool fragmentPath = false;
         uint64_t lastSizeCheckUs = 0;
