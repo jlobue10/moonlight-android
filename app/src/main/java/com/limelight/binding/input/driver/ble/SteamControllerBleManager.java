@@ -115,6 +115,53 @@ public final class SteamControllerBleManager {
             LimeLog.warning("Steam Controller BLE: Bluetooth permission not granted; driver disabled");
             return;
         }
+
+        // Register before enumerating: with Bluetooth off (or the bonded list refused) at
+        // stream start, a controller switched on later, or the adapter turned on, must still
+        // be picked up. The receiver used to be registered only after a successful enumeration.
+        if (aclReceiver == null) {
+            aclReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context c, Intent intent) {
+                    if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) {
+                        if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) == BluetoothAdapter.STATE_ON) {
+                            synchronized (SteamControllerBleManager.this) {
+                                if (aclReceiver != null) {
+                                    enumerateBonded();
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (device == null || !looksLikeSteamController(device)) {
+                        return;
+                    }
+                    if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(intent.getAction())) {
+                        synchronized (SteamControllerBleManager.this) {
+                            if (aclReceiver != null) {
+                                startDriver(device);
+                            }
+                        }
+                    }
+                }
+            };
+            IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED);
+            filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(aclReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(aclReceiver, filter);
+            }
+        }
+
+        enumerateBonded();
+        LimeLog.info("Steam Controller BLE: watching " + drivers.size() + " bonded controller(s)");
+    }
+
+    /** Starts a driver for every bonded controller the adapter can list right now; best effort. */
+    @SuppressLint("MissingPermission")
+    private void enumerateBonded() {
         BluetoothManager manager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
         BluetoothAdapter adapter = manager != null ? manager.getAdapter() : null;
         if (adapter == null || !adapter.isEnabled()) {
@@ -132,30 +179,7 @@ public final class SteamControllerBleManager {
             }
         } catch (SecurityException e) {
             LimeLog.warning("Steam Controller BLE: cannot list bonded devices: " + e.getMessage());
-            return;
         }
-
-        aclReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context c, Intent intent) {
-                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                if (device == null || !looksLikeSteamController(device)) {
-                    return;
-                }
-                if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(intent.getAction())) {
-                    synchronized (SteamControllerBleManager.this) {
-                        startDriver(device);
-                    }
-                }
-            }
-        };
-        IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(aclReceiver, filter, Context.RECEIVER_EXPORTED);
-        } else {
-            context.registerReceiver(aclReceiver, filter);
-        }
-        LimeLog.info("Steam Controller BLE: watching " + drivers.size() + " bonded controller(s)");
     }
 
     private void startDriver(BluetoothDevice device) {

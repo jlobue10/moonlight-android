@@ -252,8 +252,25 @@ int BridgeArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusCon
             return -1;
         }
 
-        // We know ahead of time what the buffer size will be for decoded audio, so pre-allocate it
-        DecodedAudioBuffer = (*env)->NewGlobalRef(env, (*env)->NewShortArray(env, opusConfig->channelCount * opusConfig->samplesPerFrame));
+        // We know ahead of time what the buffer size will be for decoded audio, so pre-allocate it.
+        // Publish it only once both allocations succeeded and drop the local reference, as the
+        // frame buffer does: a NULL here would crash the first GetPrimitiveArrayCritical() instead
+        // of failing the audio stage cleanly, and a pending OutOfMemoryError must not escape.
+        jshortArray local = (*env)->NewShortArray(env, opusConfig->channelCount * opusConfig->samplesPerFrame);
+        jshortArray global = local != NULL ? (*env)->NewGlobalRef(env, local) : NULL;
+        if (local != NULL) {
+            (*env)->DeleteLocalRef(env, local);
+        }
+        if (global == NULL) {
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+            }
+            opus_multistream_decoder_destroy(Decoder);
+            Decoder = NULL;
+            (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeArCleanupMethod);
+            return -1;
+        }
+        DecodedAudioBuffer = global;
     }
 
     return err;
@@ -275,8 +292,10 @@ void BridgeArCleanup() {
     JNIEnv* env = GetThreadEnv();
 
     opus_multistream_decoder_destroy(Decoder);
+    Decoder = NULL;
 
     (*env)->DeleteGlobalRef(env, DecodedAudioBuffer);
+    DecodedAudioBuffer = NULL;
 
     (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeArCleanupMethod);
 }

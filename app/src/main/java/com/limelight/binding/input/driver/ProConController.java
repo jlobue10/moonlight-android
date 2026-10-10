@@ -37,7 +37,7 @@ public class ProConController extends AbstractController {
     private final UsbDeviceConnection connection;
     private UsbEndpoint inEndpt, outEndpt;
     private Thread inputThread;
-    private boolean stopped = false;
+    private volatile boolean stopped = false;
     private byte sendPacketCount = 0;
     private final int[][][] stickCalibration = new int[2][2][3]; // [stick][axis][min, center, max]
     private final float[][][] stickExtends = new float[2][2][2]; // Pre-calculated scale for each axis
@@ -240,10 +240,12 @@ public class ProConController extends AbstractController {
     }
 
     public void stop() {
-        if (stopped) {
-            return;
+        synchronized (this) {
+            if (stopped) {
+                return;
+            }
+            stopped = true;
         }
-        stopped = true;
         rumble((short) 0, (short) 0);
         if (inputThread != null) {
             inputThread.interrupt();

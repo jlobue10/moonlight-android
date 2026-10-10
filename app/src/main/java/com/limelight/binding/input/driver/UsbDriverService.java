@@ -14,6 +14,7 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.view.InputDevice;
 import android.widget.Toast;
 
@@ -22,7 +23,8 @@ import com.limelight.R;
 import com.limelight.preferences.PreferenceConfiguration;
 
 import java.io.File;
-import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class UsbDriverService extends Service implements UsbDriverListener {
 
@@ -36,7 +38,13 @@ public class UsbDriverService extends Service implements UsbDriverListener {
     private final UsbEventReceiver receiver = new UsbEventReceiver();
     private final UsbDriverBinder binder = new UsbDriverBinder();
 
-    private final ArrayList<AbstractController> controllers = new ArrayList<>();
+    // A controller's input thread removes it (deviceRemoved) while stop() iterates on the
+    // main thread; the copy-on-write list keeps both safe without a lock.
+    private final List<AbstractController> controllers = new CopyOnWriteArrayList<>();
+
+    // Owns the deferred attach handling so stop() can discard it; a runnable left on a
+    // throwaway Handler used to claim a device on an already destroyed service.
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private UsbDriverListener listener;
     private UsbDriverStateListener stateListener;
@@ -94,7 +102,7 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                 // kernel is capable of running the device. Let's post a delayed
                 // message to process this state change to allow the kernel
                 // some time to bring up the stack.
-                new Handler().postDelayed(new Runnable() {
+                mainHandler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
                         // Continue the state machine
@@ -145,6 +153,13 @@ public class UsbDriverService extends Service implements UsbDriverListener {
     }
 
     private void handleUsbDeviceState(UsbDevice device) {
+        // A deferred attach or a permission result can land after stop(): claiming the device
+        // then would start an input thread nobody stops and hold its interfaces for the process.
+        if (!started) {
+            LimeLog.info("Ignoring USB device state change after the driver service stopped");
+            return;
+        }
+
         // Are we able to operate it?
         if (shouldClaimDevice(device, prefConfig.bindAllUsb)) {
             // Do we have permission yet?
@@ -329,14 +344,18 @@ public class UsbDriverService extends Service implements UsbDriverListener {
 
         started = false;
 
+        // Drop deferred attach handling; handleUsbDeviceState() also checks started
+        mainHandler.removeCallbacksAndMessages(null);
+
         // Stop the attachment receiver
         unregisterReceiver(receiver);
 
-        // Stop all controllers
-        while (controllers.size() > 0) {
-            // Stop and remove the controller
-            controllers.remove(0).stop();
+        // Stop all controllers. Iterating the copy-on-write snapshot is safe while each
+        // controller's stop() re-enters deviceRemoved() and removes itself.
+        for (AbstractController controller : controllers) {
+            controller.stop();
         }
+        controllers.clear();
     }
 
     @Override
