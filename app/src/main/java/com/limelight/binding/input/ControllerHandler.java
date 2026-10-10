@@ -116,6 +116,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private final Vector2d inputVector = new Vector2d();
 
     private final SparseArray<InputDeviceContext> inputDeviceContexts = new SparseArray<>();
+    // SparseArray is main-thread state (put/remove from InputDevice events, lazy compaction
+    // inside size()/valueAt()). Driver binder threads and the control-stream callbacks iterate
+    // this immutable snapshot instead; it is rebuilt by the main thread after every change.
+    private volatile InputDeviceContext[] inputDeviceContextSnapshot = new InputDeviceContext[0];
+
+    private void refreshInputDeviceContextSnapshot() {
+        InputDeviceContext[] snapshot = new InputDeviceContext[inputDeviceContexts.size()];
+        for (int i = 0; i < snapshot.length; i++) {
+            snapshot[i] = inputDeviceContexts.valueAt(i);
+        }
+        inputDeviceContextSnapshot = snapshot;
+    }
     // Written from the Bluetooth binder thread, the main thread and the connection
     // callback thread; SparseArray's lazy compaction is not safe across them.
     private final ConcurrentHashMap<Integer, UsbDeviceContext> usbDeviceContexts = new ConcurrentHashMap<>();
@@ -259,6 +271,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             releaseControllerNumber(context);
             context.destroy();
             inputDeviceContexts.remove(deviceId);
+            refreshInputDeviceContextSnapshot();
         }
     }
 
@@ -283,6 +296,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         InputDeviceContext newContext = createInputDeviceContextForDevice(device);
         newContext.migrateContext(existingContext);
         inputDeviceContexts.put(deviceId, newContext);
+        refreshInputDeviceContextSnapshot();
     }
 
     public void stop() {
@@ -559,6 +573,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                         if (associatedDeviceContext == null) {
                             associatedDeviceContext = createInputDeviceContextForDevice(associatedDevice);
                             inputDeviceContexts.put(associatedDevice.getId(), associatedDeviceContext);
+                            refreshInputDeviceContextSnapshot();
                         }
 
                         // Assign a controller number for the associated device if one isn't assigned
@@ -1078,6 +1093,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         // Otherwise create a new context
         context = createInputDeviceContextForDevice(event.getDevice());
         inputDeviceContexts.put(event.getDeviceId(), context);
+        refreshInputDeviceContextSnapshot();
 
         return context;
     }
@@ -1262,8 +1278,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         // In order to properly handle controllers that are split into multiple devices,
         // we must aggregate all controllers with the same controller number into a single
         // device before we send it.
-        for (int i = 0; i < inputDeviceContexts.size(); i++) {
-            GenericControllerContext context = inputDeviceContexts.valueAt(i);
+        // Runs on driver binder threads (Steam Controller at 250 Hz) as well as the main
+        // thread: iterate the snapshot, never the SparseArray.
+        for (GenericControllerContext context : inputDeviceContextSnapshot) {
             if (context.assignedControllerNumber &&
                     context.controllerNumber == controllerNumber &&
                     context.mouseEmulationActive == originalContext.mouseEmulationActive) {
@@ -2203,9 +2220,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
 
-        for (int i = 0; i < inputDeviceContexts.size(); i++) {
-            InputDeviceContext deviceContext = inputDeviceContexts.valueAt(i);
-
+        // Control-stream callback thread: use the snapshot (see inputDeviceContextSnapshot).
+        for (InputDeviceContext deviceContext : inputDeviceContextSnapshot) {
             if (deviceContext.controllerNumber == controllerNumber) {
                 foundMatchingDevice = true;
 
@@ -2276,9 +2292,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            for (int i = 0; i < inputDeviceContexts.size(); i++) {
-                InputDeviceContext deviceContext = inputDeviceContexts.valueAt(i);
-
+            for (InputDeviceContext deviceContext : inputDeviceContextSnapshot) {
                 if (deviceContext.controllerNumber == controllerNumber) {
                     deviceContext.leftTriggerMotor = leftTrigger;
                     deviceContext.rightTriggerMotor = rightTrigger;
@@ -2408,9 +2422,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         // Driver-fed IMUs may use 250 Hz; Android-managed sensors remain capped below.
         reportRateHz = (short) Math.min(250, reportRateHz & 0xFFFF);
 
-        ArrayList<InputDeviceContext> motionContexts = new ArrayList<>(inputDeviceContexts.size() + usbDeviceContexts.size());
-        for (int i = 0; i < inputDeviceContexts.size(); i++) {
-            motionContexts.add(inputDeviceContexts.valueAt(i));
+        InputDeviceContext[] snapshot = inputDeviceContextSnapshot;
+        ArrayList<InputDeviceContext> motionContexts = new ArrayList<>(snapshot.length + usbDeviceContexts.size());
+        for (InputDeviceContext deviceContext : snapshot) {
+            motionContexts.add(deviceContext);
         }
         motionContexts.addAll(usbDeviceContexts.values());
         for (InputDeviceContext deviceContext : motionContexts) {
@@ -2481,9 +2496,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            for (int i = 0; i < inputDeviceContexts.size(); i++) {
-                InputDeviceContext deviceContext = inputDeviceContexts.valueAt(i);
-
+            for (InputDeviceContext deviceContext : inputDeviceContextSnapshot) {
                 // Ignore input devices without an RGB LED
                 if (deviceContext.controllerNumber == controllerNumber && deviceContext.hasRgbLed) {
                     // Convert the RGB components into the integer value that LightState uses

@@ -14,7 +14,7 @@ public class PanZoomHandler {
     static private final float MAX_SCALE = 10.0f;
 
     private final Game game;
-    private final View streamView;
+    private View streamView;
     private final PreferenceConfiguration prefConfig;
     private final boolean isTopMode;
     private final ScaleGestureDetector scaleGestureDetector;
@@ -37,6 +37,27 @@ public class PanZoomHandler {
         // Everything gets easier with 0,0 as the pivot point
         streamView.setPivotX(0);
         streamView.setPivotY(0);
+    }
+
+    /**
+     * The stream moved to another view (XR stereo fell back to the flat GLSurfaceView).
+     * Gestures from now on transform that view; it starts unscaled and centred.
+     */
+    public void setStreamView(View view) {
+        if (view == null || view == streamView) {
+            return;
+        }
+        streamView = view;
+        parent = (View) view.getParent();
+        view.setPivotX(0);
+        view.setPivotY(0);
+        scaleFactor = 1.0f;
+        view.setScaleX(1.0f);
+        view.setScaleY(1.0f);
+        childX = childY = 0;
+        childWidth = childHeight = 0;
+        view.setX(0);
+        view.setY(0);
     }
 
     public void handleTouchEvent(MotionEvent motionEvent) {

@@ -239,6 +239,9 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
             mSurfaceView.getHolder().removeCallback(this);
             createFlatStereoView();
             mSurfaceView.getHolder().addCallback(this);
+            if (game != null) {
+                game.onStreamViewReplaced(mSurfaceView);
+            }
         }
     }
 

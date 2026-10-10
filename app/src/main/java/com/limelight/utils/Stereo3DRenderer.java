@@ -97,6 +97,15 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
     // OpenGL Handles
     private int bilateralBlurProgram;
+    // Shader locations, resolved once per program (glGet*Location is a driver round trip;
+    // the draw path made ~30 of them per frame).
+    private int blurPosHandle, blurTexHandle, blurInputTextureHandle, blurTexelSizeHandle, blurDirectionHandle, blurParallaxHandle;
+    private int eyePosHandle, eyeTexHandle, eyeColorTexHandle, eyeDepthTexHandle, eyeParallaxHandle,
+            eyeConvergenceHandle, eyeShiftHandle, eyeDebugModeHandle, eyeGuideTexHandle, eyeDepthTexelHandle, eyeGuidedHandle;
+    private int quadPosHandle, quadTexHandle, quadOffsetHandle, quadScaleHandle;
+    // The blurred depth texture only changes with a new depth map or a preference; the
+    // GL thread also redraws for every decoded video frame.
+    private boolean depthFilterDirty = true;
     private int depthMapTextureId;
     private int dibr3dProgram;
 
@@ -333,6 +342,8 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             simple3dProgram = createProgram(ShaderUtils.SIMPLE_VERTEX_SHADER, ShaderUtils.SIMPLE_FRAGMENT_SHADER);
             bilateralBlurProgram = createProgram(ShaderUtils.VERTEX_SHADER, ShaderUtils.OPTIMIZED_SINGLE_PASS_GAUSSIAN_BLUR_SHADER);
             dibr3dProgram = createProgram(ShaderUtils.VERTEX_SHADER, ShaderUtils.FRAGMENT_SHADER_3D);
+            resolveShaderLocations();
+            depthFilterDirty = true;
 
             initializeFilterFbo();
             initializeIntermediateFbo();
@@ -371,17 +382,43 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         return prefConfig.parallax_depth * 0.7f;
     }
 
+    private void resolveShaderLocations() {
+        blurPosHandle = GLES20.glGetAttribLocation(bilateralBlurProgram, "a_Position");
+        blurTexHandle = GLES20.glGetAttribLocation(bilateralBlurProgram, "a_TexCoord");
+        blurInputTextureHandle = GLES20.glGetUniformLocation(bilateralBlurProgram, "s_InputTexture");
+        blurTexelSizeHandle = GLES20.glGetUniformLocation(bilateralBlurProgram, "u_texelSize");
+        blurDirectionHandle = GLES20.glGetUniformLocation(bilateralBlurProgram, "u_blurDirection");
+        blurParallaxHandle = GLES20.glGetUniformLocation(bilateralBlurProgram, "u_parallax");
+
+        eyePosHandle = GLES20.glGetAttribLocation(dibr3dProgram, "a_Position");
+        eyeTexHandle = GLES20.glGetAttribLocation(dibr3dProgram, "a_TexCoord");
+        eyeColorTexHandle = GLES20.glGetUniformLocation(dibr3dProgram, "s_ColorTexture");
+        eyeDepthTexHandle = GLES20.glGetUniformLocation(dibr3dProgram, "s_DepthTexture");
+        eyeParallaxHandle = GLES20.glGetUniformLocation(dibr3dProgram, "u_parallax");
+        eyeConvergenceHandle = GLES20.glGetUniformLocation(dibr3dProgram, "u_convergence");
+        eyeShiftHandle = GLES20.glGetUniformLocation(dibr3dProgram, "u_shift");
+        eyeDebugModeHandle = GLES20.glGetUniformLocation(dibr3dProgram, "u_debugMode");
+        eyeGuideTexHandle = GLES20.glGetUniformLocation(dibr3dProgram, "s_GuideTexture");
+        eyeDepthTexelHandle = GLES20.glGetUniformLocation(dibr3dProgram, "u_depthTexelSize");
+        eyeGuidedHandle = GLES20.glGetUniformLocation(dibr3dProgram, "u_guidedUpsampling");
+
+        quadPosHandle = GLES20.glGetAttribLocation(simple3dProgram, "a_Position");
+        quadTexHandle = GLES20.glGetAttribLocation(simple3dProgram, "a_TexCoord");
+        quadOffsetHandle = GLES20.glGetUniformLocation(simple3dProgram, "u_xOffset");
+        quadScaleHandle = GLES20.glGetUniformLocation(simple3dProgram, "u_xScale");
+    }
+
     private void applyTwoPassGaussianBlur() {
         int blurProgram = bilateralBlurProgram;
 
         GLES20.glUseProgram(blurProgram);
 
-        int posHandle = GLES20.glGetAttribLocation(blurProgram, "a_Position");
-        int texHandle = GLES20.glGetAttribLocation(blurProgram, "a_TexCoord");
-        int inputTextureHandle = GLES20.glGetUniformLocation(blurProgram, "s_InputTexture");
-        int texelSizeHandle = GLES20.glGetUniformLocation(blurProgram, "u_texelSize");
-        int directionHandle = GLES20.glGetUniformLocation(blurProgram, "u_blurDirection");
-        int parallaxHandle = GLES20.glGetUniformLocation(blurProgram, "u_parallax");
+        int posHandle = blurPosHandle;
+        int texHandle = blurTexHandle;
+        int inputTextureHandle = blurInputTextureHandle;
+        int texelSizeHandle = blurTexelSizeHandle;
+        int directionHandle = blurDirectionHandle;
+        int parallaxHandle = blurParallaxHandle;
         GLES20.glVertexAttribPointer(posHandle, 2, GLES20.GL_FLOAT, false, 0, quadVertexBuffer);
         GLES20.glVertexAttribPointer(texHandle, 2, GLES20.GL_FLOAT, false, 0, textureVertexBuffer);
         GLES20.glEnableVertexAttribArray(posHandle);
@@ -429,15 +466,16 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
     }
 
     private void drawEye(int program, float parallax, float convergence, float shift) {
+        // `program` is always dibr3dProgram; the locations were resolved with it.
         GLES20.glUseProgram(program);
-        int posHandle = GLES20.glGetAttribLocation(program, "a_Position");
-        int texHandle = GLES20.glGetAttribLocation(program, "a_TexCoord");
-        int colorTexHandle = GLES20.glGetUniformLocation(program, "s_ColorTexture");
-        int depthTexHandle = GLES20.glGetUniformLocation(program, "s_DepthTexture");
-        int parallaxHandle = GLES20.glGetUniformLocation(program, "u_parallax");
-        int convergenceHandle = GLES20.glGetUniformLocation(program, "u_convergence");
-        int shiftHandle = GLES20.glGetUniformLocation(program, "u_shift");
-        int debugModeHandle = GLES20.glGetUniformLocation(program, "u_debugMode");
+        int posHandle = eyePosHandle;
+        int texHandle = eyeTexHandle;
+        int colorTexHandle = eyeColorTexHandle;
+        int depthTexHandle = eyeDepthTexHandle;
+        int parallaxHandle = eyeParallaxHandle;
+        int convergenceHandle = eyeConvergenceHandle;
+        int shiftHandle = eyeShiftHandle;
+        int debugModeHandle = eyeDebugModeHandle;
 
         GLES20.glVertexAttribPointer(posHandle, 2, GLES20.GL_FLOAT, false, 0, quadVertexBuffer);
         GLES20.glVertexAttribPointer(texHandle, 2, GLES20.GL_FLOAT, false, 0,
@@ -457,9 +495,9 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
 
         // Guide for the edge-aware depth upsampling: the model-resolution copy of the video frame
         // that the depth map was computed from (see ShaderUtils.FRAGMENT_SHADER_3D).
-        int guideTexHandle = GLES20.glGetUniformLocation(program, "s_GuideTexture");
-        int depthTexelHandle = GLES20.glGetUniformLocation(program, "u_depthTexelSize");
-        int guidedHandle = GLES20.glGetUniformLocation(program, "u_guidedUpsampling");
+        int guideTexHandle = eyeGuideTexHandle;
+        int depthTexelHandle = eyeDepthTexelHandle;
+        int guidedHandle = eyeGuidedHandle;
         GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fboTextureId);
         GLES20.glUniform1i(guideTexHandle, 2);
@@ -584,7 +622,12 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
         }
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-        applyTwoPassGaussianBlur();
+        if (depthFilterDirty) {
+            // Two full-model-resolution passes; only needed when the depth map or the
+            // parallax preference changed, not for every decoded video frame.
+            applyTwoPassGaussianBlur();
+            depthFilterDirty = false;
+        }
         drawWithShader();
         long endTime = System.nanoTime();
 
@@ -642,16 +685,18 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, depthMapTextureId);
             GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, modelInputWidth, modelInputHeight, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, depthMap);
+            depthFilterDirty = true;
         }
     }
 
     private void drawQuad(int program, float scale, float offset) {
+        // `program` is always simple3dProgram; the locations were resolved with it.
         GLES20.glUseProgram(program);
 
-        int posHandle = GLES20.glGetAttribLocation(program, "a_Position");
-        int texHandle = GLES20.glGetAttribLocation(program, "a_TexCoord");
-        int offsetHandle = GLES20.glGetUniformLocation(program, "u_xOffset");
-        int scaleHandle = GLES20.glGetUniformLocation(program, "u_xScale");
+        int posHandle = quadPosHandle;
+        int texHandle = quadTexHandle;
+        int offsetHandle = quadOffsetHandle;
+        int scaleHandle = quadScaleHandle;
 
         GLES20.glVertexAttribPointer(posHandle, 2, GLES20.GL_FLOAT, false, 0, quadVertexBuffer);
         GLES20.glVertexAttribPointer(texHandle, 2, GLES20.GL_FLOAT, false, 0, textureVertexBuffer);

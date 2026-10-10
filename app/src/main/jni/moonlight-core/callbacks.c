@@ -151,8 +151,17 @@ int BridgeDrSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
 
     // Increase the size of our frame data buffer if our frame won't fit
     if ((*env)->GetArrayLength(env, DecodedFrameBuffer) < decodeUnit->fullLength) {
+        // This thread stays attached for the whole session, so the local reference
+        // from NewByteArray must be released by hand or it accumulates per growth.
+        jbyteArray grown = (*env)->NewByteArray(env, decodeUnit->fullLength);
+        if (grown == NULL) {
+            // Out of memory: keep the old buffer and let the caller request a new frame.
+            (*env)->ExceptionClear(env);
+            return DR_NEED_IDR;
+        }
         (*env)->DeleteGlobalRef(env, DecodedFrameBuffer);
-        DecodedFrameBuffer = (*env)->NewGlobalRef(env, (*env)->NewByteArray(env, decodeUnit->fullLength));
+        DecodedFrameBuffer = (*env)->NewGlobalRef(env, grown);
+        (*env)->DeleteLocalRef(env, grown);
     }
 
     PLENTRY currentEntry;
@@ -379,7 +388,9 @@ void BridgeClRumbleTriggers(unsigned short controllerNumber, unsigned short left
 void BridgeClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz) {
     JNIEnv* env = GetThreadEnv();
 
-    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClSetMotionEventStateMethod, controllerNumber, motionType, reportRateHz);
+    // Varargs to a Java short: pass real shorts so CheckJNI accepts values >= 0x8000.
+    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClSetMotionEventStateMethod,
+                                 (short)controllerNumber, motionType, (short)reportRateHz);
     if ((*env)->ExceptionCheck(env)) {
         // We will crash here
         (*JVM)->DetachCurrentThread(JVM);
@@ -409,7 +420,7 @@ void BridgeClSteamHaptic(uint16_t controllerNumber, uint8_t length, const uint8_
         return;
     }
     (*env)->SetByteArrayRegion(env, array, 0, length, (const jbyte*)report);
-    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClSteamHapticMethod, controllerNumber, array);
+    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClSteamHapticMethod, (short)controllerNumber, array);
     (*env)->DeleteLocalRef(env, array);
     if ((*env)->ExceptionCheck(env)) {
         // We will crash here
@@ -485,7 +496,8 @@ Java_com_limelight_nvstream_jni_MoonBridge_startConnection(JNIEnv *env, jclass c
                                                            jstring address, jstring appVersion, jstring gfeVersion,
                                                            jstring rtspSessionUrl, jint serverCodecModeSupport,
                                                            jint width, jint height, jint fps,
-                                                           jint bitrate, jint packetSize, jint streamingRemotely,
+                                                           jint bitrate, jint pyroWaveFallbackBitrate,
+                                                           jint packetSize, jint streamingRemotely,
                                                            jint audioConfiguration, jint supportedVideoFormats,
                                                            jint clientRefreshRateX100,
                                                            jbyteArray riAesKey, jbyteArray riAesIv,
@@ -503,6 +515,7 @@ Java_com_limelight_nvstream_jni_MoonBridge_startConnection(JNIEnv *env, jclass c
             .height = height,
             .fps = fps,
             .bitrate = bitrate,
+            .pyroWaveFallbackBitrate = pyroWaveFallbackBitrate,
             .packetSize = packetSize,
             .streamingRemotely = streamingRemotely,
             .audioConfiguration = audioConfiguration,

@@ -91,6 +91,8 @@ public final class XrStereoPresenter {
     private boolean active;
     private int generation;
     private volatile boolean waitingForFullSpace;
+    // Set when we asked for Full Space; stop() only returns to Home Space in that case.
+    private boolean requestedFullSpace;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Runnable fullSpaceTimeout;
 
@@ -161,6 +163,7 @@ public final class XrStereoPresenter {
                     LimeLog.info("XR stereo: requesting Full Space");
                     // Register first: requestFullSpace may synchronously grant the capability.
                     mainHandler.postDelayed(fullSpaceTimeout, FULL_SPACE_TIMEOUT_MS);
+                    requestedFullSpace = true;
                     scene.requestFullSpace();
                 }
             }
@@ -442,6 +445,10 @@ public final class XrStereoPresenter {
         Consumer<Set<SpatialCapability>> oldCapabilitiesListener = capabilitiesListener;
         Consumer<SpatialModeChangeEvent> oldModeListener = modeListener;
         boolean restorePanel = mainPanelHidden;
+        // Only undo a space change we made: a user who launched the app in Full Space
+        // keeps it.
+        boolean leaveFullSpace = requestedFullSpace;
+        requestedFullSpace = false;
         scene = null;
         session = null; // lifecycle-bound to the activity; no explicit destroy API
         entity = null;
@@ -466,6 +473,6 @@ public final class XrStereoPresenter {
             if (oldMovable != null) cleanup(() -> oldEntity.removeComponent(oldMovable));
             cleanup(oldEntity::dispose);
         }
-        if (oldScene != null) cleanup(oldScene::requestHomeSpace);
+        if (oldScene != null && leaveFullSpace) cleanup(oldScene::requestHomeSpace);
     }
 }

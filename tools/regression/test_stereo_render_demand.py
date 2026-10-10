@@ -60,7 +60,7 @@ public class StereoDemand {
  boolean readPixelsForAI(ByteBuffer b){readbacks++;return readbackWorks;}
  double hasSceneChangedFast(ByteBuffer a,ByteBuffer b){return 10;}
  void uploadLatestDepthMapToGpu(ByteBuffer b){uploads++;}
- void applyTwoPassGaussianBlur(){}void drawWithShader(){draws++;}
+ boolean depthFilterDirty=true;int blurs; void applyTwoPassGaussianBlur(){blurs++;}void drawWithShader(){draws++;}
  void recycle(){RenderResult r=depthSession.inferenceInputQueue.poll();if(r!=null)depthSession.freeInputBuffers.offer(r.pixelBuffer);}
  static class WaitingFlag {
   volatile boolean value;Runnable beforeClear;

@@ -152,6 +152,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private final TouchContext[] touchContextMap = new TouchContext[2];
     private final TouchContext[] trackpadContextMap = new TouchContext[2];
     private PanZoomHandler panZoomHandler;
+
+    /** StreamContainer swapped the view that carries the stream (XR -> flat fallback). */
+    public void onStreamViewReplaced(View view) {
+        if (panZoomHandler != null) {
+            panZoomHandler.setStreamView(view);
+        }
+    }
     private long threeFingerDownTime = 0;
     private long fourFingerDownTime = 0;
     private long fiveFingerDownTime = 0;

@@ -67,6 +67,7 @@ public class StereoInitialization {
   static String SIMPLE_VERTEX_SHADER="",SIMPLE_FRAGMENT_SHADER="",VERTEX_SHADER="";
   static String OPTIMIZED_SINGLE_PASS_GAUSSIAN_BLUR_SHADER="",FRAGMENT_SHADER_3D="";
  }
+ boolean depthFilterDirty; void resolveShaderLocations(){}
  int createExternalOESTexture(){return 1;}int createEmptyTexture(int w,int h){return 1;}
  int createProgram(String v,String f){return 1;}
  void initializeFilterFbo(){}void initializeIntermediateFbo(){}void initializeFbo(){}void initializePBOs(){}

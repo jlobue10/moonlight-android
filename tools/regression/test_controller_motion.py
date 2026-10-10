@@ -61,6 +61,7 @@ public class MotionRegression {
  }
  boolean stopped;
  final Contexts inputDeviceContexts=new Contexts();
+ InputDeviceContext[] inputDeviceContextSnapshot=new InputDeviceContext[0];
  final ConcurrentHashMap<Integer,UsbDeviceContext> usbDeviceContexts=new ConcurrentHashMap<>();
  final Handler backgroundThreadHandler=new Handler();
  final SensorManager deviceSensorManager=new SensorManager();
@@ -73,7 +74,7 @@ suffix = r'''
  public static void main(String[] args){
   for(int requested:new int[]{250,65535}){
    MotionRegression r=new MotionRegression();InputDeviceContext ctx=new InputDeviceContext();
-   ctx.sensorManager=r.deviceSensorManager;r.inputDeviceContexts.add(ctx);boolean accepted=true;
+   ctx.sensorManager=r.deviceSensorManager;r.inputDeviceContexts.add(ctx);r.inputDeviceContextSnapshot=new InputDeviceContext[]{ctx};boolean accepted=true;
    try {r.handleSetMotionEventState((short)0,(byte)2,(short)requested);}
    catch(SecurityException e){accepted=false;}
    check(accepted && ctx.sensorManager.period==5000,"Android sensors stay at 200 Hz for wire rate "+requested);
