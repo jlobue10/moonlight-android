@@ -1098,7 +1098,10 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 tflite = new Interpreter(loadModelFile(), new Interpreter.Options().addDelegate(gpuDelegate));
                 backend = "GPU " + depthModel.shortName();
                 return;
-            } catch (Exception e) {
+            } catch (Exception | LinkageError | OutOfMemoryError e) {
+                // A missing delegate library or a model too large for this device is an
+                // Error, not an Exception; it must still fall through to the next backend
+                // (and finally to the flat map) instead of leaving the stream without a surface.
                 LimeLog.info("GPU delegate unavailable: " + e.getMessage());
                 closeTfLite();
             }
@@ -1106,7 +1109,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
                 nnApiDelegate = new NnApiDelegate();
                 tflite = new Interpreter(loadModelFile(), new Interpreter.Options().addDelegate(nnApiDelegate));
                 backend = "NNAPI " + depthModel.shortName();
-            } catch (Exception e) {
+            } catch (Exception | LinkageError | OutOfMemoryError e) {
                 LimeLog.info("NNAPI delegate unavailable: " + e.getMessage());
                 reinitializeTfLiteOnCpu();
             }
@@ -1117,7 +1120,7 @@ public class Stereo3DRenderer implements GLSurfaceView.Renderer, SurfaceTexture.
             try {
                 tflite = new Interpreter(loadModelFile(), new Interpreter.Options().setNumThreads(4));
                 backend = "CPU " + depthModel.shortName();
-            } catch (Exception e) {
+            } catch (Exception | LinkageError | OutOfMemoryError e) {
                 LimeLog.severe("Failed to initialize the depth model on CPU: " + e.getMessage());
             }
         }

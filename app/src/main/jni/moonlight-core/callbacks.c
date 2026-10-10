@@ -352,6 +352,11 @@ void BridgeClSetHdrMode(bool enabled) {
     }
 
     (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClSetHdrModeMethod, enabled, hdrMetadataByteArray);
+    if (hdrMetadataByteArray != NULL) {
+        // The callback thread stays attached for the whole session; every HDR info
+        // packet queues this callback, so the local would otherwise accumulate.
+        (*env)->DeleteLocalRef(env, hdrMetadataByteArray);
+    }
     if ((*env)->ExceptionCheck(env)) {
         // We will crash here
         (*JVM)->DetachCurrentThread(JVM);

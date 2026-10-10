@@ -17,6 +17,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public class PyroWaveDecoderRenderer {
     private static final int SUBMIT_ERROR = -1;
+    // A submit error latches the native renderer (device lost, failed reset). After this
+    // many consecutive errors the renderer is rebuilt once on the same surface; the same
+    // run of errors again means the device is gone for good.
+    static final int RECREATE_AFTER_ERRORS = 30;
 
     private static final boolean LIBRARY_LOADED = loadLibrary();
 
@@ -28,6 +32,18 @@ public class PyroWaveDecoderRenderer {
     private final ReentrantReadWriteLock handleLock = new ReentrantReadWriteLock();
     private volatile long handle;
     private volatile boolean lastFramePresented;
+
+    // Setup arguments and the last HDR mode, so recreate() can rebuild the renderer.
+    private Surface surface;
+    private int width, height, frameRate;
+    private boolean chroma444, tenBit;
+    private boolean hdrEnabled;
+    private float hdrPeakNits;
+
+    // Touched by the submitting thread only.
+    private int consecutiveSubmitErrors;
+    private boolean recreated;
+    private volatile boolean dead;
 
     private static boolean loadLibrary() {
         // Vulkan 1.3 loaders ship with newer Android releases; the native probe makes the
@@ -64,11 +80,51 @@ public class PyroWaveDecoderRenderer {
             if (!LIBRARY_LOADED || surface == null || !surface.isValid()) {
                 return false;
             }
+            this.surface = surface;
+            this.width = width;
+            this.height = height;
+            this.frameRate = frameRate;
+            this.chroma444 = chroma444;
+            this.tenBit = tenBit;
+            consecutiveSubmitErrors = 0;
+            recreated = false;
+            dead = false;
             handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
             return handle != 0;
         } finally {
             handleLock.writeLock().unlock();
         }
+    }
+
+    /**
+     * Rebuilds the native renderer on the surface given to setup(), keeping the HDR mode.
+     * Called by the submitting thread after a run of submit errors; the surface itself is
+     * still valid then (a destroyed surface goes through cleanup(), not here).
+     */
+    private boolean recreate() {
+        handleLock.writeLock().lock();
+        try {
+            if (handle != 0) {
+                nativeDestroy(handle);
+                handle = 0;
+            }
+            if (surface == null || !surface.isValid()) {
+                return false;
+            }
+            handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
+            if (handle == 0) {
+                return false;
+            }
+            nativeSetHdrMode(handle, hdrEnabled, hdrPeakNits);
+            return true;
+        } finally {
+            handleLock.writeLock().unlock();
+        }
+    }
+
+    /** The renderer failed repeatedly and could not be rebuilt; frames will never show again. */
+    public boolean isDead() {
+        return dead;
     }
 
     /**
@@ -79,6 +135,8 @@ public class PyroWaveDecoderRenderer {
     public void setHdrMode(boolean enabled, float peakNits) {
         handleLock.readLock().lock();
         try {
+            hdrEnabled = enabled;
+            hdrPeakNits = peakNits;
             if (handle != 0) {
                 nativeSetHdrMode(handle, enabled, peakNits);
             }
@@ -89,6 +147,7 @@ public class PyroWaveDecoderRenderer {
 
     public int submitFrame(byte[] data, int length) {
         lastFramePresented = false;
+        int result;
         handleLock.readLock().lock();
         try {
             if (handle == 0) {
@@ -96,12 +155,32 @@ public class PyroWaveDecoderRenderer {
             }
             // Skipped frames are fine: every frame is a keyframe, so the next one recovers.
             // PyroWave has no IDR to request, so an error only asks for the next frame.
-            int result = nativeSubmitFrame(handle, data, length);
+            result = nativeSubmitFrame(handle, data, length);
             lastFramePresented = result == 0;
-            return result == SUBMIT_ERROR ? MoonBridge.DR_NEED_IDR : MoonBridge.DR_OK;
         } finally {
             handleLock.readLock().unlock();
         }
+        if (result != SUBMIT_ERROR) {
+            consecutiveSubmitErrors = 0;
+            return MoonBridge.DR_OK;
+        }
+        // Outside the read lock: recreate() takes the write lock.
+        if (++consecutiveSubmitErrors == RECREATE_AFTER_ERRORS) {
+            if (recreated) {
+                LimeLog.severe("PyroWave renderer failed again after being rebuilt; giving up");
+                dead = true;
+            } else {
+                recreated = true;
+                LimeLog.warning("PyroWave renderer failed " + RECREATE_AFTER_ERRORS + " frames in a row; rebuilding it");
+                if (recreate()) {
+                    consecutiveSubmitErrors = 0;
+                } else {
+                    LimeLog.severe("PyroWave renderer could not be rebuilt");
+                    dead = true;
+                }
+            }
+        }
+        return MoonBridge.DR_NEED_IDR;
     }
 
     /**
