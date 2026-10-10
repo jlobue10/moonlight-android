@@ -18,10 +18,15 @@ usb_bind='    void bindUsbDriver() {\n'+cs[ub:ue]+'    }\n'
 od=block('    protected void onDestroy()')
 us=od.index('        if (usbDriverBindRequested) {');ue2=od.index('        }\n',us)+len('        }\n')
 usb_unbind='    void unbindUsbDriver() {\n'+od[us:ue2]+'    }\n'
-method=(method+'\n'+usb_bind+usb_unbind).replace('Game.this','BleStartLifecycle.this')
+method=(method+'\n'+usb_bind+usb_unbind+'\n'+block('    public void rumble(')+'\n'+block('    public void rumbleTriggers(')+'\n'+block('    public void steamHaptic(')).replace('Game.this','BleStartLifecycle.this').replace('@Override','')
 prefix=r'''
+import java.util.Locale;
 public class BleStartLifecycle {
- boolean finishing,destroyed;Object controllerHandler=new Object();int requests;
+ static class LimeLog {static void info(String s){}}
+ static class ControllerHandler {int rumbles,triggers,haptics;
+  void handleRumble(short n,short l,short h){++rumbles;} void handleRumbleTriggers(short n,short l,short r){++triggers;} void handleSteamHaptic(short n,byte[] r){++haptics;}}
+ boolean rumbleLogActive,triggerRumbleLogActive;
+ boolean finishing,destroyed;ControllerHandler controllerHandler=new ControllerHandler();int requests;
  SteamControllerBleManager steamControllerBle;Prefs prefConfig=new Prefs();
  static final int REQUEST_STEAM_CONTROLLER_BLUETOOTH=1,MODE_PRIVATE=0;
  static class SharedPreferences {static boolean denied; boolean getBoolean(String k,boolean d){return denied;}}
@@ -34,7 +39,7 @@ public class BleStartLifecycle {
  void bindService(Intent i,Object c,int f){++binds;} void unbindService(Object c){++unbinds;}
  void bindUsbDriverIfEnabled(){prefConfig.usbDriver=true;bindUsbDriver();}
  static class Build {static class VERSION {static int SDK_INT=35;}static class VERSION_CODES {static final int M=23;}}
- static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerStickRim;boolean usbDriver;}
+ static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerStickRim;boolean usbDriver,enableRumble=true;}
  static class SteamControllerBleManager {
   static boolean permission=true;static int starts;
   SteamControllerBleManager(Object... args){}void start(){++starts;}
@@ -71,6 +76,14 @@ suffix=r'''
   check(u.binds==1 && u.usbDriverBindRequested,"live activity binds the USB driver once");
   u.unbindUsbDriver();
   check(u.unbinds==1 && !u.usbDriverBindRequested,"a requested bind is unbound even before onServiceConnected");
+  // "Enable Rumble" covers every feedback path, not only the classic rumble callback.
+  for(boolean enabled:new boolean[]{true,false}){
+   BleStartLifecycle r=new BleStartLifecycle();r.prefConfig.enableRumble=enabled;
+   r.rumble((short)0,(short)1,(short)1);r.rumbleTriggers((short)0,(short)1,(short)1);r.steamHaptic((short)0,new byte[]{(byte)0x80,1,2,3,4,5,6,7,8,9});
+   int expected=enabled?1:0;
+   check(r.controllerHandler.rumbles==expected&&r.controllerHandler.triggers==expected&&r.controllerHandler.haptics==expected,
+         "rumble, trigger rumble and Steam haptics all follow the rumble setting (enabled="+enabled+")");
+  }
   if(failures!=0)System.exit(1);
  }
 }

@@ -3619,12 +3619,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     class UsbDeviceContext extends InputDeviceContext {
         public AbstractController device;
 
-//        @Override
-//        public void destroy() {
-//            super.destroy();
-//
-//            // Nothing for now
-//        }
+        @Override
+        public void destroy() {
+            super.destroy();
+
+            // Motors off: the host's last rumble or Steam haptic would otherwise keep
+            // running on a driver-fed controller after the stream ended (until the
+            // activity is destroyed, or indefinitely with an unlimited rumble hold).
+            if (device != null) {
+                device.rumble((short) 0, (short) 0);
+                device.rumbleTriggers((short) 0, (short) 0);
+            }
+        }
 
         @Override
         public void sendControllerArrival() {

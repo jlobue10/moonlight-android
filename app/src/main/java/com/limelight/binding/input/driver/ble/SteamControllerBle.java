@@ -337,6 +337,12 @@ public class SteamControllerBle extends AbstractController {
         synchronized (this) {
             if (stopped) return;
             stopped = true;
+            // From here on every write completion must still clear writeBusy and let the
+            // restore writes drain. A completion that landed between `stopped` and the
+            // later `closing` was dropped by onCharacteristicWrite, so the motors-off and
+            // default-mapping restores never went out and the fallback closed the link
+            // with the controller left out of lizard mode.
+            closing = true;
         }
         handler.removeCallbacksAndMessages(null);
         saveStickExtents();
@@ -498,7 +504,14 @@ public class SteamControllerBle extends AbstractController {
         @Override
         public void onCharacteristicWrite(BluetoothGatt g, BluetoothGattCharacteristic ch, int status) {
             // A closed connection may still deliver its final callback after a reconnect.
-            if (g != gatt || (stopped && !closing)) {
+            if (g != gatt) {
+                return;
+            }
+            if (stopped && !closing) {
+                // Not restoring (no link to restore): release the write slot anyway
+                synchronized (SteamControllerBle.this) {
+                    writeBusy = false;
+                }
                 return;
             }
             if (status != BluetoothGatt.GATT_SUCCESS) {
