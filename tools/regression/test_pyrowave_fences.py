@@ -66,6 +66,8 @@ static VkImageLayout lastPlaneLayout;
 // wrapping-counter fixtures without a test-only change to its implementation.
 template<class T> auto setTimestampMask(T& r,uint64_t mask,int) -> decltype(r.timestampMask=mask,void()) {r.timestampMask=mask;}
 template<class T> void setTimestampMask(T&,uint64_t,long) {}
+template<class T> auto outputSrgb(const T& c,int) -> decltype(c.outputSrgb) {return c.outputSrgb;}
+template<class T> int outputSrgb(const T&,long) {return 0;}
 extern "C" {
 void pyrowave_device_set_command_buffer(pyrowave_device,VkCommandBuffer){}
 pyrowave_result pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder,const pyrowave_gpu_sync_operation*,
@@ -213,6 +215,39 @@ int main(){
    printf("%s incomplete swapchain enumeration is rejected before creating views (case %d)\n",ok?"PASS":"FAIL",failure);
  }
  imageFailure=0;
+ // Exercise production format negotiation, including sRGB-only Android surfaces.
+ static std::vector<VkSurfaceFormatKHR> offered;
+ static VkResult formatResult=VK_SUCCESS;
+ swapVk.GetPhysicalDeviceSurfaceFormatsKHR=[](VkPhysicalDevice,VkSurfaceKHR,uint32_t* n,VkSurfaceFormatKHR* out){
+   if(!out){*n=offered.size();return VK_SUCCESS;}
+   std::copy(offered.begin(),offered.end(),out);*n=offered.size();return formatResult;};
+ swapVk.GetPhysicalDeviceSurfacePresentModesKHR=[](VkPhysicalDevice,VkSurfaceKHR,uint32_t* n,VkPresentModeKHR* out){
+   if(out)*out=VK_PRESENT_MODE_FIFO_KHR;*n=1;return VK_SUCCESS;};
+ const VkSurfaceFormatKHR unorm={VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+ const VkSurfaceFormatKHR srgb={VK_FORMAT_B8G8R8A8_SRGB,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+ const VkSurfaceFormatKHR ten={VK_FORMAT_A2B10G10R10_UNORM_PACK32,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+ const VkSurfaceFormatKHR hdr={VK_FORMAT_A2B10G10R10_UNORM_PACK32,VK_COLOR_SPACE_HDR10_ST2084_EXT};
+ const VkSurfaceFormatKHR p3={VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT};
+ auto formatCase=[&](const char* name,std::vector<VkSurfaceFormatKHR> formats,bool tenBit,bool hdrWanted,
+                     VkFormat expected,bool pq,bool srgbAttachment){
+   offered=std::move(formats);Renderer r;r.vk=swapVk;r.renderPass=(VkRenderPass)1;
+   r.tenBit=tenBit;r.wantHdrSwapchain=hdrWanted;r.contentPq=hdrWanted;
+   bool created=r.recreateSwapchain();auto params=r.cscParams();
+   bool ok=expected==VK_FORMAT_UNDEFINED?!created:
+     created&&r.swapchainFormat==expected&&params.outputPq==pq&&outputSrgb(params,0)==srgbAttachment;
+   recoveryOk &= ok;printf("%s %s\n",ok?"PASS":"FAIL",name);
+ };
+ formatCase("SDR prefers UNORM to avoid a redundant transfer",{srgb,unorm},false,false,unorm.format,false,false);
+ formatCase("10-bit SDR retains its UNORM precision",{unorm,ten},true,false,ten.format,false,false);
+ formatCase("HDR10 keeps PQ output",{unorm,hdr},true,true,hdr.format,true,false);
+ formatCase("sRGB-only SDR surface requests linear shader output",{srgb},false,false,srgb.format,false,true);
+ formatCase("sRGB-only HDR fallback requests linear tone-mapped output",{srgb},true,true,srgb.format,false,true);
+ formatCase("unsupported P3 surface is rejected",{p3},false,false,VK_FORMAT_UNDEFINED,false,false);
+ formatCase("supported sRGB is chosen ahead of unsupported P3",{p3,srgb},false,false,srgb.format,false,true);
+ formatResult=VK_ERROR_SURFACE_LOST_KHR;
+ formatCase("failed surface format enumeration is rejected",{unorm},false,false,VK_FORMAT_UNDEFINED,false,false);
+ formatResult=VK_INCOMPLETE;
+ formatCase("incomplete surface format enumeration is retried by recreation",{unorm},false,false,VK_FORMAT_UNDEFINED,false,false);
  // device remains null: these are fake handles, not native allocations.
  return !initialOk || !timestampsOk || !recoveryOk;
 }
