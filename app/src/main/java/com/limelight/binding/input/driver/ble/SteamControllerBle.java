@@ -158,7 +158,7 @@ public class SteamControllerBle extends AbstractController {
     private boolean writeBusy;
     private long writeRejectedSinceMs = -1;
     // stop() in progress: the restore commands still go out, nothing else does.
-    private boolean closing;
+    private volatile boolean closing;
     private boolean mtuRequested;
     private boolean announced;
     // One warning per link when state reports arrive truncated (an MTU that stayed at 23).
@@ -495,7 +495,7 @@ public class SteamControllerBle extends AbstractController {
                 handleBattery(data);
             } else if (shortId == PING_SHORT) {
                 // ack/ping-pong tied to our writes; nothing to do
-            } else if (data.length >= 40) {
+            } else if (data.length >= 45) {
                 handleState(data);
             } else if (!shortReportLogged) {
                 shortReportLogged = true;

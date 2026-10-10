@@ -56,7 +56,7 @@ public class StereoInitialization {
   SurfaceTexture(int id){}void release(){}void setDefaultBufferSize(int w,int h){}
   void setOnFrameAvailableListener(Object listener){}
  }
- static class Host {void queueEvent(Runnable task){}}
+ static class Host {void queueEvent(Runnable task){}void setContinuousRendering(boolean b){}}
  static class GLES20 {
   static void glDeleteProgram(int p){}static void glDeleteTextures(int n,int[] a,int o){}
   static void glDeleteFramebuffers(int n,int[] a,int o){}
@@ -74,6 +74,7 @@ public class StereoInitialization {
   final ExecutorService inferenceExecutor=Executors.newSingleThreadExecutor();
   final ExecutorService executorService=Executors.newSingleThreadExecutor();
   Future<?> inferenceTask;volatile boolean stopped,modelCreated,modelClosed;
+  final Object depthReady=new Object();
   final int ordinal=sessions.size();
   String backend="CPU";int modelInputWidth=1,modelInputHeight=1;
   DepthSession(){sessions.add(this);}

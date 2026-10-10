@@ -36,7 +36,7 @@ public class StereoSceneCache {
  float ON_DRAW_CHANGE_TRESHOLD=2;
  Boolean isDebugMode=false;
  Object gpuDelegate,nnApiDelegate;
- AtomicBoolean isAiRunning=new AtomicBoolean(true);
+ AtomicBoolean isAiRunning=new AtomicBoolean(true); final Object depthReady=new Object();
  AtomicInteger completedDepthFrames=new AtomicInteger();
  BlockingQueue<RenderResult> inferenceInputQueue=new ArrayBlockingQueue<>(1);
  BlockingQueue<InferenceResult> filledOutputBuffers=new ArrayBlockingQueue<>(6);

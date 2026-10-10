@@ -47,7 +47,7 @@ public class StereoDemand {
  class DepthSession {
   String backend="CPU";Object tflite=new Object();boolean stopped;
   AtomicInteger completedDepthFrames=new AtomicInteger();
-  AtomicReference<ByteBuffer> latestDepthMap=new AtomicReference<>();AtomicBoolean isAiRunning=new AtomicBoolean();
+  AtomicReference<ByteBuffer> latestDepthMap=new AtomicReference<>();AtomicBoolean isAiRunning=new AtomicBoolean(true);
   ArrayBlockingQueue<ByteBuffer> freeInputBuffers=new ArrayBlockingQueue<>(10),freeSmoothedBuffers=new ArrayBlockingQueue<>(3);
   ArrayBlockingQueue<ByteBuffer> filledOutputBuffers=new ArrayBlockingQueue<>(6);
   ArrayBlockingQueue<RenderResult> inferenceInputQueue=new ArrayBlockingQueue<>(1);

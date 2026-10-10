@@ -754,7 +754,15 @@ namespace {
             vk.GetSwapchainImagesKHR(device, swapchain, &count, nullptr);
             swapchainImages.resize(count);
             vk.GetSwapchainImagesKHR(device, swapchain, &count, swapchainImages.data());
-            return renderPass == VK_NULL_HANDLE || createSwapchainResources();
+            if (renderPass != VK_NULL_HANDLE && !createSwapchainResources()) {
+                // A view, framebuffer or semaphore failed part-way: framebuffers[] and
+                // renderDone[] are shorter than swapchainImages, and the next acquire
+                // would index past them. Tear the partial set down and latch.
+                destroySwapchainResources();
+                renderFailed = true;
+                return false;
+            }
+            return true;
         }
 
         bool createSwapchainResources() {
@@ -830,7 +838,12 @@ namespace {
                 renderFailed = true;
                 return false;
             }
-            return createSwapchain();
+            // A surface that momentarily reports a 0 extent makes createSwapchain bail
+            // before vkCreateSwapchainKHR, and an image acquired for this frame then
+            // stays held. Retry on the next frame rather than waiting for another
+            // OUT_OF_DATE, which never comes once every image is held.
+            swapchainStale = !createSwapchain() && !renderFailed;
+            return !swapchainStale && !renderFailed;
         }
 
         VkShaderModule createShader(const uint32_t *code, size_t size) {
@@ -1251,6 +1264,9 @@ namespace {
             if (renderFailed) {
                 return false;
             }
+            if (swapchainStale && !recreateSwapchain()) {
+                return false;
+            }
             const uint64_t frameStart = nowUs();
 
             // A display acquire can time out after decode was submitted, without a
@@ -1539,6 +1555,7 @@ namespace {
         Plane planes[3];
         bool planesInitialized = false;
         bool renderFailed = false;
+        bool swapchainStale = false;
         bool framePresented = false;
         bool fragmentPath = false;
         uint64_t lastSizeCheckUs = 0;
