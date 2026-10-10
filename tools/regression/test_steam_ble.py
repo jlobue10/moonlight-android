@@ -14,7 +14,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 JAVA = ROOT / 'app/src/main/java'
 STUBS = {
  'android/annotation/SuppressLint.java': 'package android.annotation; public @interface SuppressLint { String[] value(); }',
- 'android/os/Build.java': 'package android.os; public class Build { public static class VERSION { public static int SDK_INT=35; } public static class VERSION_CODES { public static final int M=23; } }',
+ 'android/os/Build.java': 'package android.os; public class Build { public static class VERSION { public static int SDK_INT=35; } public static class VERSION_CODES { public static final int M=23, S=31, TIRAMISU=33; } }',
+ 'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver { public abstract void onReceive(Context c,Intent i); }',
+ 'android/content/Intent.java': '''package android.content; public class Intent { public String action; public Object extra; public int state=-1;
+ public Intent(String a){action=a;} public String getAction(){return action;} @SuppressWarnings("unchecked") public <T> T getParcelableExtra(String k){return (T)extra;}
+ public int getIntExtra(String k,int d){return state<0?d:state;} }''',
+ 'android/content/IntentFilter.java': 'package android.content; public class IntentFilter { public IntentFilter(String a){} public void addAction(String a){} }',
+ 'android/bluetooth/BluetoothManager.java': 'package android.bluetooth; public class BluetoothManager { public BluetoothAdapter adapter=new BluetoothAdapter(); public BluetoothAdapter getAdapter(){return adapter;} }',
+ 'android/bluetooth/BluetoothAdapter.java': '''package android.bluetooth; import java.util.*; public class BluetoothAdapter {
+ public static final String ACTION_STATE_CHANGED="android.bluetooth.adapter.action.STATE_CHANGED", EXTRA_STATE="android.bluetooth.adapter.extra.STATE"; public static final int STATE_ON=12;
+ public boolean enabled=true, deny; public Set<BluetoothDevice> bonded=new HashSet<>();
+ public boolean isEnabled(){return enabled;} public Set<BluetoothDevice> getBondedDevices(){if(deny)throw new SecurityException("policy");return bonded;} }''',
  'android/os/Looper.java': 'package android.os; public class Looper { public static Looper getMainLooper(){return new Looper();} }',
  'android/os/HandlerThread.java': '''package android.os; public class HandlerThread extends Thread { public static int quits;
  public HandlerThread(String n){} public HandlerThread(String n,int p){} public Looper getLooper(){return new Looper();}
@@ -25,14 +35,21 @@ STUBS = {
  public class Handler { public final List<Runnable> delayed=new ArrayList<>(); public Handler(Looper l){}
  public boolean post(Runnable r){r.run();return true;} public boolean postDelayed(Runnable r,long delay){delayed.add(r);return true;}
  public void removeCallbacks(Runnable r){delayed.removeIf(x->x==r);} public void removeCallbacksAndMessages(Object o){delayed.clear();} }''',
- 'android/content/Context.java': '''package android.content; public class Context { public static final int MODE_PRIVATE=0;
- public Context getApplicationContext(){return this;} public SharedPreferences getSharedPreferences(String n,int m){return new SharedPreferences();} }''',
+ 'android/content/Context.java': '''package android.content; import android.bluetooth.*; public class Context { public static final int MODE_PRIVATE=0, RECEIVER_EXPORTED=2; public static final String BLUETOOTH_SERVICE="bluetooth";
+ public static int registrations, unregistrations; public static BroadcastReceiver receiver; public static BluetoothManager manager=new BluetoothManager();
+ public Context getApplicationContext(){return this;} public SharedPreferences getSharedPreferences(String n,int m){return new SharedPreferences();}
+ public Object getSystemService(String n){return manager;}
+ public Intent registerReceiver(BroadcastReceiver r,IntentFilter f){receiver=r;++registrations;return null;}
+ public Intent registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){return registerReceiver(r,f);}
+ public void unregisterReceiver(BroadcastReceiver r){if(receiver!=r)throw new IllegalArgumentException("not registered");receiver=null;++unregistrations;} }''',
  'android/content/SharedPreferences.java': '''package android.content; public class SharedPreferences {
  public float getFloat(String k,float d){return d;} public Editor edit(){return new Editor();}
  public static class Editor { public Editor putFloat(String k,float v){return this;} public void apply(){} } }''',
  'android/bluetooth/BluetoothProfile.java': 'package android.bluetooth; public interface BluetoothProfile { int STATE_CONNECTED=2, STATE_DISCONNECTED=0; }',
  'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth; import android.content.Context; public class BluetoothDevice {
- public static final int TRANSPORT_LE=2; public boolean deny; public Runnable onConnect; public BluetoothGatt next = new BluetoothGatt(); public String getAddress(){return "00:00:00:00:00:01";}
+ public static final int TRANSPORT_LE=2; public static final String ACTION_ACL_CONNECTED="android.bluetooth.device.action.ACL_CONNECTED", EXTRA_DEVICE="android.bluetooth.device.extra.DEVICE";
+ public boolean deny; public Runnable onConnect; public BluetoothGatt next = new BluetoothGatt(); public String address="00:00:00:00:00:01", name="Steam Controller";
+ public String getAddress(){return address;} public String getName(){return name;}
  public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb){if(deny)throw new SecurityException();if(onConnect!=null){Runnable r=onConnect;onConnect=null;r.run();}return next;}
  public BluetoothGatt connectGatt(Context c,boolean a,BluetoothGattCallback cb,int transport){return connectGatt(c,a,cb);} }''',
  'android/bluetooth/BluetoothGatt.java': '''package android.bluetooth; import java.util.*; public class BluetoothGatt {
@@ -178,6 +195,23 @@ public class BleRegression {
   check(states==before+1,"reconnect resends a held state identical to the previous connection's last state");
   before=states;notify.value[1]=0;callback.onCharacteristicChanged(fresh,notify);
   check(states==before+1,"button release remains observable after reconnect and deduplication");
+  // The manager must watch for controllers even when Bluetooth is off (or the bonded list
+  // is refused) at stream start: a controller switched on later, or the adapter turned on,
+  // is picked up through the receiver, which used to be registered only after enumeration.
+  {ManagerHarness m=new ManagerHarness();Context.manager.adapter.enabled=false;Context.manager.adapter.bonded.clear();Context.registrations=0;Context.receiver=null;
+   m.start();check(Context.registrations==1&&Context.receiver!=null&&m.drivers.isEmpty(),"the receiver is registered while Bluetooth is off");
+   Context.manager.adapter.enabled=true;Context.manager.adapter.bonded.add(new BluetoothDevice());
+   Intent on=new Intent(BluetoothAdapter.ACTION_STATE_CHANGED);on.state=BluetoothAdapter.STATE_ON;Context.receiver.onReceive(m.context,on);
+   check(m.drivers.size()==1,"the adapter turning on enumerates bonded controllers");
+   m.start();check(Context.registrations==1&&m.drivers.size()==1,"a second start neither re-registers nor duplicates drivers");
+   m.stop();check(Context.receiver==null&&m.drivers.isEmpty(),"stop unregisters the receiver and stops the drivers");}
+  {ManagerHarness m=new ManagerHarness();Context.manager.adapter.enabled=true;Context.manager.adapter.deny=true;Context.manager.adapter.bonded.clear();Context.registrations=0;Context.receiver=null;
+   m.start();check(Context.registrations==1&&Context.receiver!=null,"the receiver is registered when the bonded list is refused");
+   Context.manager.adapter.deny=false;BluetoothDevice later=new BluetoothDevice();later.address="00:00:00:00:00:02";
+   Intent acl=new Intent(BluetoothDevice.ACTION_ACL_CONNECTED);acl.extra=later;Context.receiver.onReceive(m.context,acl);
+   check(m.drivers.size()==1,"a later ACL connection starts the driver");
+   BluetoothDevice other=new BluetoothDevice();other.name="Keyboard";acl.extra=other;Context.receiver.onReceive(m.context,acl);
+   check(m.drivers.size()==1,"an ACL connection from another device is ignored");m.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
@@ -185,16 +219,25 @@ public class BleRegression {
 manager_path='app/src/main/java/com/limelight/binding/input/driver/ble/SteamControllerBleManager.java'
 manager=(subprocess.check_output(['git','show','HEAD:'+manager_path],cwd=ROOT,text=True)
          if '--baseline' in sys.argv else (ROOT/manager_path).read_text())
-start=manager.index('    private void startDriver(');end=manager.index('{',start);depth=1
-while depth:
-    end+=1;depth+=(manager[end]=='{')-(manager[end]=='}')
+def manager_block(marker):
+    start=manager.index(marker);end=manager.index('{',start);depth=1
+    while depth:
+        end+=1;depth+=(manager[end]=='{')-(manager[end]=='}')
+    return manager[start:end+1]
+manager_methods=[manager_block('    private void startDriver('), manager_block('    public synchronized void start()'),
+                 manager_block('    public synchronized void stop()'), manager_block('    public static boolean looksLikeSteamController(')]
+if '    private void enumerateBonded()' in manager:
+    manager_methods.append(manager_block('    private void enumerateBonded()'))
 STUBS['com/limelight/binding/input/driver/ble/ManagerHarness.java'] = """package com.limelight.binding.input.driver.ble;
-import java.util.*;import android.bluetooth.*;import android.content.*;import com.limelight.binding.input.driver.*;
+import java.util.*;import android.bluetooth.*;import android.content.*;import android.os.Build;import com.limelight.LimeLog;import com.limelight.binding.input.driver.*;
 public class ManagerHarness {
- final Map<String,SteamControllerBle> drivers=new HashMap<>();int nextDeviceId;
- Context context=new Context();UsbDriverListener listener;boolean motionEnabled,splitPads,stickRim;
- int gripsMode,rumbleHoldMs,rumbleMethod;public void start(BluetoothDevice d){startDriver(d);}
-""" + manager[start:end+1] + '}'
+ private static final String[] NAME_HINTS = {"steam controller", "steam ctrl", "steamcontroller"};
+ public final Map<String,SteamControllerBle> drivers=new HashMap<>();int nextDeviceId;
+ public Context context=new Context();UsbDriverListener listener;boolean motionEnabled,splitPads,stickRim;
+ int gripsMode,rumbleHoldMs,rumbleMethod;BroadcastReceiver aclReceiver;
+ static boolean hasPermission(Context c){return true;}
+ public void start(BluetoothDevice d){startDriver(d);}
+""" + '\n'.join(manager_methods) + '}'
 
 with tempfile.TemporaryDirectory(prefix='ble-regression-') as directory:
     work = pathlib.Path(directory)
