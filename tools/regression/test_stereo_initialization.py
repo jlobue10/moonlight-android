@@ -82,9 +82,11 @@ public class StereoInitialization {
    if(blockFirst && ordinal==0){entered.countDown();awaitNative(finish);}
    modelCreated=true;
   }
-  void adoptTensorLayout(){}void initBuffer(){}
+  static boolean throwLayout;
+  void adoptTensorLayout(){if(throwLayout)throw new IllegalStateException("unexpected tensor shape");}void initBuffer(){}
   void startWorkers(){if(!stopped)workers++;}
   void closeTfLite(){modelClosed=modelCreated;}
+  boolean discardModelAfterFailedInitialization(){closeTfLite();backend="flat (model failed)";return true;}
   // PRODUCTION_STOP
  }
  static void awaitNative(CountDownLatch latch){
@@ -122,6 +124,11 @@ SUFFIX = r'''
   check(!reentrant.isActive && reentrant.workers==0,
         "surface callback teardown is not followed by worker activation");
   reentrant.sessions.get(0).inferenceExecutor.awaitTermination(2,TimeUnit.SECONDS);
+
+  StereoInitialization flat=new StereoInitialization();flat.blockFirst=false;DepthSession.throwLayout=true;
+  try{flat.onSurfaceCreated(null,null);}finally{DepthSession.throwLayout=false;}
+  check(flat.notifications==1 && flat.isActive && flat.workers==0 && "flat (model failed)".equals(flat.renderer),
+        "an init failure outside initializeTfLite still publishes the surface and renders flat");
   System.exit(failures==0?0:1);
  }
 }
