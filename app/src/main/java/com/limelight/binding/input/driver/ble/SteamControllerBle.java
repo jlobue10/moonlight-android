@@ -644,7 +644,9 @@ public class SteamControllerBle extends AbstractController {
             return cmd[5] == 0 && cmd[6] == 0 && cmd[7] == 0 && cmd[8] == 0;
         }
         if (cmd.length >= 9 && cmd[0] == ID_TRIGGER_HAPTIC_PULSE) {
-            return cmd[7] == 0 && cmd[8] == 0;
+            // A zero on-duration is also silent, even when the repeat count is nonzero.
+            // Keep the same stop semantics as the driver, host and native callback queue.
+            return (cmd[3] == 0 && cmd[4] == 0) || (cmd[7] == 0 && cmd[8] == 0);
         }
         if (cmd.length >= 4 && cmd[0] == ID_TRIGGER_HAPTIC_CMD) {
             return cmd[3] == 0;

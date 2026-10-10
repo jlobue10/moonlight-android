@@ -124,6 +124,18 @@ public class BleRegression {
   ((Runnable)get(d,"retryFlush")).run();
   check(!old.closed && old.writes.size()==1 && (boolean)get(d,"writeBusy"),
         "a transient busy response retries without dropping the controller");
+  // A zero-duration pulse is a stop even with a nonzero repeat count. It must
+  // survive the final BLE queue just as it does the driver/host/native queues.
+  d=make();set(d,"writeChar",command());set(d,"writeBusy",true);
+  d.steamHaptic(new byte[]{(byte)0x81,1,0,0,20,0,5,0});
+  for(int i=0;i<1000;i++)d.steamHaptic(new byte[]{(byte)0x81,0,10,0,20,0,5,0});
+  boolean silentPulse=false;
+  for(Object item:(Deque<?>)get(d,"writeQueue")){
+   byte[] cmd=(byte[])item;
+   silentPulse |= (cmd[0]&255)==0x8f && cmd[2]==1 && cmd[3]==0 && cmd[4]==0;
+  }
+  check(silentPulse && ((Deque<?>)get(d,"writeQueue")).size()<=32,
+        "zero-duration stop survives BLE effect overload with nonzero repeat count");
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
