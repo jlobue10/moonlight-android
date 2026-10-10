@@ -83,6 +83,7 @@ namespace {
     X(DestroyInstance) \
     X(EnumeratePhysicalDevices) \
     X(GetPhysicalDeviceProperties) \
+    X(GetPhysicalDeviceFormatProperties) \
     X(GetPhysicalDeviceFeatures2) \
     X(GetPhysicalDeviceQueueFamilyProperties) \
     X(GetPhysicalDeviceMemoryProperties) \
