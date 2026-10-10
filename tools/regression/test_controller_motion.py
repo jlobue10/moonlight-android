@@ -5,6 +5,7 @@ Android 12's permission limit is modeled at registerListener; no physical IMU is
 --baseline reads HEAD rather than the edited ControllerHandler.
 """
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,7 @@ import java.util.*;
 import java.util.concurrent.*;
 public class MotionRegression {
  static class Clock {static long now;}
- static final int NATIVE_MOTION_RATE_HZ=250; static final long MOTION_BURST_WINDOW_NS=16_000_000L;
+ MOTION_CONSTANTS
  static class MoonBridge {static final byte LI_MOTION_TYPE_ACCEL=1, LI_MOTION_TYPE_GYRO=2;}
  static class Sensor {static final int TYPE_ACCELEROMETER=1, TYPE_GYROSCOPE=4;}
  interface SensorEventListener {}
@@ -107,6 +108,9 @@ suffix = r'''
 '''
 with tempfile.TemporaryDirectory(prefix='controller-motion-') as directory:
     work = pathlib.Path(directory)
+    constants = ''.join(m.group(0) + '\n' for m in re.finditer(r'    private static final (?:int NATIVE_MOTION_RATE_HZ|long MOTION_BURST_WINDOW_NS) = [^;]+;', source))
+    assert constants.count(';') == 2, 'production motion constants not found'
+    prefix = prefix.replace(' MOTION_CONSTANTS', constants.replace('private ', ' '))
     code = prefix + method('    public void handleSetMotionEventState(')
     code += method('    public void reportControllerMotion(') + suffix
     (work / 'MotionRegression.java').write_text(code)

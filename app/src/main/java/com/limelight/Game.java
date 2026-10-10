@@ -654,6 +654,14 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
             }
         }
+        // The 3D / XR stereo paths decode into a SurfaceTexture that GL samples with a plain
+        // YUV->RGB matrix and present as SDR sRGB; a PQ/BT.2020 MediaCodec stream would come
+        // out dim and washed out there. PyroWave tone-maps itself, so only the MediaCodec
+        // 10-bit profiles are withheld (willStreamHdr still gates the PyroWave display path).
+        boolean mediaCodecHdr = willStreamHdr && prefConfig.renderMode == 0;
+        if (willStreamHdr && !mediaCodecHdr && !(prefConfig.enablePyroWave && decoderRenderer.isPyroWaveSupported())) {
+            Toast.makeText(this, "HDR10 is only available in 2D mode on this device; streaming SDR", Toast.LENGTH_LONG).show();
+        }
 
         // Check if the user has enabled performance stats overlay
         if (prefConfig.enablePerfOverlay) {
@@ -722,13 +730,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         int supportedVideoFormats = MoonBridge.VIDEO_FORMAT_H264;
         if (decoderRenderer.isHevcSupported()) {
             supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_H265;
-            if (willStreamHdr && decoderRenderer.isHevcMain10Hdr10Supported()) {
+            if (mediaCodecHdr && decoderRenderer.isHevcMain10Hdr10Supported()) {
                 supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_H265_MAIN10;
             }
         }
         if (decoderRenderer.isAv1Supported()) {
             supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_AV1_MAIN8;
-            if (willStreamHdr && decoderRenderer.isAv1Main10Supported()) {
+            if (mediaCodecHdr && decoderRenderer.isAv1Main10Supported()) {
                 supportedVideoFormats |= MoonBridge.VIDEO_FORMAT_AV1_MAIN10;
             }
         }
@@ -853,9 +861,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 .setClientRefreshRateX100((int)(displayRefreshRate * 100))
                 .setAudioConfiguration(prefConfig.audioConfiguration)
                 // The PyroWave renderer converts limited-range BT.709, so request that
-                // whenever PyroWave may be negotiated.
-                .setColorSpace(offerPyroWave ? MoonBridge.COLORSPACE_REC_709 : decoderRenderer.getPreferredColorSpace())
-                .setColorRange(offerPyroWave ? MoonBridge.COLOR_RANGE_LIMITED : decoderRenderer.getPreferredColorRange())
+                // whenever PyroWave may be negotiated. The decoder is told the same values so
+                // its MediaFormat matches what the host encodes if a conventional codec wins.
+                .setColorSpace(decoderRenderer.requestColorSpace(offerPyroWave ? MoonBridge.COLORSPACE_REC_709 : decoderRenderer.getPreferredColorSpace()))
+                .setColorRange(decoderRenderer.requestColorRange(offerPyroWave ? MoonBridge.COLOR_RANGE_LIMITED : decoderRenderer.getPreferredColorRange()))
                 .setPersistGamepadsAfterDisconnect(!prefConfig.multiController)
                 .build();
 
@@ -953,8 +962,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
             if (streamSurfaceView != null) {
                 // Avoid resizes/glitches that break the compositor
-                int vw = (prefConfig != null && prefConfig.width > 0) ? prefConfig.width : displayWidth;
-                int vh = (prefConfig != null && prefConfig.height > 0) ? prefConfig.height : displayHeight;
+                // displayWidth/Height already carry the portrait swap; the unswapped prefs would
+                // scale a portrait stream through a landscape buffer and back.
+                int vw = displayWidth > 0 ? displayWidth : prefConfig.width;
+                int vh = displayHeight > 0 ? displayHeight : prefConfig.height;
                 try { streamSurfaceView.getHolder().setFixedSize(vw, vh); } catch (Throwable ignored) {}
                 try { streamSurfaceView.setZOrderOnTop(false); } catch (Throwable ignored) {}
                 try { streamSurfaceView.setZOrderMediaOverlay(false); } catch (Throwable ignored) {}
@@ -1809,6 +1820,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             return;
         }
         if (!SteamControllerBleManager.hasPermission(this)) {
+            // Asking on every stream start after a denial just produces a toast each time
+            // (Android stops showing the dialog after two denials). Remember the denial;
+            // granting the permission in system settings clears it (hasPermission is true then).
+            SharedPreferences blePrefs = getSharedPreferences("SteamControllerBle", MODE_PRIVATE);
+            if (blePrefs.getBoolean("permission_denied", false)) {
+                return;
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 requestPermissions(new String[]{SteamControllerBleManager.requiredPermission()}, REQUEST_STEAM_CONTROLLER_BLUETOOTH);
             }
@@ -1831,6 +1849,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 startSteamControllerDriver();
             } else {
+                getSharedPreferences("SteamControllerBle", MODE_PRIVATE).edit().putBoolean("permission_denied", true).apply();
                 Toast.makeText(this, R.string.toast_steam_controller_permission, Toast.LENGTH_LONG).show();
             }
         }

@@ -12,7 +12,8 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 if '--baseline' in sys.argv:
-    source = subprocess.check_output(['git', 'show', 'HEAD:app/src/main/java/com/limelight/utils/Stereo3DRenderer.java'], cwd=ROOT, text=True)
+    # The method moved from Stereo3DRenderer to DepthFrameDifference; read it where it lives now.
+    source = subprocess.check_output(['git', 'show', 'HEAD:app/src/main/java/com/limelight/utils/DepthFrameDifference.java'], cwd=ROOT, text=True)
     marker = '    private double hasFrameChangedSignificantlyOCV('
     start = source.index(marker)
     end = source.index('{', start)

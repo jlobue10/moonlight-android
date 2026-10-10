@@ -15,7 +15,7 @@ public class PyroState {
  Object renderTarget;PyroWaveDecoderRenderer pyroWaveRenderer,videoDecoder=new PyroWaveDecoderRenderer();
  final Object pyroWaveStateLock=new Object();boolean requestedHdrEnabled;byte[] requestedHdrMetadata,currentHdrMetadata;
  AtomicInteger codecRecoveryType=new AtomicInteger();
- static final int CR_RECOVERY_TYPE_NONE=0,CR_RECOVERY_TYPE_RESTART=1,CR_RECOVERY_TYPE_FLUSH=2;
+ static final int CR_RECOVERY_TYPE_NONE=0,CR_RECOVERY_TYPE_FLUSH=1,CR_RECOVERY_TYPE_RESTART=2,CR_RECOVERY_TYPE_RESET=3;  // as production
  static class Build{static class VERSION{static final int SDK_INT=35;}static class VERSION_CODES{static final int N=24;}}
  static class MoonBridge{static final int VIDEO_FORMAT_MASK_PYROWAVE=0xf0000,VIDEO_FORMAT_MASK_YUV444=0xa0000,VIDEO_FORMAT_MASK_10BIT=0xc0000;}
  static class LimeLog{static void info(String s){}static void severe(String s){}}
