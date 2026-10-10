@@ -159,6 +159,13 @@ public class SteamControllerBle extends AbstractController {
             new HandlerThread("SteamControllerBle", Process.THREAD_PRIORITY_URGENT_DISPLAY);
     private final Handler handler;
 
+    // Last state handed to the listener (handleState dedup); invalid until the first report
+    // after each announcement so a reconnected controller always resends its state.
+    private boolean reportedStateValid;
+    private int reportedButtonFlags;
+    private float reportedLeftTrigger, reportedRightTrigger;
+    private float reportedLeftStickX, reportedLeftStickY, reportedRightStickX, reportedRightStickY;
+
     private volatile BluetoothGatt gatt;
     private boolean connecting; // guarded by this; connectGatt itself runs outside the lock
     private volatile BluetoothGattCharacteristic writeChar;
@@ -1110,7 +1117,25 @@ public class SteamControllerBle extends AbstractController {
         if (stickRim) {
             calibrateSticks();
         }
-        reportInput();
+        // The firmware streams at 250 Hz whether or not anything moved. An unchanged
+        // state would still cost the handler's aggregation pass, a JNI call and a reliable
+        // ENet packet (plus its ACK) each time; the host keeps the last state on its own.
+        if (reportedStateValid && buttonFlags == reportedButtonFlags
+                && leftTrigger == reportedLeftTrigger && rightTrigger == reportedRightTrigger
+                && leftStickX == reportedLeftStickX && leftStickY == reportedLeftStickY
+                && rightStickX == reportedRightStickX && rightStickY == reportedRightStickY) {
+            // unchanged
+        } else {
+            reportedStateValid = true;
+            reportedButtonFlags = buttonFlags;
+            reportedLeftTrigger = leftTrigger;
+            reportedRightTrigger = rightTrigger;
+            reportedLeftStickX = leftStickX;
+            reportedLeftStickY = leftStickY;
+            reportedRightStickX = rightStickX;
+            reportedRightStickY = rightStickY;
+            reportInput();
+        }
 
         // Touchpads: normalised 0..1 with (0,0) top-left, as SDL does; pressure 0..1
         boolean lTouch = bit(buttons, BTN_LPAD_TOUCH);

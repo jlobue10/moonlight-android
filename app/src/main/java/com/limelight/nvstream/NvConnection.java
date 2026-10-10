@@ -502,6 +502,10 @@ public class NvConnection {
                             context.serverCodecModeSupport,
                             context.negotiatedWidth, context.negotiatedHeight,
                             context.streamConfig.getRefreshRate(), getNegotiatedBitrate(),
+                            // If the host turns out not to offer a compatible PyroWave bitstream,
+                            // common-c falls back to a conventional codec at the slider bitrate
+                            // rather than the PyroWave bits-per-pixel budget.
+                            context.streamConfig.getBitrate(),
                             context.negotiatedPacketSize, context.negotiatedRemoteStreaming,
                             context.streamConfig.getAudioConfiguration().toInt(),
                             context.streamConfig.getSupportedVideoFormats(),
