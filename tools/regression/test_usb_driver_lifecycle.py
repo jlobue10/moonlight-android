@@ -189,8 +189,8 @@ PROCON_STOP
   for(int i=0;i<1000;i++){
    final AtomicInteger removed=new AtomicInteger();
    UsbDriverListener l=new UsbDriverListener(){public void deviceAdded(Object c){} public void deviceRemoved(Object c){removed.incrementAndGet();}};
-   Xbox x=new Xbox(l);x.begin();
-   Thread t=new Thread(x::stop);t.start();t.join();x.inputThread.join(5000);
+   Xbox x=new Xbox(l);x.begin();Thread inputThread=x.inputThread;  // stop() nulls the field
+   Thread t=new Thread(x::stop);t.start();t.join();inputThread.join(5000);
    if(removed.get()!=1)++doubleRemovals; if(x.connection.closes.get()!=1)++doubleCloses; if(x.connection.releases.get()!=2)++partialReleases;
   }
   check(doubleRemovals==0,"Xbox: the input thread's own stop and the service's stop report exactly one removal across 1000 races");
