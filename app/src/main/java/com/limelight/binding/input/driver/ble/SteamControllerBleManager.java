@@ -171,6 +171,7 @@ public final class SteamControllerBleManager {
         drivers.put(address, driver);
         if (!driver.start()) {
             drivers.remove(address);
+            driver.stop();
         }
     }
 
