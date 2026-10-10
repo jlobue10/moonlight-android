@@ -1797,7 +1797,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
      * needs BLUETOOTH_CONNECT on Android 12+. Ask once per stream start when it is missing.
      */
     private void startSteamControllerDriver() {
-        if (controllerHandler == null) {
+        // Permission results can arrive after the activity starts shutting down too.
+        if (isFinishing() || isDestroyed() || controllerHandler == null) {
             return;
         }
         if (!SteamControllerBleManager.hasPermission(this)) {

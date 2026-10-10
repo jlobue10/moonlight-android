@@ -127,6 +127,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     private long lastTimestampUs;
     private int lastFrameNumber;
+    private int lastSkippedVideoFrames;
     private long baseTimestampUs;
     private int refreshRate;
     private PreferenceConfiguration prefs;
@@ -1532,6 +1533,28 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     }
 
+    private void recordFrameStats(int frameNumber) {
+        int skipped = 0;
+        if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
+            int cumulative = MoonBridge.getSkippedVideoFrames();
+            // Java subtraction preserves the uint32 delta across counter wrap.
+            skipped = Math.max(0, cumulative - lastSkippedVideoFrames);
+            lastSkippedVideoFrames = cumulative;
+            activeWindowVideoStats.totalFramesSkipped += skipped;
+            activeWindowVideoStats.totalFramesReceived += skipped;
+            activeWindowVideoStats.totalFrames += skipped;
+        }
+        if (lastFrameNumber == 0) {
+            activeWindowVideoStats.measurementStartTimestamp = SystemClock.uptimeMillis();
+        } else if (frameNumber != lastFrameNumber && frameNumber != lastFrameNumber + 1) {
+            // Native newest-frame skips are complete received frames, not network loss.
+            int lost = Math.max(0, frameNumber - lastFrameNumber - 1 - skipped);
+            activeWindowVideoStats.framesLost += lost;
+            activeWindowVideoStats.totalFrames += lost;
+            if (lost != 0) activeWindowVideoStats.frameLossEvents++;
+        }
+    }
+
     @SuppressWarnings("deprecation")
     @Override
     public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
@@ -1542,15 +1565,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             return MoonBridge.DR_OK;
         }
 
-        if (lastFrameNumber == 0) {
-            activeWindowVideoStats.measurementStartTimestamp = SystemClock.uptimeMillis();
-        } else if (frameNumber != lastFrameNumber && frameNumber != lastFrameNumber + 1) {
-            // We can receive the same "frame" multiple times if it's an IDR frame.
-            // In that case, each frame start NALU is submitted independently.
-            activeWindowVideoStats.framesLost += frameNumber - lastFrameNumber - 1;
-            activeWindowVideoStats.totalFrames += frameNumber - lastFrameNumber - 1;
-            activeWindowVideoStats.frameLossEvents++;
-        }
+        recordFrameStats(frameNumber);
 
         // Reset CSD data for each IDR frame
         if (lastFrameNumber != frameNumber && frameType == MoonBridge.FRAME_TYPE_IDR) {
@@ -1585,7 +1600,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                     decoder = "(unknown)";
                 }
 
-                float decodeTimeMs = (float)lastTwo.decoderTimeMs / lastTwo.totalFramesReceived;
+                float decodeTimeMs = (float)lastTwo.decoderTimeMs / Math.max(1, lastTwo.getSubmittedFrames());
                 long rttInfo = MoonBridge.getEstimatedRttInfo();
                 StringBuilder sb = new StringBuilder();
                 if(prefs.enablePerfOverlayLite){
@@ -2075,17 +2090,17 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     }
 
     public int getAverageEndToEndLatency() {
-        if (globalVideoStats.totalFramesReceived == 0) {
+        if (globalVideoStats.getSubmittedFrames() == 0) {
             return 0;
         }
-        return (int)(globalVideoStats.totalTimeMs / globalVideoStats.totalFramesReceived);
+        return (int)(globalVideoStats.totalTimeMs / globalVideoStats.getSubmittedFrames());
     }
 
     public int getAverageDecoderLatency() {
-        if (globalVideoStats.totalFramesReceived == 0) {
+        if (globalVideoStats.getSubmittedFrames() == 0) {
             return 0;
         }
-        return (int)(globalVideoStats.decoderTimeMs / globalVideoStats.totalFramesReceived);
+        return (int)(globalVideoStats.decoderTimeMs / globalVideoStats.getSubmittedFrames());
     }
 
     public Boolean performanceWasTracked() {
@@ -2229,6 +2244,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             str += "Frames in-out: "+renderer.numFramesIn+", "+renderer.numFramesOut+DELIMITER;
             str += "Total frames received: "+renderer.globalVideoStats.totalFramesReceived+DELIMITER;
             str += "Total frames rendered: "+renderer.globalVideoStats.totalFramesRendered+DELIMITER;
+            str += "Frames skipped before decode: "+renderer.globalVideoStats.totalFramesSkipped+DELIMITER;
             str += "Frame losses: "+renderer.globalVideoStats.framesLost+" in "+renderer.globalVideoStats.frameLossEvents+" loss events"+DELIMITER;
             str += "Average end-to-end client latency: "+renderer.getAverageEndToEndLatency()+"ms"+DELIMITER;
             str += "Average hardware decoder latency: "+renderer.getAverageDecoderLatency()+"ms"+DELIMITER;

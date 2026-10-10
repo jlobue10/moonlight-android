@@ -428,6 +428,8 @@ public class MoonBridge {
 
     public static native int getPendingVideoFrames();
 
+    public static native int getSkippedVideoFrames();
+
     public static native int testClientConnectivity(String testServerHostName, int referencePort, int testFlags);
 
     public static native int getPortFlagsFromStage(int stage);
