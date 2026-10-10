@@ -237,7 +237,7 @@ public class ManagerHarness {
  int gripsMode,rumbleHoldMs,rumbleMethod;BroadcastReceiver aclReceiver;
  static boolean hasPermission(Context c){return true;}
  public void start(BluetoothDevice d){startDriver(d);}
-""" + '\n'.join(manager_methods) + '}'
+""" + '\n'.join(manager_methods).replace('SteamControllerBleManager.this', 'ManagerHarness.this') + '}'
 
 with tempfile.TemporaryDirectory(prefix='ble-regression-') as directory:
     work = pathlib.Path(directory)
