@@ -11,7 +11,11 @@ boundaries. See each script for the exact boundary being replaced.
 - `test_depth_failure_cleanup.py`: failed-model cleanup blocked across stop; the GL
   waiter exits while native cleanup remains on its owning executor.
 - `test_steam_ble.py`: actual BLE driver; queue limits, stale callbacks,
-  disconnected rumble, subscription failures and write timeout recovery.
+  disconnected rumble, subscription failures, write timeout recovery, and first
+  state delivery across announcement/reconnect while deduplicating live packets.
+- `test_jni_frame_buffer.py`: actual JNI setup, growth and cleanup methods with
+  allocation failure injection; local/global reference ownership and retry after
+  failed growth. Requires JDK JNI headers (`AUDIT_JNI_INCLUDE` can override them).
 - `test_ble_start_lifecycle.py`: actual activity driver-start method; late
   permission callbacks cannot start BLE or request permission during teardown.
 - `test_surface_handoff.py`: actual surface handoff methods; UI dispatch,

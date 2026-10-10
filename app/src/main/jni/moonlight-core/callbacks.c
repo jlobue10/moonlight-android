@@ -106,21 +106,42 @@ Java_com_limelight_nvstream_jni_MoonBridge_init(JNIEnv *env, jclass clazz) {
     BridgeClSteamHapticMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSteamHaptic", "(S[B)V");
 }
 
+// NewGlobalRef can fail independently of NewByteArray. Publish a buffer only
+// after both allocations succeed, and never retain the temporary local reference.
+static jbyteArray createDecodedFrameBuffer(JNIEnv* env, jsize size) {
+    jbyteArray local = (*env)->NewByteArray(env, size);
+    if (local == NULL) {
+        return NULL;
+    }
+    jbyteArray global = (*env)->NewGlobalRef(env, local);
+    (*env)->DeleteLocalRef(env, local);
+    return global;
+}
+
 int BridgeDrSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
     JNIEnv* env = GetThreadEnv();
     int err;
 
+    // Allocate before initializing the decoder so an allocation failure has no
+    // decoder resources to unwind. A successful setup starts with a 32K buffer.
+    jbyteArray buffer = createDecodedFrameBuffer(env, 32768);
+    if (buffer == NULL) {
+        (*env)->ExceptionClear(env);
+        return -1;
+    }
+
     err = (*env)->CallStaticIntMethod(env, GlobalBridgeClass, BridgeDrSetupMethod, videoFormat, width, height, redrawRate);
     if ((*env)->ExceptionCheck(env)) {
+        (*env)->DeleteGlobalRef(env, buffer);
         // This is called on a Java thread, so it's safe to return
         return -1;
     }
     else if (err != 0) {
+        (*env)->DeleteGlobalRef(env, buffer);
         return err;
     }
 
-    // Use a 32K frame buffer that will increase if needed
-    DecodedFrameBuffer = (*env)->NewGlobalRef(env, (*env)->NewByteArray(env, 32768));
+    DecodedFrameBuffer = buffer;
 
     return 0;
 }
@@ -141,6 +162,7 @@ void BridgeDrCleanup(void) {
     JNIEnv* env = GetThreadEnv();
 
     (*env)->DeleteGlobalRef(env, DecodedFrameBuffer);
+    DecodedFrameBuffer = NULL;
 
     (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeDrCleanupMethod);
 }
@@ -151,17 +173,14 @@ int BridgeDrSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
 
     // Increase the size of our frame data buffer if our frame won't fit
     if ((*env)->GetArrayLength(env, DecodedFrameBuffer) < decodeUnit->fullLength) {
-        // This thread stays attached for the whole session, so the local reference
-        // from NewByteArray must be released by hand or it accumulates per growth.
-        jbyteArray grown = (*env)->NewByteArray(env, decodeUnit->fullLength);
+        jbyteArray grown = createDecodedFrameBuffer(env, decodeUnit->fullLength);
         if (grown == NULL) {
             // Out of memory: keep the old buffer and let the caller request a new frame.
             (*env)->ExceptionClear(env);
             return DR_NEED_IDR;
         }
         (*env)->DeleteGlobalRef(env, DecodedFrameBuffer);
-        DecodedFrameBuffer = (*env)->NewGlobalRef(env, grown);
-        (*env)->DeleteLocalRef(env, grown);
+        DecodedFrameBuffer = grown;
     }
 
     PLENTRY currentEntry;

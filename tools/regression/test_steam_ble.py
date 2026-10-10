@@ -154,6 +154,30 @@ public class BleRegression {
   check(!started&&get(d,"gatt")==null&&connecting.next.closed&&HandlerThread.quits==before+1,
         "stop during connect rejects and closes the late GATT result");
   check(!d.start()&&get(d,"gatt")==null,"a stopped driver cannot restart on its retired looper");
+
+  // Firmware may deliver a state before all subscriptions complete. The listener
+  // has no controller context until onReady announces it, so that state is ignored.
+  d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+  notify=new BluetoothGattCharacteristic("100f6c75-1735-4313-b402-38567131e5f3",16);
+  notify.value=new byte[45];notify.value[1]=1; // A held
+  callback.onCharacteristicChanged(old,notify);
+  old.service.chars.add(command());old.service.chars.add(notify);
+  callback.onServicesDiscovered(old,0);before=states;
+  callback.onCharacteristicChanged(old,notify);
+  check(states==before+1,"first state after announcement is delivered even if seen during subscription setup");
+  before=states;
+  for(int i=0;i<250;i++)callback.onCharacteristicChanged(old,notify);
+  check(states==before,"250 identical states remain deduplicated within a live connection");
+
+  callback.onConnectionStateChange(old,0,0);
+  ((BluetoothDevice)get(d,"device")).next=new BluetoothGatt();d.start();
+  fresh=(BluetoothGatt)get(d,"gatt");fresh.service.chars.clear();
+  fresh.service.chars.add(command());fresh.service.chars.add(notify);
+  callback.onServicesDiscovered(fresh,0);before=states;
+  callback.onCharacteristicChanged(fresh,notify);
+  check(states==before+1,"reconnect resends a held state identical to the previous connection's last state");
+  before=states;notify.value[1]=0;callback.onCharacteristicChanged(fresh,notify);
+  check(states==before+1,"button release remains observable after reconnect and deduplication");
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
