@@ -18,11 +18,20 @@ usb_bind='    void bindUsbDriver() {\n'+cs[ub:ue]+'    }\n'
 od=block('    protected void onDestroy()')
 us=od.index('        if (usbDriverBindRequested) {');ue2=od.index('        }\n',us)+len('        }\n')
 usb_unbind='    void unbindUsbDriver() {\n'+od[us:ue2]+'    }\n'
-method=(method+'\n'+usb_bind+usb_unbind+'\n'+block('    public void rumble(')+'\n'+block('    public void rumbleTriggers(')+'\n'+block('    public void steamHaptic(')).replace('Game.this','BleStartLifecycle.this').replace('@Override','')
+method=(method+'\n'+usb_bind+usb_unbind+'\n'+block('    public void rumble(')+'\n'+block('    public void rumbleTriggers(')+'\n'+block('    public void steamHaptic(')
+        +'\n    DisplayManager.DisplayListener externalDisplayListener;\n'+block('    private void listenForExternalDisplayRemoval()')+'\n'+block('    private void unregisterExternalDisplayListener()')).replace('Game.this','BleStartLifecycle.this').replace('@Override','')
 prefix=r'''
 import java.util.Locale;
 public class BleStartLifecycle {
  static class LimeLog {static void info(String s){}}
+ static class Context {static final String DISPLAY_SERVICE="display";}
+ static class DisplayManager {interface DisplayListener {void onDisplayAdded(int id);void onDisplayRemoved(int id);void onDisplayChanged(int id);}
+  int registered,unregistered;DisplayListener listener;
+  void registerDisplayListener(DisplayListener l,Object h){++registered;listener=l;}
+  void unregisterDisplayListener(DisplayListener l){if(l!=listener)throw new IllegalArgumentException("not registered");++unregistered;listener=null;}}
+ DisplayManager displayManager=new DisplayManager();int displayRemovals,finishes;
+ Object getSystemService(String n){return displayManager;} Object getBaseContext(){return this;}
+ static Object getSecondaryDisplay(Object c){return null;} void handleDisplayRemoved(){++displayRemovals;} void finish(){++finishes;}
  static class ControllerHandler {int rumbles,triggers,haptics;
   void handleRumble(short n,short l,short h){++rumbles;} void handleRumbleTriggers(short n,short l,short r){++triggers;} void handleSteamHaptic(short n,byte[] r){++haptics;}}
  boolean rumbleLogActive,triggerRumbleLogActive;
@@ -76,6 +85,13 @@ suffix=r'''
   check(u.binds==1 && u.usbDriverBindRequested,"live activity binds the USB driver once");
   u.unbindUsbDriver();
   check(u.unbinds==1 && !u.usbDriverBindRequested,"a requested bind is unbound even before onServiceConnected");
+  // The external-display listener is unregistered with the activity (it holds the whole
+  // finished stream otherwise) and a late display removal no longer reaches the dead instance.
+  {BleStartLifecycle e=new BleStartLifecycle();e.listenForExternalDisplayRemoval();e.listenForExternalDisplayRemoval();
+   check(e.displayManager.registered==2&&e.displayManager.unregistered==1&&e.externalDisplayListener!=null,"re-listening replaces the previous listener");
+   DisplayManager.DisplayListener l=e.displayManager.listener;e.unregisterExternalDisplayListener();e.unregisterExternalDisplayListener();
+   check(e.displayManager.unregistered==2&&e.externalDisplayListener==null&&e.displayManager.listener==null,"the listener is unregistered once with the activity");
+   l.onDisplayRemoved(1);check(e.displayRemovals==1&&e.finishes==1,"the listener itself still finishes on removal while registered");}
   // "Enable Rumble" covers every feedback path, not only the classic rumble callback.
   for(boolean enabled:new boolean[]{true,false}){
    BleStartLifecycle r=new BleStartLifecycle();r.prefConfig.enableRumble=enabled;

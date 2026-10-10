@@ -1052,9 +1052,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
     }
 
+    private DisplayManager.DisplayListener externalDisplayListener;
+
     private void listenForExternalDisplayRemoval() {
         DisplayManager displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
-        displayManager.registerDisplayListener(new DisplayManager.DisplayListener() {
+        unregisterExternalDisplayListener();
+        externalDisplayListener = new DisplayManager.DisplayListener() {
             @Override
             public void onDisplayAdded(int displayId) {
             }
@@ -1070,7 +1073,19 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             @Override
             public void onDisplayChanged(int displayId) {
             }
-        }, null);
+        };
+        displayManager.registerDisplayListener(externalDisplayListener, null);
+    }
+
+    private void unregisterExternalDisplayListener() {
+        // The listener holds this activity; left registered it kept the finished
+        // stream (decoder, controller handler, BLE manager, views) alive for the
+        // process lifetime and fired finish() on the dead instance.
+        if (externalDisplayListener != null) {
+            DisplayManager displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+            displayManager.unregisterDisplayListener(externalDisplayListener);
+            externalDisplayListener = null;
+        }
     }
 
     private void handleDisplayRemoved() {
@@ -1774,6 +1789,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         timerHandler.removeCallbacksAndMessages(null);
 
         if (prefConfig.enableFullExDisplay) handleDisplayRemoved();
+        unregisterExternalDisplayListener();
 
         if (steamControllerBle != null) {
             steamControllerBle.stop();
@@ -4539,6 +4555,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             return;
         }
         byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
+        // The flush runnable re-posts itself while the queue is non-empty, so it only
+        // needs a kick on the idle -> busy transition. Deciding that after the loop
+        // (queue size == 1) missed every commit that split into two or more chunks,
+        // which left the queue stuck for the rest of the session.
+        boolean wasIdle = commitTextQueue.isEmpty();
         int offset = 0;
         while (offset < utf8.length) {
             int end = Math.min(offset + UTF8_CHUNK_SIZE, utf8.length);
@@ -4551,7 +4572,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             offset = end;
         }
         // Kick off flushing if not already scheduled
-        if (commitTextQueue.size() == 1) {
+        if (wasIdle && !commitTextQueue.isEmpty()) {
             commitTextHandler.post(flushCommitTextQueue);
         }
     }

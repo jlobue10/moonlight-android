@@ -44,7 +44,8 @@ STUBS = {
  public void unregisterReceiver(BroadcastReceiver r){if(receiver!=r)throw new IllegalArgumentException("not registered");receiver=null;++unregistrations;} }''',
  'android/content/SharedPreferences.java': '''package android.content; public class SharedPreferences {
  public float getFloat(String k,float d){return d;} public Editor edit(){return new Editor();}
- public static class Editor { public Editor putFloat(String k,float v){return this;} public void apply(){} } }''',
+ public static class Editor { public static Runnable onApply; public Editor putFloat(String k,float v){return this;}
+  public void apply(){if(onApply!=null){Runnable r=onApply;onApply=null;r.run();}} } }''',
  'android/bluetooth/BluetoothProfile.java': 'package android.bluetooth; public interface BluetoothProfile { int STATE_CONNECTED=2, STATE_DISCONNECTED=0; }',
  'android/bluetooth/BluetoothDevice.java': '''package android.bluetooth; import android.content.Context; public class BluetoothDevice {
  public static final int TRANSPORT_LE=2; public static final String ACTION_ACL_CONNECTED="android.bluetooth.device.action.ACL_CONNECTED", EXTRA_DEVICE="android.bluetooth.device.extra.DEVICE";
@@ -204,6 +205,21 @@ public class BleRegression {
   byte defaultMappings=(byte)get(d,"ID_SET_DEFAULT_DIGITAL_MAPPINGS"),loadDefaults=(byte)get(d,"ID_LOAD_DEFAULT_SETTINGS");
   check(old.writes.size()==3&&old.writes.get(1)[0]==defaultMappings&&old.writes.get(2)[0]==loadDefaults,
         "a write completing during stop still drains the motors-off and restore writes");
+  // A completion landing while stop() is still running (here: from inside the stick-extent
+  // save) used to see `closing` with an empty queue, close the link and null the GATT before
+  // the restore commands were queued; the motors-off and restores never went out.
+  d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());set(d,"writeBusy",true);set(d,"extentsDirty",true);
+  callback=(BluetoothGattCallback)get(d,"gattCallback");
+  {final BluetoothGattCallback cb=callback;final BluetoothGatt g=old;
+   SharedPreferences.Editor.onApply=()->cb.onCharacteristicWrite(g,command(),0);}
+  d.stop();
+  check(SharedPreferences.Editor.onApply==null&&old.writes.size()==1&&!old.closed,
+        "a completion landing inside stop() writes the motors-off instead of closing the link");
+  for(int i=0;i<2;i++)callback.onCharacteristicWrite(old,command(),0);
+  check(old.writes.size()==3&&old.writes.get(1)[0]==defaultMappings&&old.writes.get(2)[0]==loadDefaults&&!old.closed,
+        "the restore writes drain behind the motors-off");
+  callback.onCharacteristicWrite(old,command(),0);
+  check(old.closed,"the link closes from the last restore completion");
   // The manager must watch for controllers even when Bluetooth is off (or the bonded list
   // is refused) at stream start: a controller switched on later, or the adapter turned on,
   // is picked up through the receiver, which used to be registered only after enumeration.
