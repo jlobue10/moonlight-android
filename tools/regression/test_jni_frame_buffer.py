@@ -34,15 +34,24 @@ prefix = r'''
 typedef struct {int size, locals, globals;} Array;
 static Array original, allocated;
 static jbyteArray DecodedFrameBuffer;
+static jshortArray DecodedAudioBuffer;
 static jclass GlobalBridgeClass;
 static jmethodID BridgeDrSetupMethod=(jmethodID)1, BridgeDrSubmitDecodeUnitMethod=(jmethodID)2, BridgeDrCleanupMethod=(jmethodID)3;
+static jmethodID BridgeArInitMethod=(jmethodID)4, BridgeArCleanupMethod=(jmethodID)5;
 static int failArray, failGlobal, failWithException, pending, invalid, creates, setups, submissions, cleanups, setupResult, setupThrows;
+static int arInits, arInitResult, arInitThrows, decoderCreates, decoderDestroys;
+typedef struct OpusMSDecoder OpusMSDecoder;
+static OpusMSDecoder* Decoder;
+static OPUS_MULTISTREAM_CONFIGURATION OpusConfig;
+static OpusMSDecoder* opus_multistream_decoder_create(int a,int b,int c,int d,const unsigned char* e,int* err){++decoderCreates;*err=0;return (OpusMSDecoder*)&decoderCreates;}
+static void opus_multistream_decoder_destroy(OpusMSDecoder* d){if(d)++decoderDestroys;}
 static int errors, checks;
 static void check(int ok,const char* text){++checks;printf("%s %s\n",ok?"PASS":"FAIL",text);errors+=!ok;}
 static jbyteArray JNICALL makeArray(JNIEnv* e,jsize n){
     ++creates;if(failArray){pending=1;return NULL;}
     allocated=(Array){n,1,0};return (jbyteArray)&allocated;
 }
+static jshortArray JNICALL makeShortArray(JNIEnv* e,jsize n){return (jshortArray)makeArray(e,n);}
 static jobject JNICALL makeGlobal(JNIEnv* e,jobject o){
     if(failGlobal){pending=failWithException;return NULL;}
     if(o==NULL){invalid++;return NULL;}((Array*)o)->globals++;return o;
@@ -53,6 +62,7 @@ static jsize JNICALL length(JNIEnv* e,jarray o){if(!o||pending){invalid++;return
 static void JNICALL setBytes(JNIEnv* e,jbyteArray o,jsize off,jsize n,const jbyte* p){if(!o||pending||off+n>((Array*)o)->size)invalid++;}
 static jint JNICALL callInt(JNIEnv* e,jclass c,jmethodID m,...){
     if(m==BridgeDrSetupMethod){++setups;pending=setupThrows;return setupResult;}
+    if(m==BridgeArInitMethod){++arInits;pending=arInitThrows;return arInitResult;}
     ++submissions;va_list a;va_start(a,m);jbyteArray b=va_arg(a,jbyteArray);va_end(a);
     if(!b||pending)invalid++;return DR_OK;
 }
@@ -61,7 +71,7 @@ static jboolean JNICALL hasException(JNIEnv* e){return pending;}
 static void JNICALL clearException(JNIEnv* e){pending=0;}
 static jint JNICALL detach(JavaVM* vm){return JNI_OK;}
 static const struct JNINativeInterface_ table={
-    .NewByteArray=makeArray,.NewGlobalRef=makeGlobal,.DeleteGlobalRef=dropGlobal,
+    .NewByteArray=makeArray,.NewShortArray=makeShortArray,.NewGlobalRef=makeGlobal,.DeleteGlobalRef=dropGlobal,
     .DeleteLocalRef=dropLocal,.GetArrayLength=length,.SetByteArrayRegion=setBytes,
     .CallStaticIntMethod=callInt,.CallStaticVoidMethod=callVoid,
     .ExceptionCheck=hasException,.ExceptionClear=clearException
@@ -73,6 +83,7 @@ static JNIEnv* GetThreadEnv(void){return &environment;}
 static void reset(void){
     original=(Array){32,0,1};allocated=(Array){0};DecodedFrameBuffer=(jbyteArray)&original;
     failArray=failGlobal=failWithException=pending=invalid=creates=setups=submissions=cleanups=setupResult=setupThrows=0;
+    arInits=arInitResult=arInitThrows=decoderCreates=decoderDestroys=0;Decoder=NULL;DecodedAudioBuffer=NULL;
 }
 '''
 suffix = r'''
@@ -111,11 +122,26 @@ int main(void){
         check(result!=0&&DecodedFrameBuffer==NULL&&allocated.locals==0&&allocated.globals==0,
               throws?"decoder setup exception does not leak the new global reference":"decoder setup rejection does not leak the new global reference");
     }
+    // The decoded-audio buffer follows the same ownership rules as the frame buffer.
+    OPUS_MULTISTREAM_CONFIGURATION opus={.sampleRate=48000,.channelCount=2,.streams=1,.coupledStreams=1,.samplesPerFrame=240};
+    for(int failure=0;failure<2;failure++){
+        reset();failArray=failure==0;failGlobal=failure==1;failWithException=1;
+        result=BridgeArInit(0,&opus,NULL,0);
+        check(result!=0&&arInits==1&&decoderCreates==1&&decoderDestroys==1&&Decoder==NULL&&DecodedAudioBuffer==NULL&&allocated.locals==0&&allocated.globals==0&&!pending&&cleanups==1,
+              failure?"audio init stops cleanly if the global reference cannot be allocated":"audio init stops cleanly if the array cannot be allocated");
+    }
+    reset();arInitResult=-2;result=BridgeArInit(0,&opus,NULL,0);
+    check(result!=0&&decoderCreates==0&&DecodedAudioBuffer==NULL&&creates==0,"audio init rejection allocates nothing");
+    reset();result=BridgeArInit(0,&opus,NULL,0);
+    check(result==0&&DecodedAudioBuffer==(jshortArray)&allocated&&allocated.globals==1&&allocated.locals==0&&Decoder!=NULL&&allocated.size==480,
+          "successful audio init owns one global reference, no local reference, and the decoder");
+    BridgeArCleanup();
+    check(DecodedAudioBuffer==NULL&&Decoder==NULL&&allocated.globals==0&&decoderDestroys==1&&cleanups==1,"audio cleanup releases and clears the buffer and the decoder");
     printf("%d checks, %d failures\n",checks,errors);return errors!=0;
 }
 '''
 helper = block('static jbyteArray createDecodedFrameBuffer(') if 'static jbyteArray createDecodedFrameBuffer(' in source else ''
-code = prefix + helper + '\n'.join(block(m) for m in ['int BridgeDrSetup(', 'void BridgeDrCleanup(', 'int BridgeDrSubmitDecodeUnit(']) + suffix
+code = prefix + helper + '\n'.join(block(m) for m in ['int BridgeDrSetup(', 'void BridgeDrCleanup(', 'int BridgeDrSubmitDecodeUnit(', 'int BridgeArInit(', 'void BridgeArCleanup(']) + suffix
 props = subprocess.run(['java', '-XshowSettings:properties', '-version'], capture_output=True, text=True, check=True).stderr
 jdk = Path(re.search(r'java.home = (.+)', props).group(1).strip())
 jni_include = Path(os.environ.get('AUDIT_JNI_INCLUDE', str(jdk / 'include')))

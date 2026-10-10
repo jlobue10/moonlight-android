@@ -19,7 +19,7 @@ public abstract class AbstractXboxController extends AbstractController {
     protected final UsbDeviceConnection connection;
 
     private Thread inputThread;
-    private boolean stopped;
+    private volatile boolean stopped;
 
     protected UsbEndpoint inEndpt, outEndpt;
 
@@ -146,11 +146,14 @@ public abstract class AbstractXboxController extends AbstractController {
     }
 
     public void stop() {
-        if (stopped) {
-            return;
+        // The input thread stops itself on an I/O error while the service may be stopping
+        // it from the main thread; only one of them may release and close the connection.
+        synchronized (this) {
+            if (stopped) {
+                return;
+            }
+            stopped = true;
         }
-
-        stopped = true;
 
         // Cancel any rumble effects
         rumble((short)0, (short)0);

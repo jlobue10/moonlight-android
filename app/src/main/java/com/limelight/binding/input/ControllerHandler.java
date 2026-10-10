@@ -3127,6 +3127,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
 
+        // Reserve the controller number and announce the arrival first, as the state path does;
+        // the first touch or battery notification can precede the first state report.
+        assignControllerNumberIfNeeded(context);
         conn.sendControllerTouchEvent2((byte)context.controllerNumber, eventType, touchpadIndex, pointerId, x, y, pressure);
     }
 
@@ -3140,6 +3143,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
 
+        assignControllerNumberIfNeeded(context);
         conn.sendControllerBatteryEvent((byte)context.controllerNumber, batteryState, batteryPercentage);
     }
 
