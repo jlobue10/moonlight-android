@@ -26,6 +26,7 @@ def block(marker):
 
 PREFIX = r'''
 public class StreamShutdown {
+ final Object surfaceReadyLock = new Object();
  volatile boolean destroyed;
  boolean xrStereo=true,isSurfaceReady;
  int views,notifications;

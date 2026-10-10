@@ -8,6 +8,12 @@ boundaries. See each script for the exact boundary being replaced.
 
 - `test_steam_ble.py`: actual BLE driver; queue limits, stale callbacks,
   disconnected rumble, subscription failures and write timeout recovery.
+- `test_ble_start_lifecycle.py`: actual activity driver-start method; late
+  permission callbacks cannot start BLE or request permission during teardown.
+- `test_surface_handoff.py`: actual surface handoff methods; UI dispatch,
+  duplicate readiness and destruction overlapping a GL notification.
+- `test_video_skip_stats.py`: actual frame statistics methods; native queue skips,
+  true network loss, counter rollover and statistics-window aggregation.
 - `test_stereo_workers.py`: actual worker and delegate setup methods;
   buffer ownership, failure cleanup and interruption.
 - `test_pyrowave_fences.py`: entire native renderer compiled against vendored

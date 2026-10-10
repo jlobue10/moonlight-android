@@ -346,20 +346,29 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     private final Object surfaceReadyLock = new Object();
 
     public void setOnSurfaceAvailable(Runnable callback) {
-        Runnable ready = null;
         synchronized (surfaceReadyLock) {
+            if (destroyed) return;
             this.onSurfaceAvailable = callback;
-            if (isSurfaceReady) {
-                ready = callback;
-            }
         }
-        if (ready != null) {
-            ready.run();
+        post(this::dispatchSurfaceReady);
+    }
+
+    private void dispatchSurfaceReady() {
+        Runnable callback;
+        synchronized (surfaceReadyLock) {
+            if (destroyed || !isSurfaceReady) return;
+            callback = onSurfaceAvailable;
+            // Each registration is consumed once, even if readiness is reported twice.
+            onSurfaceAvailable = null;
         }
+        // All dispatches run on the UI thread, serialized with Game.onDestroy().
+        if (callback != null) callback.run();
     }
 
     public Surface getSurface() {
-        return mCurrentSurface;
+        synchronized (surfaceReadyLock) {
+            return mCurrentSurface;
+        }
     }
 
     public SurfaceView getSurfaceView() {
@@ -376,14 +385,11 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     }
 
     private void notifySurfaceReady() {
-        Runnable callback;
         synchronized (surfaceReadyLock) {
+            if (destroyed) return;
             isSurfaceReady = true;
-            callback = onSurfaceAvailable;
         }
-        if (callback != null) {
-            callback.run();
-        }
+        post(this::dispatchSurfaceReady);
     }
 
     @Override
@@ -393,7 +399,10 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         if (renderMode == StreamMode.MODE_2D && width > 0 && height > 0) {
-            mCurrentSurface = holder.getSurface();
+            synchronized (surfaceReadyLock) {
+                if (destroyed) return;
+                mCurrentSurface = holder.getSurface();
+            }
             notifySurfaceReady();
         }
 
@@ -402,8 +411,10 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         if (renderMode == StreamMode.MODE_2D) {
-            isSurfaceReady = false;
-            mCurrentSurface = null;
+            synchronized (surfaceReadyLock) {
+                isSurfaceReady = false;
+                mCurrentSurface = null;
+            }
         } else if (mStereoRenderer != null && !xrStereo) {
             // The XR stereo renderer does not live in this View's surface; onDestroy() stops it.
             mStereoRenderer.onSurfaceDestroyed();
@@ -422,18 +433,21 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
 
     @Override
     public void onStereo3DSurfaceReady(Surface surface) {
-        if (!destroyed && renderMode != StreamMode.MODE_2D) {
+        synchronized (surfaceReadyLock) {
+            if (destroyed || renderMode == StreamMode.MODE_2D) return;
             mCurrentSurface = surface;
-            notifySurfaceReady();
         }
+        notifySurfaceReady();
     }
 
     public void onDestroy() {
-        if (destroyed) return;
-        destroyed = true;
-        isSurfaceReady = false;
-        mCurrentSurface = null;
-        onSurfaceAvailable = null;
+        synchronized (surfaceReadyLock) {
+            if (destroyed) return;
+            destroyed = true;
+            isSurfaceReady = false;
+            mCurrentSurface = null;
+            onSurfaceAvailable = null;
+        }
         if (mStereoRenderer != null) {
             mStereoRenderer.onSurfaceDestroyed();   // queues its GL cleanup on the host thread
             mStereoRenderer = null;

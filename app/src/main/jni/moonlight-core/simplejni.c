@@ -190,6 +190,11 @@ Java_com_limelight_nvstream_jni_MoonBridge_getPendingVideoFrames(JNIEnv *env, jc
 }
 
 JNIEXPORT jint JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_getSkippedVideoFrames(JNIEnv *env, jclass clazz) {
+    return (jint)LiGetSkippedVideoFrames();
+}
+
+JNIEXPORT jint JNICALL
 Java_com_limelight_nvstream_jni_MoonBridge_testClientConnectivity(JNIEnv *env, jclass clazz, jstring testServerHostName, jint referencePort, jint testFlags) {
     int ret;
     const char* testServerHostNameStr = (*env)->GetStringUTFChars(env, testServerHostName, NULL);

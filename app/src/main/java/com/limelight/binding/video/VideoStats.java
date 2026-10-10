@@ -8,6 +8,7 @@ class VideoStats {
     long totalTimeMs;
     int totalFrames;
     int totalFramesReceived;
+    int totalFramesSkipped;
     int totalFramesRendered;
     int frameLossEvents;
     int framesLost;
@@ -22,6 +23,7 @@ class VideoStats {
         this.totalTimeMs += other.totalTimeMs;
         this.totalFrames += other.totalFrames;
         this.totalFramesReceived += other.totalFramesReceived;
+        this.totalFramesSkipped += other.totalFramesSkipped;
         this.totalFramesRendered += other.totalFramesRendered;
         this.frameLossEvents += other.frameLossEvents;
         this.framesLost += other.framesLost;
@@ -47,6 +49,7 @@ class VideoStats {
         this.totalTimeMs = other.totalTimeMs;
         this.totalFrames = other.totalFrames;
         this.totalFramesReceived = other.totalFramesReceived;
+        this.totalFramesSkipped = other.totalFramesSkipped;
         this.totalFramesRendered = other.totalFramesRendered;
         this.frameLossEvents = other.frameLossEvents;
         this.framesLost = other.framesLost;
@@ -62,6 +65,7 @@ class VideoStats {
         this.totalTimeMs = 0;
         this.totalFrames = 0;
         this.totalFramesReceived = 0;
+        this.totalFramesSkipped = 0;
         this.totalFramesRendered = 0;
         this.frameLossEvents = 0;
         this.framesLost = 0;
@@ -70,6 +74,10 @@ class VideoStats {
         this.totalHostProcessingLatency = 0;
         this.framesWithHostProcessingLatency = 0;
         this.measurementStartTimestamp = 0;
+    }
+
+    int getSubmittedFrames() {
+        return totalFramesReceived - totalFramesSkipped;
     }
 
     VideoStatsFps getFps() {
