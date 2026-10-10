@@ -27,6 +27,7 @@ import com.limelight.binding.input.virtual_controller.keyboard.KeyBoardControlle
 import com.limelight.binding.input.virtual_controller.keyboard.KeyBoardLayoutController;
 import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
+import com.limelight.binding.video.PyroWaveDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnection;
@@ -249,6 +250,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private boolean connectedToUsbDriverService = false;
     private SteamControllerBleManager steamControllerBle;
     private static final int REQUEST_STEAM_CONTROLLER_BLUETOOTH = 0x5C;
+    // Set when bindService() was issued, so onDestroy unbinds even if onServiceConnected never ran.
+    private boolean usbDriverBindRequested;
     private ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
@@ -659,7 +662,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // out dim and washed out there. PyroWave tone-maps itself, so only the MediaCodec
         // 10-bit profiles are withheld (willStreamHdr still gates the PyroWave display path).
         boolean mediaCodecHdr = willStreamHdr && prefConfig.renderMode == 0;
-        if (willStreamHdr && !mediaCodecHdr && !(prefConfig.enablePyroWave && decoderRenderer.isPyroWaveSupported())) {
+        // decoderRenderer is not constructed yet at this point; the static probe answers the same question.
+        if (willStreamHdr && !mediaCodecHdr && !(prefConfig.enablePyroWave && PyroWaveDecoderRenderer.isAvailable())) {
             Toast.makeText(this, "HDR10 is only available in 2D mode on this device; streaming SDR", Toast.LENGTH_LONG).show();
         }
 
@@ -1800,9 +1804,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     .apply();
         }
 
-        if (connectedToUsbDriverService) {
-            // Unbind from the discovery service
+        if (usbDriverBindRequested) {
+            // Unbind from the discovery service; a bind whose onServiceConnected has not
+            // arrived yet is cancelled by this as well.
             unbindService(usbDriverServiceConnection);
+            usbDriverBindRequested = false;
+            connectedToUsbDriverService = false;
         }
 
         // Destroy the capture provider
@@ -3859,9 +3866,17 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         });
 
         if (prefConfig.usbDriver) {
-            // Start the USB driver
-            bindService(new Intent(this, UsbDriverService.class),
-                    usbDriverServiceConnection, Service.BIND_AUTO_CREATE);
+            // Start the USB driver. connectionStarted runs on the connection thread; bind on the
+            // main thread and not at all once the activity is going away, or a bind issued after
+            // onDestroy would never be unbound and the service would claim pads for the process.
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed() || usbDriverBindRequested) {
+                    return;
+                }
+                usbDriverBindRequested = true;
+                bindService(new Intent(Game.this, UsbDriverService.class),
+                        usbDriverServiceConnection, Service.BIND_AUTO_CREATE);
+            });
         }
 
         if (prefConfig.steamControllerBle) {
