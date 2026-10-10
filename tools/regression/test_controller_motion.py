@@ -28,6 +28,7 @@ import java.util.*;
 import java.util.concurrent.*;
 public class MotionRegression {
  static class Clock {static long now;}
+ static final int NATIVE_MOTION_RATE_HZ=250; static final long MOTION_BURST_WINDOW_NS=16_000_000L;
  static class MoonBridge {static final byte LI_MOTION_TYPE_ACCEL=1, LI_MOTION_TYPE_GYRO=2;}
  static class Sensor {static final int TYPE_ACCELEROMETER=1, TYPE_GYROSCOPE=4;}
  interface SensorEventListener {}
@@ -87,7 +88,12 @@ suffix = r'''
   r.handleSetMotionEventState((short)0,(byte)2,(short)100);
   check(ctx.nextAccelReportNs==12345,"gyro rate update preserves the accelerometer deadline");
   for(int i=0;i<250;i++){Clock.now=1_000_000_000L+i*4_000_000L;r.reportControllerMotion(7,(byte)2,1,2,3);}
-  check(r.conn.gyro==100,"250 source samples produce 100 requested motion packets");
+  // Credits let the first samples through at once; the average converges to the request.
+  check(r.conn.gyro>=100 && r.conn.gyro<=104,"250 source samples produce ~100 requested motion packets ("+r.conn.gyro+")");
+  r.conn.gyro=0;r.handleSetMotionEventState((short)0,(byte)2,(short)100);
+  // BLE delivers notifications in bursts: four 4 ms samples arrive together every 16 ms.
+  for(int burst=0;burst<16;burst++){for(int k=0;k<4;k++){Clock.now=3_000_000_000L+burst*16_000_000L+k*100_000L;r.reportControllerMotion(7,(byte)2,1,2,3);}}
+  check(r.conn.gyro>=24 && r.conn.gyro<=30,"bursty delivery still yields ~100 Hz at a 100 Hz request ("+r.conn.gyro+" of 64 in 256 ms)");
   r.conn.gyro=0;r.handleSetMotionEventState((short)0,(byte)2,(short)250);
   for(int i=0;i<250;i++){Clock.now=2_000_000_000L+i*4_000_000L;r.reportControllerMotion(7,(byte)2,1,2,3);}
   check(r.conn.gyro==250,"native-rate request retains all 250 IMU samples");

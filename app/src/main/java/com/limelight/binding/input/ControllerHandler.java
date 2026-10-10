@@ -119,6 +119,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     // Written from the Bluetooth binder thread, the main thread and the connection
     // callback thread; SparseArray's lazy compaction is not safe across them.
     private final ConcurrentHashMap<Integer, UsbDeviceContext> usbDeviceContexts = new ConcurrentHashMap<>();
+    // Driver-fed IMUs (the Steam Controller) report at this rate; a request at or above it
+    // passes every sample through. Lower rates are decimated with credits that a BLE
+    // notification burst (one connection interval's worth) may spend at once.
+    private static final int NATIVE_MOTION_RATE_HZ = 250;
+    private static final long MOTION_BURST_WINDOW_NS = 16_000_000L;
 
     private final NvConnection conn;
     private final Activity activityContext;
@@ -492,7 +497,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 }
 
                 // If the gamepad doesn't have motion sensors, use the on-device sensors as a fallback for player 1
-                if (prefConfig.gamepadMotionSensorsFallbackToDevice && context.controllerNumber == 0 && (prefConfig.forceMotionSensorsFallbackToDevice || devContext.sensorManager == null)) {
+                if (prefConfig.gamepadMotionSensorsFallbackToDevice && context.controllerNumber == 0 && (prefConfig.forceMotionSensorsFallbackToDevice || devContext.sensorManager == null)
+                        && !hasOwnMotionSensors(devContext)) {
                     devContext.sensorManager = deviceSensorManager;
                 }
             } else {
@@ -562,7 +568,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 }
 
                 // If the gamepad doesn't have motion sensors, use the on-device sensors as a fallback for player 1
-                if (prefConfig.gamepadMotionSensorsFallbackToDevice && context.controllerNumber == 0 && (prefConfig.forceMotionSensorsFallbackToDevice || devContext.sensorManager == null)) {
+                if (prefConfig.gamepadMotionSensorsFallbackToDevice && context.controllerNumber == 0 && (prefConfig.forceMotionSensorsFallbackToDevice || devContext.sensorManager == null)
+                        && !hasOwnMotionSensors(devContext)) {
                     devContext.sensorManager = deviceSensorManager;
                 }
             }
@@ -3033,6 +3040,13 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         sendControllerInputPacket(context);
     }
 
+    /** Driver-fed controllers with their own IMU (the Steam Controller) must not have the
+     *  headset's sensors mixed into their motion stream by the device-fallback preference. */
+    private static boolean hasOwnMotionSensors(InputDeviceContext context) {
+        return context instanceof UsbDeviceContext
+                && ((UsbDeviceContext) context).device.getType() == MoonBridge.LI_CTYPE_STEAM;
+    }
+
     @Override
     public void reportControllerMotion(int controllerId, byte motionType, float motionX, float motionY, float motionZ) {
         if (stopped) {
@@ -3050,22 +3064,26 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             if (reportRateHz == 0) {
                 return;
             }
-            // Decimate to the requested rate: the IMU reports at 250 Hz, the host asks for what
-            // its virtual pad consumes (the Steam profile asks for the native rate). Deadlines
-            // advance from the previous slot so jitter does not slow the average rate, with a
-            // quarter-period tolerance for samples that arrive slightly early.
-            long now = System.nanoTime();
-            boolean gyro = motionType == MoonBridge.LI_MOTION_TYPE_GYRO;
-            long periodNs = 1_000_000_000L / reportRateHz;
-            long due = gyro ? context.nextGyroReportNs : context.nextAccelReportNs;
-            if (now + periodNs / 4 < due) {
-                return;
-            }
-            long next = (due == 0 || now - due > periodNs) ? now + periodNs : due + periodNs;
-            if (gyro) {
-                context.nextGyroReportNs = next;
-            } else {
-                context.nextAccelReportNs = next;
+            // The host asks for what its virtual pad consumes (the Steam profile asks for the
+            // native rate, which passes everything through). Lower rates are decimated with a
+            // credit scheme: BLE delivers notifications in bursts once per connection
+            // interval, so a per-sample deadline admitted one sample per burst and starved
+            // the stream. Credits accrue over a burst window and a burst may spend them; the
+            // long-run average still converges to the requested rate.
+            if (reportRateHz < NATIVE_MOTION_RATE_HZ) {
+                long now = System.nanoTime();
+                boolean gyro = motionType == MoonBridge.LI_MOTION_TYPE_GYRO;
+                long periodNs = 1_000_000_000L / reportRateHz;
+                long due = gyro ? context.nextGyroReportNs : context.nextAccelReportNs;
+                if (due != 0 && now < due - MOTION_BURST_WINDOW_NS) {
+                    return;
+                }
+                long next = Math.max(due, now - MOTION_BURST_WINDOW_NS) + periodNs;
+                if (gyro) {
+                    context.nextGyroReportNs = next;
+                } else {
+                    context.nextAccelReportNs = next;
+                }
             }
         }
 
@@ -3578,6 +3596,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         public void sendControllerArrival() {
             byte type = device.getType();
             short capabilities = device.getCapabilities();
+            boolean typeChanged = false;
 
             // Report sensors if the input device has them or we're using built-in sensors for a built-in controller.
             // Steam Controllers bring their own IMU through the driver, so they keep their type and capabilities.
@@ -3591,9 +3610,12 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 }
 
                 type = MoonBridge.LI_CTYPE_UNKNOWN;
+                typeChanged = true;
             }
 
-            if (type != MoonBridge.LI_CTYPE_PS && (capabilities & (MoonBridge.LI_CCAP_GYRO | MoonBridge.LI_CCAP_ACCEL)) != 0) {
+            // Only when the type really was rewritten: a Steam Controller keeps its type and
+            // its own IMU capabilities, so the toast would be wrong on every (re)connect.
+            if (typeChanged) {
                 activityContext.runOnUiThread(() -> {
                     Toast.makeText(activityContext, activityContext.getResources().getText(R.string.toast_controller_type_changed), Toast.LENGTH_LONG).show();
                 });

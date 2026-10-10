@@ -3838,7 +3838,14 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
 
         if (prefConfig.steamControllerBle) {
-            startSteamControllerDriver();
+            // connectionStarted runs on the connection's callback thread; the driver field
+            // is read on the main thread in onDestroy. Start it there, and not at all once
+            // the activity is going away, or a link could outlive the stream unrestored.
+            runOnUiThread(() -> {
+                if (!isFinishing() && !isDestroyed()) {
+                    startSteamControllerDriver();
+                }
+            });
         }
 
         // Report this shortcut being used (off the main thread to prevent ANRs)
@@ -3878,14 +3885,27 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     @Override
     public void rumble(short controllerNumber, short lowFreqMotor, short highFreqMotor) {
         if (prefConfig.enableRumble) {
-            LimeLog.info(String.format((Locale)null, "Rumble on gamepad %d: %04x %04x", controllerNumber, lowFreqMotor, highFreqMotor));
+            // Hosts re-send rumble 20-100 times a second; the stream log flushes every
+            // record, so log only the on/off transitions.
+            boolean active = lowFreqMotor != 0 || highFreqMotor != 0;
+            if (active != rumbleLogActive) {
+                rumbleLogActive = active;
+                LimeLog.info(String.format((Locale)null, "Rumble on gamepad %d: %04x %04x", controllerNumber, lowFreqMotor, highFreqMotor));
+            }
             controllerHandler.handleRumble(controllerNumber, lowFreqMotor, highFreqMotor);
         }
     }
 
+    private boolean rumbleLogActive;
+    private boolean triggerRumbleLogActive;
+
     @Override
     public void rumbleTriggers(short controllerNumber, short leftTrigger, short rightTrigger) {
-        LimeLog.info(String.format((Locale)null, "Rumble on gamepad triggers %d: %04x %04x", controllerNumber, leftTrigger, rightTrigger));
+        boolean active = leftTrigger != 0 || rightTrigger != 0;
+        if (active != triggerRumbleLogActive) {
+            triggerRumbleLogActive = active;
+            LimeLog.info(String.format((Locale)null, "Rumble on gamepad triggers %d: %04x %04x", controllerNumber, leftTrigger, rightTrigger));
+        }
 
         controllerHandler.handleRumbleTriggers(controllerNumber, leftTrigger, rightTrigger);
     }
