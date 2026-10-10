@@ -354,6 +354,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         this.context = activity;
         this.activity = activity;
         this.prefs = prefs;
+        // setup() replaces these with the negotiated size; until then the decoder-selection
+        // heuristics (performance points, >4K HEVC, RFI height limits) need the configured
+        // size rather than 0x0, which made every one of them pass or fail vacuously.
+        this.initialWidth = prefs.width;
+        this.initialHeight = prefs.height;
         this.crashListener = crashListener;
         this.consecutiveCrashCount = consecutiveCrashCount;
         this.glRenderer = glRenderer;
@@ -430,7 +435,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         LimeLog.info("Requesting "+optimalSlicesPerFrame+" slices per frame");
 
         if (consecutiveCrashCount % 2 == 1) {
-            refFrameInvalidationAvc = refFrameInvalidationHevc = false;
+            // Auto mode picks AV1 with RFI on low-latency decoders, so the fallback must
+            // cover it too or a crash loop never engages the safety net.
+            refFrameInvalidationAvc = refFrameInvalidationHevc = refFrameInvalidationAv1 = false;
             LimeLog.warning("Disabling RFI due to previous crash");
         }
     }
@@ -510,6 +517,29 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     }
 
+    // What the host was actually asked for (the PyroWave request forces limited BT.709 even
+    // when a conventional codec ends up streaming); the MediaFormat must say the same.
+    private int requestedColorSpace = -1;
+    private int requestedColorRange = -1;
+
+    public int requestColorSpace(int colorSpace) {
+        requestedColorSpace = colorSpace;
+        return colorSpace;
+    }
+
+    public int requestColorRange(int colorRange) {
+        requestedColorRange = colorRange;
+        return colorRange;
+    }
+
+    private int effectiveColorSpace() {
+        return requestedColorSpace >= 0 ? requestedColorSpace : getPreferredColorSpace();
+    }
+
+    private int effectiveColorRange() {
+        return requestedColorRange >= 0 ? requestedColorRange : getPreferredColorRange();
+    }
+
     public void notifyVideoForeground() {
         foreground = true;
     }
@@ -539,7 +569,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         // Android 7.0 adds color options to the MediaFormat
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             videoFormat.setInteger(MediaFormat.KEY_COLOR_RANGE,
-                    getPreferredColorRange() == MoonBridge.COLOR_RANGE_FULL ?
+                    effectiveColorRange() == MoonBridge.COLOR_RANGE_FULL ?
                             MediaFormat.COLOR_RANGE_FULL : MediaFormat.COLOR_RANGE_LIMITED);
 
             // If the stream is HDR-capable, the decoder will detect transitions in color standards
@@ -547,7 +577,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             if ((getActiveVideoFormat() & MoonBridge.VIDEO_FORMAT_MASK_10BIT) == 0) {
                 // Set color format keys when not in HDR mode, since we know they won't change
                 videoFormat.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
-                switch (getPreferredColorSpace()) {
+                switch (effectiveColorSpace()) {
                     case MoonBridge.COLORSPACE_REC_601:
                         videoFormat.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT601_NTSC);
                         break;
@@ -1268,8 +1298,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         startTime = SystemClock.uptimeMillis();
 
         try {
-            // If we don't have an input buffer index yet, fetch one now
-            while (nextInputBufferIndex < 0 && !stopping) {
+            // If we don't have an input buffer index yet, fetch one now. Give up after the
+            // hang threshold so the DecoderHungException check below is reachable: a codec
+            // back-pressured by a stalled consumer otherwise spun here silently forever.
+            while (nextInputBufferIndex < 0 && !stopping &&
+                    SystemClock.uptimeMillis() - startTime < 5000) {
                 nextInputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
             }
 

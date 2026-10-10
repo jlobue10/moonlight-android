@@ -235,12 +235,30 @@ public class StreamSettings extends AppCompatActivity {
                     .show();
         }
 
+        private DepthModelDownloader depthDownloader;
+
+        @Override
+        public void onDestroy() {
+            // The download posts to the main looper; nothing may touch this fragment after
+            // it is gone (reloadSettings() replaces it on a display change, the XR panel can
+            // close during a 50-98 MB download).
+            if (depthDownloader != null) {
+                depthDownloader.cancel();
+                depthDownloader = null;
+            }
+            super.onDestroy();
+        }
+
         private void startDepthModelDownload(ListPreference pref, DepthModel model, String name) {
             Activity activity = getActivity();
             if (activity == null) {
                 return;
             }
+            if (depthDownloader != null) {
+                depthDownloader.cancel();
+            }
             DepthModelDownloader downloader = new DepthModelDownloader(activity);
+            depthDownloader = downloader;
             ProgressDialog progress = new ProgressDialog(activity);
             progress.setTitle(R.string.depth_model_download_title);
             progress.setMessage(getString(R.string.depth_model_downloading, name));
@@ -257,17 +275,32 @@ public class StreamSettings extends AppCompatActivity {
                     }
                 }
 
+                private boolean gone() {
+                    return activity.isFinishing() || activity.isDestroyed();
+                }
+
+                private void dismissProgress() {
+                    try {
+                        if (progress.isShowing()) progress.dismiss();
+                    } catch (RuntimeException ignored) {
+                        // the window is already gone
+                    }
+                }
+
                 @Override
                 public void onSuccess(DepthModel downloaded) {
-                    progress.dismiss();
-                    pref.setValue(downloaded.prefValue);
+                    dismissProgress();
+                    if (gone()) return;
+                    if (isAdded()) pref.setValue(downloaded.prefValue);
                     Toast.makeText(activity, R.string.depth_model_download_done, Toast.LENGTH_SHORT).show();
                 }
 
                 @Override
                 public void onFailure(DepthModel failed, String reason) {
-                    progress.dismiss();
-                    Toast.makeText(activity, getString(R.string.depth_model_download_failed, reason), Toast.LENGTH_LONG).show();
+                    dismissProgress();
+                    if (gone()) return;
+                    // activity.getString: the fragment may be detached by now.
+                    Toast.makeText(activity, activity.getString(R.string.depth_model_download_failed, reason), Toast.LENGTH_LONG).show();
                 }
             });
         }

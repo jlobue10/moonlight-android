@@ -543,13 +543,17 @@ public class MediaCodecHelper {
         boolean setNewOption = false;
 
 //derflacco
-        // NVIDIA Tegra extra low-latency toggles
+        // NVIDIA Tegra extra low-latency toggles. Only the first attempt reports a new
+        // option: reporting one on every try kept initializeDecoder() looping forever
+        // when configure() failed for an unrelated reason (bad surface, unsupported size).
         if (isNvidiaDecoder(decoderInfo.getName())) {
             safeSet(videoFormat, "media.low-latency.enable", 1);
             safeSet(videoFormat, "vendor.low-latency.enable", 1);
             safeSet(videoFormat, "disable-output-reorder", 1);
             safeSet(videoFormat, "vendor.nvidia.disable-output-reorder", 1);
-            setNewOption = true;
+            if (tryNumber < 1) {
+                setNewOption = true;
+            }
         }
         if (tryNumber < 1 && isAmlogicC2HevcDecoder(decoderInfo.getName())) {
             // Fall through to vdec-lowlatency and the Amlogic vendor extension below.

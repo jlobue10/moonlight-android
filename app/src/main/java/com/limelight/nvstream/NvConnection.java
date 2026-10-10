@@ -287,11 +287,21 @@ public class NvConnection {
 
         context.serverCodecModeSupport = (int)h.getServerCodecModeSupport(serverInfo);
 
-        context.negotiatedHdr = (context.streamConfig.getSupportedVideoFormats() & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0;
-        // HEVC Main10, AV1 Main10, or a 10-bit PyroWave profile (SCM_PYROWAVE_HDR10 / _444)
-        if ((context.serverCodecModeSupport & (0x20200 | 0x02000000 | 0x04000000)) == 0 && context.negotiatedHdr) {
-            context.connListener.displayTransientMessage("Your PC GPU does not support streaming HDR. The stream will be SDR.");
-            context.negotiatedHdr = false;
+        // The launch's HDR flag switches the host display to HDR, so it must only be set when a
+        // 10-bit format the client offers matches a 10-bit mode the host has. Offering only
+        // PyroWave HDR10 to a host without PyroWave (or only HEVC Main10 to a host with AV1
+        // Main10 only) negotiates an 8-bit SDR stream, and an HDR host display then looks
+        // washed out.
+        int formats = context.streamConfig.getSupportedVideoFormats();
+        int scm = context.serverCodecModeSupport;
+        boolean hevcHdr = (formats & MoonBridge.VIDEO_FORMAT_H265_MAIN10) != 0 && (scm & 0x200) != 0;
+        boolean av1Hdr = (formats & MoonBridge.VIDEO_FORMAT_AV1_MAIN10) != 0 && (scm & 0x20000) != 0;
+        boolean pyroWaveHdr = (formats & (MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10 | MoonBridge.VIDEO_FORMAT_PYROWAVE_HDR10_444)) != 0 &&
+                (scm & 0x00800000) != 0 && (scm & (0x02000000 | 0x04000000)) != 0;
+        boolean wantedHdr = (formats & MoonBridge.VIDEO_FORMAT_MASK_10BIT) != 0;
+        context.negotiatedHdr = hevcHdr || av1Hdr || pyroWaveHdr;
+        if (wantedHdr && !context.negotiatedHdr) {
+            context.connListener.displayTransientMessage("Your PC GPU does not support streaming HDR with the codecs this device offers. The stream will be SDR.");
         }
         
         //
