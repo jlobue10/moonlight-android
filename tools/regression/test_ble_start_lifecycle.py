@@ -5,10 +5,20 @@ ROOT=pathlib.Path(__file__).resolve().parents[2]
 PATH='app/src/main/java/com/limelight/Game.java'
 source=(subprocess.check_output(['git','show','HEAD:'+PATH],cwd=ROOT,text=True)
         if '--baseline' in sys.argv else (ROOT/PATH).read_text())
-start=source.index('    private void startSteamControllerDriver()');end=source.index('{',start);depth=1
-while depth:
- end+=1;depth+=(source[end]=='{')-(source[end]=='}')
-method=source[start:end+1]
+def block(marker):
+ start=source.index(marker);end=source.index('{',start);depth=1
+ while depth:
+  end+=1;depth+=(source[end]=='{')-(source[end]=='}')
+ return source[start:end+1]
+method=block('    private void startSteamControllerDriver()')
+# The USB bind lives in connectionStarted(); extract just that guarded block as a method.
+cs=block('    public void connectionStarted()')
+ub=cs.index('        if (prefConfig.usbDriver) {');ue=cs.index('        if (prefConfig.steamControllerBle) {')
+usb_bind='    void bindUsbDriver() {\n'+cs[ub:ue]+'    }\n'
+od=block('    protected void onDestroy()')
+us=od.index('        if (usbDriverBindRequested) {');ue2=od.index('        }\n',us)+len('        }\n')
+usb_unbind='    void unbindUsbDriver() {\n'+od[us:ue2]+'    }\n'
+method=method+'\n'+usb_bind+usb_unbind
 prefix=r'''
 public class BleStartLifecycle {
  boolean finishing,destroyed;Object controllerHandler=new Object();int requests;
@@ -18,8 +28,13 @@ public class BleStartLifecycle {
  SharedPreferences getSharedPreferences(String n,int m){return new SharedPreferences();}
  boolean isFinishing(){return finishing;}boolean isDestroyed(){return destroyed;}
  void requestPermissions(String[] names,int request){++requests;}
+ int binds,unbinds;boolean usbDriverBindRequested,connectedToUsbDriverService;Object usbDriverServiceConnection=new Object();
+ static class Intent {Intent(Object c,Class<?> k){}} static class Service {static final int BIND_AUTO_CREATE=1;} static class UsbDriverService {}
+ void runOnUiThread(Runnable r){r.run();}
+ void bindService(Intent i,Object c,int f){++binds;} void unbindService(Object c){++unbinds;}
+ void bindUsbDriverIfEnabled(){prefConfig.usbDriver=true;bindUsbDriver();}
  static class Build {static class VERSION {static int SDK_INT=35;}static class VERSION_CODES {static final int M=23;}}
- static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerStickRim;}
+ static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerStickRim;boolean usbDriver;}
  static class SteamControllerBleManager {
   static boolean permission=true;static int starts;
   SteamControllerBleManager(Object... args){}void start(){++starts;}
@@ -46,6 +61,16 @@ suffix=r'''
   check(SteamControllerBleManager.starts==1,"live activity starts the BLE manager only once");
   g=new BleStartLifecycle();SteamControllerBleManager.permission=false;g.startSteamControllerDriver();
   check(g.requests==1 && g.steamControllerBle==null,"live activity still requests missing permission");
+  // USB driver bind: never after the activity is going away, once per activity, and always unbound.
+  for(int mode=0;mode<2;mode++){
+   BleStartLifecycle u=new BleStartLifecycle();u.finishing=mode==0;u.destroyed=mode==1;u.bindUsbDriverIfEnabled();
+   check(u.binds==0 && !u.usbDriverBindRequested,"late USB bind is skipped on a finishing/destroyed activity (state "+mode+")");
+   u.unbindUsbDriver();check(u.unbinds==0,"nothing to unbind when no bind was issued (state "+mode+")");
+  }
+  BleStartLifecycle u=new BleStartLifecycle();u.bindUsbDriverIfEnabled();u.bindUsbDriverIfEnabled();
+  check(u.binds==1 && u.usbDriverBindRequested,"live activity binds the USB driver once");
+  u.unbindUsbDriver();
+  check(u.unbinds==1 && !u.usbDriverBindRequested,"a requested bind is unbound even before onServiceConnected");
   if(failures!=0)System.exit(1);
  }
 }

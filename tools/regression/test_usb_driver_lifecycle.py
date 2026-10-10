@@ -124,8 +124,99 @@ suffix = r"""
 if not uses_main_handler:
     print('UsbDriverService has no mainHandler; the baseline would claim devices after stop()')
 code = prefix + '\n'.join(method(m) for m in ['    private void handleUsbDeviceState(UsbDevice device)', '    private void stop()', '    public void deviceRemoved(AbstractController controller)']).replace('@Override', '') + suffix
+XBOX = 'app/src/main/java/com/limelight/binding/input/driver/AbstractXboxController.java'
+xbox = (subprocess.check_output(['git', 'show', 'HEAD:' + XBOX], cwd=ROOT, text=True)
+        if '--baseline' in sys.argv else (ROOT / XBOX).read_text())
+PROCON = 'app/src/main/java/com/limelight/binding/input/driver/ProConController.java'
+procon = (subprocess.check_output(['git', 'show', 'HEAD:' + PROCON], cwd=ROOT, text=True)
+          if '--baseline' in sys.argv else (ROOT / PROCON).read_text())
+
+def method_of(text, marker):
+    start = text.index(marker)
+    end = text.index('{', start)
+    depth = 1
+    while depth:
+        end += 1
+        depth += (text[end] == '{') - (text[end] == '}')
+    return text[start:end + 1]
+
+# The real stop() and input thread, compiled against fake USB objects: the input thread's own
+# I/O-error stop races the service's stop(); exactly one release/close/deviceRemoved may happen.
+race_prefix = r"""
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.concurrent.atomic.AtomicInteger;
+public class StopRace {
+ static class LimeLog {static void warning(String s){} static void info(String s){}}
+ static class SystemClock {static long uptimeMillis(){return System.nanoTime()/1000000L;}}
+ static class UsbInterface {}
+ static class UsbEndpoint {}
+ static class UsbDevice {int getInterfaceCount(){return 2;} UsbInterface getInterface(int i){return new UsbInterface();}}
+ static class UsbDeviceConnection {
+  final AtomicInteger closes=new AtomicInteger(), releases=new AtomicInteger();
+  volatile boolean fail=true;
+  int bulkTransfer(UsbEndpoint e,byte[] b,int n,int timeout){if(fail)return -1;try{Thread.sleep(1);}catch(InterruptedException x){return -1;}return n;}
+  boolean releaseInterface(UsbInterface i){releases.incrementAndGet();return true;}
+  void close(){closes.incrementAndGet();}
+ }
+ interface UsbDriverListener {void deviceAdded(Object c); void deviceRemoved(Object c);}
+ static class AbstractController {
+  final UsbDriverListener listener;
+  AbstractController(UsbDriverListener l){listener=l;}
+  void notifyDeviceAdded(){listener.deviceAdded(this);}
+  void notifyDeviceRemoved(){listener.deviceRemoved(this);}
+  void reportInput(){}
+ }
+ static class Xbox extends AbstractController {
+  final UsbDevice device=new UsbDevice(); final UsbDeviceConnection connection=new UsbDeviceConnection();
+  Thread inputThread; private volatile boolean stopped; UsbEndpoint inEndpt=new UsbEndpoint();
+  Xbox(UsbDriverListener l){super(l);}
+  void rumble(short a,short b){}
+  boolean handleRead(ByteBuffer b){return true;}
+  void begin(){inputThread=createInputThread();inputThread.start();}
+XBOX_METHODS
+ }
+ static class ProCon extends AbstractController {
+  final UsbDeviceConnection connection=new UsbDeviceConnection(); Thread inputThread; private volatile boolean stopped=false;
+  ProCon(UsbDriverListener l){super(l);}
+  void rumble(short a,short b){}
+PROCON_STOP
+ }
+ static int failures;
+ static void check(boolean ok,String name){System.out.println((ok?"PASS ":"FAIL ")+name);if(!ok)++failures;}
+ public static void main(String[] args) throws Exception {
+  int doubleRemovals=0, doubleCloses=0, partialReleases=0;
+  for(int i=0;i<1000;i++){
+   final AtomicInteger removed=new AtomicInteger();
+   UsbDriverListener l=new UsbDriverListener(){public void deviceAdded(Object c){} public void deviceRemoved(Object c){removed.incrementAndGet();}};
+   Xbox x=new Xbox(l);x.begin();
+   Thread t=new Thread(x::stop);t.start();t.join();x.inputThread.join(5000);
+   if(removed.get()!=1)++doubleRemovals; if(x.connection.closes.get()!=1)++doubleCloses; if(x.connection.releases.get()!=2)++partialReleases;
+  }
+  check(doubleRemovals==0,"Xbox: the input thread's own stop and the service's stop report exactly one removal across 1000 races");
+  check(doubleCloses==0&&partialReleases==0,"Xbox: the connection is released and closed exactly once across 1000 races");
+  int proconDouble=0;
+  for(int i=0;i<1000;i++){
+   final AtomicInteger removed=new AtomicInteger();
+   UsbDriverListener l=new UsbDriverListener(){public void deviceAdded(Object c){} public void deviceRemoved(Object c){removed.incrementAndGet();}};
+   ProCon p=new ProCon(l);Thread a=new Thread(p::stop),b=new Thread(p::stop);a.start();b.start();a.join();b.join();
+   if(removed.get()!=1||p.connection.closes.get()!=1)++proconDouble;
+  }
+  check(proconDouble==0,"ProCon: two concurrent stops close and report once");
+  if(failures!=0)System.exit(1);
+ }
+}
+"""
+xbox_methods = (method_of(xbox, '    private Thread createInputThread()') + '\n' + method_of(xbox, '    public void stop()')).replace('Thread.sleep(1000)', 'Thread.sleep(0)').replace('AbstractXboxController.this', 'Xbox.this')
+procon_stop = method_of(procon, '    public void stop()')
+race_code = race_prefix.replace('XBOX_METHODS', xbox_methods).replace('PROCON_STOP', procon_stop)
+
 with tempfile.TemporaryDirectory(prefix='usb-driver-') as directory:
     p = pathlib.Path(directory)
     (p / 'UsbDriverService.java').write_text(code)
     subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(p), str(p / 'UsbDriverService.java')], check=True)
-    raise SystemExit(subprocess.run(['java', '-cp', str(p), 'UsbDriverService']).returncode)
+    rc = subprocess.run(['java', '-cp', str(p), 'UsbDriverService']).returncode
+    (p / 'StopRace.java').write_text(race_code)
+    subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(p), str(p / 'StopRace.java')], check=True)
+    rc |= subprocess.run(['java', '-cp', str(p), 'StopRace']).returncode
+    raise SystemExit(rc)
