@@ -30,7 +30,6 @@ prefix = r"""
 import java.util.*;
 import java.util.concurrent.*;
 public class UsbDriverService {
- static final String ACTION_USB_PERMISSION="com.limelight.USB_PERMISSION";
  static class LimeLog {static void info(String s){} static void warning(String s){}}
  static class R {static class string {static final int error_usb_prohibited=1;}}
  static class Toast {static final int LENGTH_LONG=1; static Toast makeText(Object c,CharSequence t,int d){return new Toast();} void show(){}}
@@ -79,6 +78,7 @@ public class UsbDriverService {
   static boolean canClaimDevice(UsbDevice d){return false;}
  }
  static class Prefs {boolean bindAllUsb;}
+ private static final String ACTION_USB_PERMISSION = "com.limelight.USB_PERMISSION";
  static boolean shouldClaimDevice(UsbDevice d,boolean all){return true;}
  final UsbManager usbManager=new UsbManager();
  final Prefs prefConfig=new Prefs();
