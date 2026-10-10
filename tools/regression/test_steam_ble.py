@@ -195,6 +195,15 @@ public class BleRegression {
   check(states==before+1,"reconnect resends a held state identical to the previous connection's last state");
   before=states;notify.value[1]=0;callback.onCharacteristicChanged(fresh,notify);
   check(states==before+1,"button release remains observable after reconnect and deduplication");
+  // A write completing while stop() runs must still drive the restore writes: the
+  // completion used to be dropped between `stopped` and `closing`, so the motors-off and
+  // default-mapping/settings restores never reached the controller.
+  d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());set(d,"writeBusy",true);
+  d.stop();callback=(BluetoothGattCallback)get(d,"gattCallback");
+  for(int i=0;i<3;i++)callback.onCharacteristicWrite(old,command(),0);
+  byte defaultMappings=(byte)get(d,"ID_SET_DEFAULT_DIGITAL_MAPPINGS"),loadDefaults=(byte)get(d,"ID_LOAD_DEFAULT_SETTINGS");
+  check(old.writes.size()==3&&old.writes.get(1)[0]==defaultMappings&&old.writes.get(2)[0]==loadDefaults,
+        "a write completing during stop still drains the motors-off and restore writes");
   // The manager must watch for controllers even when Bluetooth is off (or the bonded list
   // is refused) at stream start: a controller switched on later, or the adapter turned on,
   // is picked up through the receiver, which used to be registered only after enumeration.

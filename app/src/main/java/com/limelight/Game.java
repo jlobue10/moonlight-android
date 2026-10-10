@@ -3943,6 +3943,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public void rumbleTriggers(short controllerNumber, short leftTrigger, short rightTrigger) {
+        if (!prefConfig.enableRumble) {
+            return;
+        }
         boolean active = leftTrigger != 0 || rightTrigger != 0;
         if (active != triggerRumbleLogActive) {
             triggerRumbleLogActive = active;
@@ -3970,6 +3973,11 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public void steamHaptic(short controllerNumber, byte[] report) {
+        // A host presenting the Steam Controller profile replaces rumble with these reports;
+        // the "Enable Rumble" setting covers them too.
+        if (!prefConfig.enableRumble) {
+            return;
+        }
         controllerHandler.handleSteamHaptic(controllerNumber, report);
     }
 
