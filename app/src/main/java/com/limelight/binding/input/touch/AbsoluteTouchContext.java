@@ -19,6 +19,7 @@ public class AbsoluteTouchContext implements TouchContext {
     private boolean cancelled;
     private boolean confirmedLongPress;
     private boolean confirmedTap;
+    private byte heldMouseButton;
     
     private final byte buttonPrimary;
     private final byte buttonSecondary;
@@ -31,10 +32,7 @@ public class AbsoluteTouchContext implements TouchContext {
 
             // Switch from a left click to a right click after a long press
             confirmedLongPress = true;
-            if (confirmedTap) {
-                conn.sendMouseButtonUp(buttonPrimary);
-            }
-            conn.sendMouseButtonDown(buttonSecondary);
+            pressMouseButton(buttonSecondary);
         }
     };
 
@@ -51,12 +49,20 @@ public class AbsoluteTouchContext implements TouchContext {
     private final View targetView;
     private final Handler handler;
 
-    private final Runnable leftButtonUpRunnable = new Runnable() {
-        @Override
-        public void run() {
-            conn.sendMouseButtonUp(buttonPrimary);
+    private final Runnable leftButtonUpRunnable = this::releaseMouseButton;
+
+    private void pressMouseButton(byte button) {
+        releaseMouseButton();
+        conn.sendMouseButtonDown(button);
+        heldMouseButton = button;
+    }
+
+    private void releaseMouseButton() {
+        if (heldMouseButton != 0) {
+            conn.sendMouseButtonUp(heldMouseButton);
+            heldMouseButton = 0;
         }
-    };
+    }
 
     private static final int SCROLL_SPEED_FACTOR = 3;
 
@@ -100,6 +106,9 @@ public class AbsoluteTouchContext implements TouchContext {
             return true;
         }
 
+        // Retire the preceding tap before this gesture can press a new button.
+        handler.removeCallbacksAndMessages(null);
+        releaseMouseButton();
         lastTouchLocationX = lastTouchDownX = eventX;
         lastTouchLocationY = lastTouchDownY = eventY;
         lastTouchDownTime = eventTime;
@@ -142,11 +151,8 @@ public class AbsoluteTouchContext implements TouchContext {
             cancelTapDownTimer();
 
             // Raise the mouse buttons that we currently have down
-            if (confirmedLongPress) {
-                conn.sendMouseButtonUp(buttonSecondary);
-            }
-            else if (confirmedTap) {
-                conn.sendMouseButtonUp(buttonPrimary);
+            if (confirmedLongPress || confirmedTap) {
+                releaseMouseButton();
             }
             else {
                 // If we get here, this means that the tap completed within the touch down
@@ -198,7 +204,7 @@ public class AbsoluteTouchContext implements TouchContext {
             // Don't reposition for finger down events within the deadzone. This makes double-clicking easier.
             updatePosition(lastTouchDownX, lastTouchDownY);
         }
-        conn.sendMouseButtonDown(buttonPrimary);
+        pressMouseButton(buttonPrimary);
     }
 
     @Override
@@ -234,17 +240,10 @@ public class AbsoluteTouchContext implements TouchContext {
     public void cancelTouch() {
         cancelled = true;
 
-        // Cancel the timers
-        cancelLongPressTimer();
-        cancelTapDownTimer();
-
-        // Raise the mouse buttons
-        if (confirmedLongPress) {
-            conn.sendMouseButtonUp(buttonSecondary);
-        }
-        else if (confirmedTap) {
-            conn.sendMouseButtonUp(buttonPrimary);
-        }
+        // Retire delayed tap releases as well as press/long-press timers.
+        handler.removeCallbacksAndMessages(null);
+        releaseMouseButton();
+        confirmedTap = confirmedLongPress = false;
     }
 
     @Override
