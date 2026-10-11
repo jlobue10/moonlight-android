@@ -10,8 +10,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 PATH = 'app/src/main/java/com/limelight/binding/input/ControllerHandler.java'
-source = (subprocess.check_output(['git', 'show', 'HEAD:' + PATH], cwd=ROOT, text=True)
-          if '--baseline' in sys.argv else (ROOT / PATH).read_text())
+source = (subprocess.check_output(['git', 'show', 'HEAD:' + PATH], cwd=ROOT, text=True, encoding='utf-8')
+          if '--baseline' in sys.argv else (ROOT / PATH).read_text(encoding='utf-8'))
 
 
 def method(signature):
