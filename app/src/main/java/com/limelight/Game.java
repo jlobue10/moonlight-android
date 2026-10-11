@@ -344,6 +344,8 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private final Queue<Runnable> commitTextQueue = new ArrayDeque<>();
     private final Handler commitTextHandler = new Handler(Looper.getMainLooper());
     private boolean commitTextStopped;
+    private final Handler shortcutHandler = new Handler(Looper.getMainLooper());
+    private final Set<Runnable> pendingShortcutReleases = new HashSet<>();
 
     private final Runnable flushCommitTextQueue = new Runnable() {
         @Override
@@ -1796,6 +1798,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         timerHandler.removeCallbacksAndMessages(null);
         stopCommitText();
         stopTouchInput();
+        stopShortcutKeys();
 
         if (prefConfig.enableFullExDisplay) handleDisplayRemoved();
         unregisterExternalDisplayListener();
@@ -2394,9 +2397,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     public void sendKeys(short[] keys) {
+        if (commitTextStopped || !connected || conn == null) {
+            return;
+        }
+        final short[] pressedKeys = keys.clone();
         final byte[] modifier = {(byte) 0};
 
-        for (short key : keys) {
+        for (short key : pressedKeys) {
             conn.sendKeyboardInput(key, KeyboardPacket.KEY_DOWN, modifier[0], (byte) 0);
 
             // Apply the modifier of the pressed key, e.g. CTRL first issues a CTRL event (without
@@ -2404,16 +2411,34 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             modifier[0] |= getModifier(key);
         }
 
-        new Handler().postDelayed((() -> {
-            for (int pos = keys.length - 1; pos >= 0; pos--) {
-                short key = keys[pos];
+        Runnable release = new Runnable() {
+            @Override
+            public void run() {
+                // Shutdown may already have run this release synchronously.
+                if (!pendingShortcutReleases.remove(this)) {
+                    return;
+                }
+                for (int pos = pressedKeys.length - 1; pos >= 0; pos--) {
+                    short key = pressedKeys[pos];
 
-                // Remove the keys modifier before releasing the key
-                modifier[0] &= (byte) ~getModifier(key);
+                    // Remove the key's modifier before releasing it.
+                    modifier[0] &= (byte) ~getModifier(key);
 
-                conn.sendKeyboardInput(key, KeyboardPacket.KEY_UP, modifier[0], (byte) 0);
+                    conn.sendKeyboardInput(key, KeyboardPacket.KEY_UP, modifier[0], (byte) 0);
+                }
             }
-        }), GameMenu.KEY_UP_DELAY);
+        };
+        pendingShortcutReleases.add(release);
+        shortcutHandler.postDelayed(release, GameMenu.KEY_UP_DELAY);
+    }
+
+    private void stopShortcutKeys() {
+        shortcutHandler.removeCallbacksAndMessages(null);
+        // Balance held keys while this stream still owns native input, then
+        // make any callback already captured by the looper harmless.
+        for (Runnable release : pendingShortcutReleases.toArray(new Runnable[0])) {
+            release.run();
+        }
     }
 
     public boolean handleFocusChange(boolean hasFocus) {
@@ -3639,6 +3664,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         // IME work before asynchronous teardown can let another stream start.
         stopCommitText();
         stopTouchInput();
+        stopShortcutKeys();
         if (connecting || connected) {
             connecting = connected = false;
             updatePipAutoEnter();
