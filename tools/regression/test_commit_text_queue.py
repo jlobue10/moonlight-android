@@ -28,7 +28,7 @@ motion_guard = block('    public boolean handleMotionEvent(')
 motion_guard = motion_guard[:motion_guard.index('        int deviceId')] + '\nreturn true;\n}'
 helpers = '\n'.join(block(marker) for marker in (
     '    private void enqueueTextInput(', '    private void stopCommitText(', '    private Runnable sendImeKeys(',
-    '    private void stopTouchInput(')
+    '    private void stopTouchInput(', '    private void stopShortcutKeys(', '    public void sendKeys(')
     if marker in source).replace('com.limelight.nvstream.input.KeyboardPacket.', 'KeyboardPacket.')
 queue_field = re.search(r'private final Queue<[^;]+;', source).group()
 constants = '\n'.join(re.search(r'private static final int ' + name + r' = \d+;', source).group()
@@ -40,12 +40,24 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 public class CommitTextRegression {
     static class Handler {
+        static final List<Handler> all = new ArrayList<>();
         final List<Runnable> pending = new ArrayList<>();
+        Handler() { all.add(this); }
+        Handler(Looper ignored) { this(); }
         boolean post(Runnable r) { pending.add(r); return true; }
         boolean postDelayed(Runnable r, long delay) { pending.add(r); return true; }
         void removeCallbacksAndMessages(Object token) { pending.clear(); }
         void drain() { while (!pending.isEmpty()) { Conn.inFlush = 0; pending.remove(0).run(); } }
+        static List<Runnable> callbacks() {
+            List<Runnable> result = new ArrayList<>();
+            for (Handler h : all) result.addAll(h.pending);
+            return result;
+        }
+        static void drainAll() { for (Handler h : new ArrayList<>(all)) h.drain(); }
     }
+    static class Looper { static Looper getMainLooper() { return new Looper(); } }
+    static class GameMenu { static final long KEY_UP_DELAY = 25; }
+    static byte getModifier(short key) { return key == 17 ? (byte)2 : 0; }
     static class Conn {
         static final List<String> hostInput = new ArrayList<>();
         final List<String> sent = new ArrayList<>();
@@ -95,6 +107,8 @@ public class CommitTextRegression {
     // CONSTANTS
     // QUEUE_FIELD
     private final Handler commitTextHandler = new Handler();
+    private final Handler shortcutHandler = new Handler(Looper.getMainLooper());
+    private final Set<Runnable> pendingShortcutReleases = new HashSet<>();
     Conn conn = new Conn();
     static int checks, failures;
     static void check(boolean ok, String message) { ++checks; if (!ok) ++failures; System.out.println((ok ? "PASS " : "FAIL ") + message); }
@@ -188,6 +202,36 @@ suffix = r'''
         destroyed.onDestroy();
         check(destroyed.touchContextMap[0].cancellations == 1 && destroyed.trackpadContextMap[1].cancellations == 1,
               "direct activity destruction also retires both touch context maps");
+
+        Handler.drainAll(); Conn.hostInput.clear();
+        CommitTextRegression shortcut = new CommitTextRegression();
+        shortcut.sendKeys(new short[]{17, 86});
+        check(Conn.hostInput.equals(Arrays.asList("down:17", "down:86")), "shortcut holds its keys until the delayed release");
+        Handler.drainAll();
+        check(Conn.hostInput.equals(Arrays.asList("down:17", "down:86", "up:86", "up:17")),
+              "normal shortcut releases in reverse order");
+        Conn.hostInput.clear(); shortcut.sendKeys(new short[]{17, 86});
+        List<Runnable> oldCallbacks = Handler.callbacks();
+        shortcut.stopConnection();
+        check(Conn.hostInput.equals(Arrays.asList("down:17", "down:86", "up:86", "up:17")) && Handler.callbacks().isEmpty(),
+              "disconnect releases owned shortcut keys before native stop and removes their callbacks");
+        int releasedEvents = Conn.hostInput.size(); shortcut.stopConnection();
+        check(Conn.hostInput.size() == releasedEvents, "repeated shortcut shutdown sends no duplicate releases");
+        Conn.hostInput.clear();
+        for (Runnable callback : oldCallbacks) callback.run();
+        Handler.drainAll();
+        check(Conn.hostInput.isEmpty(), "a stale shortcut release cannot reach the next native session");
+        shortcut.sendKeys(new short[]{17, 86});
+        check(Conn.hostInput.isEmpty() && Handler.callbacks().isEmpty(), "a late menu action cannot revive shortcut input");
+        Handler.drainAll(); Conn.hostInput.clear();
+        CommitTextRegression shortcutDestroyed = new CommitTextRegression();
+        shortcutDestroyed.sendKeys(new short[]{17, 86}); shortcutDestroyed.onDestroy();
+        check(Conn.hostInput.equals(Arrays.asList("down:17", "down:86", "up:86", "up:17")) && Handler.callbacks().isEmpty(),
+              "direct destruction also releases and retires shortcuts");
+        Handler.drainAll(); Conn.hostInput.clear();
+        CommitTextRegression disconnected = new CommitTextRegression(); disconnected.connected = false;
+        disconnected.sendKeys(new short[]{17, 86});
+        check(Conn.hostInput.isEmpty(), "no shortcut is sent without a connected stream");
         System.out.println(checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);
     }
