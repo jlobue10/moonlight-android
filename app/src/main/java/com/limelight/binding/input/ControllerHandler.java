@@ -420,7 +420,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 for (UsbDevice dev : usbManager.getDeviceList().values()) {
                     // We explicitly check not to claim devices that appear as InputDevices
                     // otherwise we will double count them.
-                    if (UsbDriverService.shouldClaimDevice(dev, false) &&
+                    if (!com.limelight.binding.input.driver.SteamControllerUsb.canClaimDevice(dev) &&
+                            UsbDriverService.shouldClaimDevice(dev, false) &&
                             !UsbDriverService.isRecognizedInputDevice(dev)) {
                         LimeLog.info("Counting UsbDevice: "+dev.getDeviceName());
                         mask |= 1 << count++;
@@ -2317,7 +2318,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     /**
      * A Steam Controller (2026) haptic output report from the host, for the driver-fed controller
-     * that advertised LI_CCAP_STEAM_HAPTIC. Only the in-app BLE driver knows what to do with it.
+     * that advertised LI_CCAP_STEAM_HAPTIC. The in-app Bluetooth and USB drivers replay it through their own transports.
      */
     public void handleSteamHaptic(short controllerNumber, byte[] report) {
         if (stopped || report == null) {

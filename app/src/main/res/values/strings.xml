@@ -234,7 +234,7 @@
     <string name="summary_seekbar_deadzone">Positive values set a normal dead zone, negative values apply dead zone compensation. Ensure your controller can adjust dead zones when using dead zone compensation, or centering may be difficult.</string>
     <string name="suffix_seekbar_deadzone">%</string>
     <string name="title_checkbox_xb1_driver">Xbox 360/One/NintendoPro USB gamepad driver</string>
-    <string name="summary_checkbox_xb1_driver">Enables a built-in USB driver for devices without native Xbox/Nintendo Pro controller support</string>
+    <string name="summary_checkbox_xb1_driver">Enables built-in USB support for Xbox and Nintendo Pro controllers, and the Steam Controller (2026) connected by puck or USB cable</string>
     <string name="title_checkbox_steam_controller_ble">Steam Controller (2026) over Bluetooth</string>
     <string name="summary_checkbox_steam_controller_ble">Built-in driver for the 2026 Steam Controller paired over Bluetooth. Android does not recognise it as a gamepad on its own; this talks to it directly, turns its keyboard/mouse emulation off while streaming and reports it to the host as a Steam Controller with both trackpads, grips and battery. Needs the Bluetooth permission.</string>
     <string name="title_checkbox_steam_controller_motion">Steam Controller gyro and accelerometer</string>
@@ -253,8 +253,8 @@
     <string name="steam_controller_rumble_hold_1000">1 s</string>
     <string name="steam_controller_rumble_hold_2000">2 s</string>
     <string name="steam_controller_rumble_hold_unlimited">Until the host says stop</string>
-    <string name="title_steam_controller_rumble_method">Rumble method</string>
-    <string name="summary_steam_controller_rumble_method">How plain rumble from the host is driven. The rumble command is the firmware\'s own motor drive; pulse trains are the earlier approach. Steam\'s own haptics on a Steam Controller host are replayed as sent either way.</string>
+    <string name="title_steam_controller_rumble_method">Bluetooth rumble method</string>
+    <string name="summary_steam_controller_rumble_method">How plain rumble from the host is driven over Bluetooth. The puck and USB cable use native USB rumble reports. The rumble command is the firmware\'s own motor drive; pulse trains are the earlier approach. Steam\'s own haptics on a Steam Controller host are replayed as sent either way.</string>
     <string name="steam_controller_rumble_method_rumble">Rumble command (default)</string>
     <string name="steam_controller_rumble_method_pulse">Haptic pulse trains</string>
     <string name="title_checkbox_steam_controller_stick_rim">Stretch sticks to a full circle</string>

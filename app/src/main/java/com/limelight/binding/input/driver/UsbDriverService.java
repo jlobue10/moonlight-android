@@ -21,6 +21,7 @@ import android.widget.Toast;
 import com.limelight.LimeLog;
 import com.limelight.R;
 import com.limelight.preferences.PreferenceConfiguration;
+import com.limelight.binding.input.driver.ble.SteamControllerBleManager;
 
 import java.io.File;
 import java.util.List;
@@ -41,12 +42,14 @@ public class UsbDriverService extends Service implements UsbDriverListener {
     // A controller's input thread removes it (deviceRemoved) while stop() iterates on the
     // main thread; the copy-on-write list keeps both safe without a lock.
     private final List<AbstractController> controllers = new CopyOnWriteArrayList<>();
+    // Receivers stay owned while their wireless controller slots are disconnected.
+    private final List<SteamControllerUsb> steamUsbDevices = new CopyOnWriteArrayList<>();
 
     // Owns the deferred attach handling so stop() can discard it; a runnable left on a
     // throwaway Handler used to claim a device on an already destroyed service.
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private UsbDriverListener listener;
+    private volatile UsbDriverListener listener;
     private UsbDriverStateListener stateListener;
     // Set while a permission dialog this service requested is open. The permission action
     // is unprotected (and the receiver exported below API 33), so completions are only
@@ -59,17 +62,31 @@ public class UsbDriverService extends Service implements UsbDriverListener {
     public void reportControllerState(int controllerId, int buttonFlags, float leftStickX, float leftStickY,
                                       float rightStickX, float rightStickY, float leftTrigger, float rightTrigger) {
         // Call through to the client's listener
-        if (listener != null) {
-            listener.reportControllerState(controllerId, buttonFlags, leftStickX, leftStickY, rightStickX, rightStickY, leftTrigger, rightTrigger);
+        UsbDriverListener current = listener;
+        if (current != null) {
+            current.reportControllerState(controllerId, buttonFlags, leftStickX, leftStickY, rightStickX, rightStickY, leftTrigger, rightTrigger);
         }
     }
 
     @Override
     public void reportControllerMotion(int controllerId, byte motionType, float motionX, float motionY, float motionZ) {
         // Call through to the client's listener
-        if (listener != null) {
-            listener.reportControllerMotion(controllerId, motionType, motionX, motionY, motionZ);
+        UsbDriverListener current = listener;
+        if (current != null) {
+            current.reportControllerMotion(controllerId, motionType, motionX, motionY, motionZ);
         }
+    }
+
+    @Override
+    public void reportControllerTouch(int id, byte pad, byte event, int pointer, float x, float y, float pressure) {
+        UsbDriverListener current = listener;
+        if (current != null) current.reportControllerTouch(id, pad, event, pointer, x, y, pressure);
+    }
+
+    @Override
+    public void reportControllerBattery(int id, byte state, byte percentage) {
+        UsbDriverListener current = listener;
+        if (current != null) current.reportControllerBattery(id, state, percentage);
     }
 
     @Override
@@ -78,16 +95,18 @@ public class UsbDriverService extends Service implements UsbDriverListener {
         controllers.remove(controller);
 
         // Call through to the client's listener
-        if (listener != null) {
-            listener.deviceRemoved(controller);
+        UsbDriverListener current = listener;
+        if (current != null) {
+            current.deviceRemoved(controller);
         }
     }
 
     @Override
     public void deviceAdded(AbstractController controller) {
         // Call through to the client's listener
-        if (listener != null) {
-            listener.deviceAdded(controller);
+        UsbDriverListener current = listener;
+        if (current != null) {
+            current.deviceAdded(controller);
         }
     }
 
@@ -114,6 +133,17 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                         handleUsbDeviceState(device);
                     }
                 }, 1000);
+            }
+            else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
+                UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                if (device != null) {
+                    for (SteamControllerUsb driver : steamUsbDevices) {
+                        if (driver.getUsbDeviceId() == device.getDeviceId()) {
+                            steamUsbDevices.remove(driver);
+                            driver.stop();
+                        }
+                    }
+                }
             }
             // Subsequent permission dialog completion intent
             else if (action.equals(ACTION_USB_PERMISSION)) {
@@ -146,6 +176,9 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                 for (AbstractController controller : controllers) {
                     listener.deviceAdded(controller);
                 }
+                for (SteamControllerUsb driver : steamUsbDevices) {
+                    driver.reportAttachedControllers(listener);
+                }
             }
         }
 
@@ -165,9 +198,18 @@ public class UsbDriverService extends Service implements UsbDriverListener {
     private void handleUsbDeviceState(UsbDevice device) {
         // A deferred attach or a permission result can land after stop(): claiming the device
         // then would start an input thread nobody stops and hold its interfaces for the process.
-        if (!started) {
+        if (!started || device == null) {
             LimeLog.info("Ignoring USB device state change after the driver service stopped");
             return;
+        }
+
+        // Duplicate attach/permission broadcasts must not open the same receiver twice.
+        if (SteamControllerUsb.canClaimDevice(device)) {
+            for (SteamControllerUsb driver : steamUsbDevices) {
+                if (driver.getUsbDeviceId() == device.getDeviceId()) return;
+            }
+            // A queued attach can outlive the device's detach broadcast.
+            if (!usbManager.getDeviceList().containsKey(device.getDeviceName())) return;
         }
 
         // Are we able to operate it?
@@ -217,6 +259,17 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                 return;
             }
 
+
+            if (SteamControllerUsb.canClaimDevice(device)) {
+                SteamControllerUsb driver = new SteamControllerUsb(device, connection, nextDeviceId,
+                        this, this, prefConfig.steamControllerMotion, prefConfig.steamControllerSplitPads,
+                        SteamControllerBleManager.gripsModeFromPref(prefConfig.steamControllerGrips),
+                        SteamControllerBleManager.rumbleHoldFromPref(prefConfig.steamControllerRumbleHold),
+                        prefConfig.steamControllerStickRim);
+                nextDeviceId += 4;
+                if (driver.start()) steamUsbDevices.add(driver);
+                return;
+            }
 
             AbstractController controller;
 
@@ -314,7 +367,8 @@ public class UsbDriverService extends Service implements UsbDriverListener {
 
     public static boolean shouldClaimDevice(UsbDevice device, boolean claimAllAvailable) {
         LimeLog.info("UsbDevice info: "+device.toString());
-        return ((!kernelSupportsXboxOne() || !isRecognizedInputDevice(device) || claimAllAvailable) && XboxOneController.canClaimDevice(device)) ||
+        return SteamControllerUsb.canClaimDevice(device) ||
+                ((!kernelSupportsXboxOne() || !isRecognizedInputDevice(device) || claimAllAvailable) && XboxOneController.canClaimDevice(device)) ||
                 ((!isRecognizedInputDevice(device) || claimAllAvailable) && Xbox360Controller.canClaimDevice(device)) ||
                 // We must not call isRecognizedInputDevice() because wireless controllers don't share the same product ID as the dongle
                 ((!kernelSupportsXbox360W() || claimAllAvailable) && Xbox360WirelessDongle.canClaimDevice(device)) ||
@@ -332,6 +386,7 @@ public class UsbDriverService extends Service implements UsbDriverListener {
         // Register for USB attach broadcasts and permission completions
         IntentFilter filter = new IntentFilter();
         filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         filter.addAction(ACTION_USB_PERMISSION);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED);
@@ -361,6 +416,9 @@ public class UsbDriverService extends Service implements UsbDriverListener {
 
         // Stop the attachment receiver
         unregisterReceiver(receiver);
+
+        for (SteamControllerUsb driver : steamUsbDevices) driver.stop();
+        steamUsbDevices.clear();
 
         // Stop all controllers. Iterating the copy-on-write snapshot is safe while each
         // controller's stop() re-enters deviceRemoved() and removes itself.
