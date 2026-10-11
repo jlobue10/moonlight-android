@@ -1,6 +1,7 @@
 package com.limelight.ui;
 
 import android.content.Context;
+import android.text.Editable;
 import android.view.KeyEvent;
 import android.widget.FrameLayout;
 
@@ -69,9 +70,23 @@ public class ExternalControllerView extends FrameLayout {
             @Override
             public boolean commitText(CharSequence text, int newCursorPosition) {
                 if (inputCallbacks != null && inputCallbacks.handleCommitText(text)) {
+                    // Discard the base connection's composing copy once the
+                    // ordered stream input queue accepts the committed text.
+                    getEditable().clear();
                     return true;
                 }
                 return super.commitText(text, newCursorPosition);
+            }
+
+            @Override
+            public boolean finishComposingText() {
+                Editable editable = getEditable();
+                if (editable != null && editable.length() > 0 && inputCallbacks != null &&
+                        inputCallbacks.handleCommitText(editable.toString())) {
+                    editable.clear();
+                    return true;
+                }
+                return super.finishComposingText();
             }
 
             @Override
@@ -81,6 +96,13 @@ public class ExternalControllerView extends FrameLayout {
                 }
                 return super.deleteSurroundingText(beforeLength, afterLength);
             }
+
+            @Override
+            public boolean sendKeyEvent(KeyEvent event) {
+                // Keep IME Enter/editor actions behind pending text and deletes,
+                // just as on the main streaming view.
+                return inputCallbacks != null && inputCallbacks.handleImeKeyEvent(event) || super.sendKeyEvent(event);
+            }
         };
     }
 
@@ -89,5 +111,6 @@ public class ExternalControllerView extends FrameLayout {
         boolean handleKeyDown(KeyEvent event);
         boolean handleCommitText(CharSequence text);
         boolean handleDeleteSurroundingText(int beforeLength, int afterLength);
+        boolean handleImeKeyEvent(KeyEvent event);
     }
 }
