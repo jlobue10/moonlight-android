@@ -107,11 +107,15 @@ public class UsbRegression {
   io.failOut=true;c5.steamHaptic(motorStop);Handler.runReady();input(s5,new byte[]{0x79,1},2);input(s5,state(0x42),54);
   io.failOut=false;io.tx.clear();SystemClock.now+=40;Handler.runReady();
   check(io.tx.stream().noneMatch(t->Arrays.equals(t.data,motorStop)),"disconnect cancels a pending stop retry before a new controller generation");
-  // Stops retry autonomously, but the existing three-failure budget still retires a dead link.
+  // Stops retry autonomously; a retained stop is one strike however often it is retried, and
+  // the retry backs off (40, 80, 160 ms ...) so a stalled pipe does not spend the failure budget.
   io.failOut=true;io.tx.clear();c5.steamHaptic(motorStop);Handler.runReady();
   SystemClock.now+=40;Handler.runReady();check((boolean)get(s5,"connected"),"two failed stop attempts retain the slot");
-  SystemClock.now+=40;Handler.runReady();check(!(boolean)get(s5,"connected"),"a third failed stop retry retires the slot without another host event");
+  SystemClock.now+=80;Handler.runReady();int stopTries=io.tx.size();check(stopTries==3&&(boolean)get(s5,"connected"),"a third failed stop retry is not a third strike");
+  SystemClock.now+=100;Handler.runReady();check(io.tx.size()==stopTries,"stop retries back off after each failure");
+  SystemClock.now+=60;Handler.runReady();check(io.tx.size()==stopTries+1&&(boolean)get(s5,"connected"),"the backed-off retry fires at 160 ms and the slot is retained");
   io.failOut=false;SystemClock.now+=1000;input(s5,state(0x42),54);Handler.runReady();
+  check(io.tx.stream().anyMatch(t->t.endpoint==5&&Arrays.equals(t.data,motorStop))&&((ArrayDeque<?>)get(s5,"outputs")).isEmpty(),"the retained stop is delivered once the pipe recovers");
   // Latest 0x80 state supersedes an obsolete stop, even while it awaits retry.
   io.failOut=true;c5.rumble((short)0,(short)0);Handler.runReady();
   c5.rumble((short)1,(short)2);io.failOut=false;io.tx.clear();SystemClock.now+=40;Handler.runReady();
