@@ -190,6 +190,12 @@ public class NvHTTP {
                 // OkHttp 5 fast fallback (RFC 8305) does not tolerate the thread interruptions
                 // the polling code uses to cancel requests (upstream 98c12beb)
                 .fastFallback(false)
+                // Every request goes to the paired host by address; a redirect would let that
+                // host steer the client (box art, applist, launch, clipboard) to any http(s)
+                // URL on the client's network, HTTPS to HTTP included, with our client
+                // certificate offered to whoever answers. The derived clients inherit this.
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build();
 
         httpClientShortConnectTimeout = httpClientLongConnectTimeout.newBuilder()
