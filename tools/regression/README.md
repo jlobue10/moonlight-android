@@ -79,3 +79,9 @@ surface replacement and verifies buffer/flag isolation and deferred model close.
   codec-selection block from the pinned common-C submodule across 2,025 client
   and host capability combinations. SDP advertises compatible codec profiles;
   capability changes after launch are outside this test's scope.
+
+- `test_audio_track_recovery.py`: full production audio renderer with scripted
+  AudioTrack and clock boundaries. Checks partial writes, dead-object recovery,
+  recreation cooldown, effect-session balance, failed replacement cleanup and
+  interruption of a blocked decoder write before native shutdown joins. Actual
+  audio-service recovery and route changes require Android device testing.

@@ -8,6 +8,7 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.media.audiofx.AudioEffect;
 import android.os.Build;
+import android.os.SystemClock;
 
 import com.limelight.LimeLog;
 import com.limelight.nvstream.av.audio.AudioRenderer;
@@ -18,7 +19,17 @@ public class AndroidAudioRenderer implements AudioRenderer {
     private final Context context;
     private final boolean enableAudioFx;
 
+    private static final long TRACK_RETRY_DELAY_MS = 1000;
+    private final Object trackLock = new Object();
     private AudioTrack track;
+    private volatile boolean stopped;
+    private boolean started;
+    private boolean effectSessionOpen;
+    private int playbackChannelConfig;
+    private int playbackSampleRate;
+    private int playbackBufferSize;
+    private boolean playbackLowLatency;
+    private long nextTrackRetryTime;
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
         this.context = context;
@@ -66,6 +77,8 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     @Override
     public int setup(MoonBridge.AudioConfiguration audioConfiguration, int sampleRate, int samplesPerFrame) {
+        stopped = false;
+        nextTrackRetryTime = 0;
         int channelConfig;
         int bytesPerFrame;
 
@@ -162,6 +175,11 @@ public class AndroidAudioRenderer implements AudioRenderer {
                 track = createAudioTrack(channelConfig, sampleRate, bufferSize, lowLatency);
                 track.play();
 
+                playbackChannelConfig = channelConfig;
+                playbackSampleRate = sampleRate;
+                playbackBufferSize = bufferSize;
+                playbackLowLatency = lowLatency;
+
                 // Successfully created working AudioTrack. We're done here.
                 LimeLog.info("Audio track configuration: "+bufferSize+" "+lowLatency);
                 break;
@@ -170,8 +188,9 @@ public class AndroidAudioRenderer implements AudioRenderer {
                 e.printStackTrace();
                 try {
                     if (track != null) {
-                        track.release();
+                        AudioTrack failedTrack = track;
                         track = null;
+                        failedTrack.release();
                     }
                 } catch (Exception ignored) {}
             }
@@ -185,49 +204,129 @@ public class AndroidAudioRenderer implements AudioRenderer {
         return 0;
     }
 
+    // Call with trackLock held. Session broadcasts must follow track replacement.
+    private void setEffectSessionOpen(boolean open) {
+        if (!enableAudioFx || effectSessionOpen == open || track == null) {
+            return;
+        }
+        Intent i = new Intent(open ? AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION :
+                AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
+        i.putExtra(AudioEffect.EXTRA_AUDIO_SESSION, track.getAudioSessionId());
+        i.putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.getPackageName());
+        if (open) {
+            i.putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_GAME);
+        }
+        context.sendBroadcast(i);
+        effectSessionOpen = open;
+    }
+
+    private void releaseTrack() {
+        setEffectSessionOpen(false);
+        AudioTrack oldTrack = track;
+        track = null;
+        if (oldTrack != null) {
+            try {
+                oldTrack.release();
+            } catch (Exception e) {
+                LimeLog.warning("Unable to release audio track: " + e);
+            }
+        }
+    }
+
+    private AudioTrack getPlaybackTrack() {
+        synchronized (trackLock) {
+            if (stopped) {
+                return null;
+            }
+            if (track == null && SystemClock.uptimeMillis() >= nextTrackRetryTime) {
+                // Rate limit both failed creation and replacements that immediately die.
+                nextTrackRetryTime = SystemClock.uptimeMillis() + TRACK_RETRY_DELAY_MS;
+                try {
+                    track = createAudioTrack(playbackChannelConfig, playbackSampleRate,
+                            playbackBufferSize, playbackLowLatency);
+                    track.play();
+                    setEffectSessionOpen(started);
+                } catch (Exception e) {
+                    LimeLog.warning("Unable to recreate audio track: " + e);
+                    releaseTrack();
+                }
+            }
+            return track;
+        }
+    }
+
     @Override
     public void playDecodedAudio(short[] audioData) {
-        // Only queue up to 40 ms of pending audio data in addition to what AudioTrack is buffering for us.
-        if (MoonBridge.getPendingAudioDuration() < 40) {
-            // This will block until the write is completed. That can cause a backlog
-            // of pending audio data, so we do the above check to be able to bound
-            // latency at 40 ms in that situation.
-            track.write(audioData, 0, audioData.length);
+        // Only queue up to 40 ms of pending audio data in addition to AudioTrack's buffer.
+        if (MoonBridge.getPendingAudioDuration() >= 40) {
+            LimeLog.info("Too much pending audio data: " + MoonBridge.getPendingAudioDuration() + " ms");
+            return;
         }
-        else {
-            LimeLog.info("Too much pending audio data: " + MoonBridge.getPendingAudioDuration() +" ms");
+
+        int offset = 0;
+        while (offset < audioData.length && !stopped) {
+            AudioTrack currentTrack = getPlaybackTrack();
+            if (currentTrack == null || stopped) {
+                return;
+            }
+            // Do not hold trackLock across this blocking call: stop() must be able
+            // to pause/flush it before common-C joins the audio decoder thread.
+            int written = currentTrack.write(audioData, offset, audioData.length - offset);
+            if (written > 0) {
+                offset += written;
+            } else if (written == AudioTrack.ERROR_DEAD_OBJECT) {
+                synchronized (trackLock) {
+                    if (track == currentTrack) {
+                        releaseTrack();
+                    }
+                }
+                // Preserve the unaccepted suffix. A second dead track in the same
+                // interval is retired but cannot cause an unbounded recreation loop.
+            } else {
+                // Zero progress, shutdown and other errors must not spin the decoder.
+                return;
+            }
         }
     }
 
     @Override
     public void start() {
-        if (enableAudioFx) {
-            // Open an audio effect control session to allow equalizers to apply audio effects
-            Intent i = new Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION);
-            i.putExtra(AudioEffect.EXTRA_AUDIO_SESSION, track.getAudioSessionId());
-            i.putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.getPackageName());
-            i.putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_GAME);
-            context.sendBroadcast(i);
+        synchronized (trackLock) {
+            if (!stopped) {
+                started = true;
+                setEffectSessionOpen(true);
+            }
         }
     }
 
     @Override
     public void stop() {
-        if (enableAudioFx) {
-            // Close our audio effect control session when we're stopping
-            Intent i = new Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
-            i.putExtra(AudioEffect.EXTRA_AUDIO_SESSION, track.getAudioSessionId());
-            i.putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.getPackageName());
-            context.sendBroadcast(i);
+        synchronized (trackLock) {
+            stopped = true;
+            started = false;
+            setEffectSessionOpen(false);
+            if (track != null) {
+                // Interrupt an outstanding blocking write before native decoder join.
+                // Flush also leaves room for a write already racing with this stop.
+                try {
+                    track.pause();
+                } catch (Exception e) {
+                    LimeLog.warning("Unable to pause audio track: " + e);
+                }
+                try {
+                    track.flush();
+                } catch (Exception e) {
+                    LimeLog.warning("Unable to flush audio track: " + e);
+                }
+            }
         }
     }
 
     @Override
     public void cleanup() {
-        // Immediately drop all pending data
-        track.pause();
-        track.flush();
-
-        track.release();
+        stop();
+        synchronized (trackLock) {
+            releaseTrack();
+        }
     }
 }
