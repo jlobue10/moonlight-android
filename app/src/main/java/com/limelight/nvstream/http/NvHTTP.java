@@ -610,8 +610,32 @@ public class NvHTTP {
         return driverReady.equals("true");
     }
 
+    // The list travels in the Game intent (TransactionTooLargeException past ~500 KB
+    // on the UI thread) and is shown in a menu; a host advertising thousands of
+    // commands must not make every launch throw. Indices stay stable: the host
+    // addresses a command by its position.
+    static final int MAX_SERVER_COMMANDS = 64;
+    static final int MAX_SERVER_COMMAND_LENGTH = 256;
+
+    static List<String> boundServerCmds(List<String> commands) {
+        if (commands == null) {
+            return null;
+        }
+        List<String> bounded = new java.util.ArrayList<>();
+        for (String command : commands) {
+            if (bounded.size() >= MAX_SERVER_COMMANDS) {
+                break;
+            }
+            if (command == null) {
+                command = "";
+            }
+            bounded.add(command.length() > MAX_SERVER_COMMAND_LENGTH ? command.substring(0, MAX_SERVER_COMMAND_LENGTH) : command);
+        }
+        return bounded;
+    }
+
     public List<String> getServerCmds(String serverInfo) throws XmlPullParserException, IOException {
-        return getXmlArray(serverInfo, "ServerCommand", false);
+        return boundServerCmds(getXmlArray(serverInfo, "ServerCommand", false));
     }
 
     public PairingManager.PairState getPairState() throws IOException, XmlPullParserException {
