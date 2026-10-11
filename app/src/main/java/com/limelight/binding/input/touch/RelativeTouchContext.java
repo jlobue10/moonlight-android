@@ -17,7 +17,9 @@ public class RelativeTouchContext implements TouchContext {
     private boolean cancelled;
     private boolean confirmedMove;
     private boolean confirmedDrag;
-    private boolean mouseButtonDown;
+    // The button this context pressed; the finger count (and so getMouseButtonIndex())
+    // may change before the delayed release runs.
+    private byte heldMouseButton;
     private boolean confirmedScroll;
     private double distanceMoved;
     private double xFactor, yFactor;
@@ -56,14 +58,15 @@ public class RelativeTouchContext implements TouchContext {
     private void pressMouseButton() {
         // A second tap may arrive before the first delayed release.
         releaseMouseButton();
-        conn.sendMouseButtonDown(getMouseButtonIndex());
-        mouseButtonDown = true;
+        byte button = getMouseButtonIndex();
+        conn.sendMouseButtonDown(button);
+        heldMouseButton = button;
     }
 
     private void releaseMouseButton() {
-        if (mouseButtonDown) {
-            conn.sendMouseButtonUp(getMouseButtonIndex());
-            mouseButtonDown = false;
+        if (heldMouseButton != 0) {
+            conn.sendMouseButtonUp(heldMouseButton);
+            heldMouseButton = 0;
         }
     }
 
