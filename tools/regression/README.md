@@ -85,3 +85,8 @@ surface replacement and verifies buffer/flag isolation and deferred model close.
   recreation cooldown, effect-session balance, failed replacement cleanup and
   interruption of a blocked decoder write before native shutdown joins. Actual
   audio-service recovery and route changes require Android device testing.
+
+- `test_nvhttp_client_policy.py`: compiles the production `NvHTTP.initializeHttpState`
+  against a recording OkHttp stub and checks that none of the three clients follows
+  redirects (the paired host is addressed directly; a 302 must not steer fetches or
+  offer the client certificate elsewhere) while the derived clients keep their timeouts.

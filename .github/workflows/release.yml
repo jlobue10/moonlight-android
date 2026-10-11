@@ -98,14 +98,20 @@ jobs:
         run: |
           set -euo pipefail
           NEW=$(sed -nE 's/^\s*versionCode\s*=?\s*([0-9]+).*/\1/p' app/build.gradle | head -1)
-          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
-          echo "versionCode=$NEW previous_tag=${PREV_TAG:-none}"
-          if [ -n "$PREV_TAG" ]; then
-            OLD=$(git show "$PREV_TAG:app/build.gradle" | sed -nE 's/^\s*versionCode\s*=?\s*([0-9]+).*/\1/p' | head -1)
-            if [ -z "$OLD" ] || [ "$NEW" -le "$OLD" ]; then
-              echo "::error::versionCode $NEW is not above $OLD ($PREV_TAG); Android would refuse the update"
-              exit 1
-            fi
+          # Compare with the highest versionCode any release tag carries, not the nearest tag
+          # on this branch's ancestry: a tag cut from a branch that does not contain the latest
+          # release would otherwise pass with a lower code and ship an un-installable update.
+          git fetch --tags --quiet origin || true
+          OLD=0; PREV_TAG=none
+          for candidate in $(git tag -l 'v*'); do
+            [ "$candidate" = "$RELEASE_TAG" ] && continue
+            code=$(git show "$candidate:app/build.gradle" 2>/dev/null | sed -nE 's/^\s*versionCode\s*=?\s*([0-9]+).*/\1/p' | head -1)
+            if [ -n "$code" ] && [ "$code" -gt "$OLD" ]; then OLD=$code; PREV_TAG=$candidate; fi
+          done
+          echo "versionCode=$NEW highest_released=$OLD ($PREV_TAG)"
+          if [ "$NEW" -le "$OLD" ]; then
+            echo "::error::versionCode $NEW is not above $OLD ($PREV_TAG); Android would refuse the update"
+            exit 1
           fi
 
       # The tag usually sits on a bump commit pushed directly to the branch, which no PR
