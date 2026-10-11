@@ -327,6 +327,11 @@ public final class SteamControllerUsb {
         }
 
         private int outputFailures;
+        // A retained packet (an idempotent stop) is one strike however often it is
+        // retried; its retry backs off so a stalled pipe is neither spun on nor
+        // retired faster than the failure budget intends.
+        private byte[] strikedReport;
+        private int retryDelayMs = OUTPUT_RETRY_MS;
 
         private void disconnect() {
             generation++;
@@ -334,6 +339,8 @@ public final class SteamControllerUsb {
             drainScheduled = false;
             repeatingRumble = null;
             outputFailures = 0;
+            strikedReport = null;
+            retryDelayMs = OUTPUT_RETRY_MS;
             outputHandler.removeCallbacks(rumbleTick);
             outputHandler.removeCallbacks(drain);
             // Release any touches the host still thinks are down (the BLE driver does the same).
@@ -455,15 +462,25 @@ public final class SteamControllerUsb {
                     // A disconnect may have queued work for a new controller while this
                     // transfer was in flight. Its queue and failure budget belong to it.
                     if (generation != current) return;
-                    if (success) writeSucceeded(); else writeFailed(current);
+                    if (success) {
+                        writeSucceeded();
+                        strikedReport = null;
+                        retryDelayMs = OUTPUT_RETRY_MS;
+                    } else if (report != strikedReport) {
+                        // A retained stop that keeps failing is one strike, not one per retry.
+                        strikedReport = report;
+                        writeFailed(current);
+                    }
                     // Retain an idempotent motor stop until it succeeds or the slot retires.
                     // Keeping it in the bounded queue also lets newer 0x80 rumble replace
                     // an obsolete stop. Failed effects are not replayed.
                     if (success || stopKey(report) < 0) outputs.remove(report);
                     if (!stopped && connected && generation == current && !outputs.isEmpty()) {
                         // One transfer per dispatch gives other puck slots a turn. Back off
-                        // failures so retries cannot spin or starve other slots.
-                        outputHandler.postDelayed(this, success ? 0 : OUTPUT_RETRY_MS);
+                        // failures (40, 80, ... 1000 ms) so retries cannot spin or starve
+                        // other slots; the keep-alive stays the liveness authority.
+                        outputHandler.postDelayed(this, success ? 0 : retryDelayMs);
+                        if (!success) retryDelayMs = Math.min(retryDelayMs * 2, KEEPALIVE_MS);
                     } else {
                         drainScheduled = false;
                     }
