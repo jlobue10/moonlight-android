@@ -88,11 +88,12 @@ import com.limelight.binding.input.driver.*; import com.limelight.binding.input.
 public class BleRegression {
  static int failed,checks,states,added,batteryState=-1,batteryPercent=-1;
  static void check(boolean ok,String name){checks++;System.out.println((ok?"PASS ":"FAIL ")+name);if(!ok)failed++;}
- static Object get(Object o,String name)throws Exception{Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(o);}
- static void set(Object o,String name,Object v)throws Exception{Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);f.set(o,v);}
+ static Field field(Class<?> c,String name)throws Exception{for(;c!=null;c=c.getSuperclass()){try{return c.getDeclaredField(name);}catch(NoSuchFieldException e){}}throw new NoSuchFieldException(name);}
+ static Object get(Object o,String name)throws Exception{Field f=field(o.getClass(),name);f.setAccessible(true);return f.get(o);}
+ static void set(Object o,String name,Object v)throws Exception{Field f=field(o.getClass(),name);f.setAccessible(true);f.set(o,v);}
  static Object tryGet(Object o,String name){try{return get(o,name);}catch(Exception e){return null;}}
  static void battery(SteamControllerBle d,int chargeState,int percent)throws Exception{
-  Method m=SteamControllerBle.class.getDeclaredMethod("handleBattery",byte[].class);m.setAccessible(true);
+  Method m=null;for(Class<?> c=d.getClass();c!=null;c=c.getSuperclass()){try{m=c.getDeclaredMethod("handleBattery",byte[].class);break;}catch(NoSuchMethodException ignored){}}m.setAccessible(true);
   batteryState=-1;batteryPercent=-1;m.invoke(d,(Object)new byte[]{(byte)chargeState,(byte)percent});}
  static SteamControllerBle create(BluetoothDevice device)throws Exception{
   SteamControllerBle d=new SteamControllerBle(1,new UsbDriverListener(){
@@ -315,6 +316,7 @@ with tempfile.TemporaryDirectory(prefix='ble-regression-') as directory:
         path.write_text(source)
     sources = list(work.rglob('*.java')) + [JAVA/p for p in (
         'com/limelight/binding/input/driver/AbstractController.java',
+        'com/limelight/binding/input/driver/SteamControllerInput.java',
         'com/limelight/binding/input/driver/UsbDriverListener.java',
         'com/limelight/nvstream/input/ControllerPacket.java')]
     if not baseline:

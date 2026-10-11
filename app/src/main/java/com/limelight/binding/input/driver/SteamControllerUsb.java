@@ -1,0 +1,442 @@
+package com.limelight.binding.input.driver;
+
+import android.content.Context;
+import android.hardware.usb.UsbConstants;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbEndpoint;
+import android.hardware.usb.UsbInterface;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Process;
+import android.os.SystemClock;
+
+import com.limelight.LimeLog;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
+
+/**
+ * SC2026 USB transport. Proteus exposes four independent controller interfaces (2..5);
+ * interfaces 0/1 belong to the receiver and must not be claimed or configured as gamepads.
+ * Each slot shares the BLE input mapper, but uses native HID feature/output reports.
+ * Protocol reference: SDL's SDL_hidapi_steam_triton.c and steam/controller_structs.h.
+ */
+public final class SteamControllerUsb {
+    private static final int VALVE = 0x28DE, WIRED = 0x1302, PUCK = 0x1304;
+    private static final int IO_TIMEOUT_MS = 100;
+    private static final int READ_TIMEOUT_MS = 250;
+    private static final int KEEPALIVE_MS = 1000;
+    private static final int STALE_STATE_MS = 3000;
+    private static final int MAX_OUTPUTS = 32;
+
+    private final UsbDevice device;
+    private final UsbDeviceConnection connection;
+    private final List<Slot> slots = new ArrayList<>();
+    private final HandlerThread outputThread = new HandlerThread("SteamControllerUsb", Process.THREAD_PRIORITY_URGENT_DISPLAY);
+    private Handler outputHandler;
+    private volatile boolean stopped;
+    private boolean started;
+
+    public static boolean canClaimDevice(UsbDevice device) {
+        return device != null && device.getVendorId() == VALVE &&
+                (device.getProductId() == PUCK || device.getProductId() == WIRED);
+    }
+
+    public SteamControllerUsb(UsbDevice device, UsbDeviceConnection connection, int firstId,
+                              UsbDriverListener listener, Context context, boolean motionEnabled,
+                              boolean splitPads, int gripsMode, int rumbleHoldMs, boolean stickRim) {
+        this.device = device;
+        this.connection = connection;
+        boolean[] seen = new boolean[6];
+        for (int n = 0; n < device.getInterfaceCount(); n++) {
+            UsbInterface iface = device.getInterface(n);
+            int id = iface.getId();
+            if (iface.getInterfaceClass() != UsbConstants.USB_CLASS_HID || iface.getAlternateSetting() != 0 ||
+                    (device.getProductId() == PUCK ? id < 2 || id > 5 : id != 0)) {
+                continue;
+            }
+            if (seen[id]) continue;
+            seen[id] = true;
+            UsbEndpoint in = null, out = null;
+            boolean duplicate = false;
+            for (int e = 0; e < iface.getEndpointCount(); e++) {
+                UsbEndpoint endpoint = iface.getEndpoint(e);
+                if (endpoint.getType() != UsbConstants.USB_ENDPOINT_XFER_INT) continue;
+                if (endpoint.getDirection() == UsbConstants.USB_DIR_IN) {
+                    duplicate |= in != null;
+                    in = endpoint;
+                } else {
+                    duplicate |= out != null;
+                    out = endpoint;
+                }
+            }
+            if (!duplicate && in != null && in.getMaxPacketSize() >= 54) {
+                // Use the interface ID, not descriptor order, as the puck slot identity.
+                int slotId = device.getProductId() == PUCK ? id - 2 : 0;
+                slots.add(new Slot(firstId + slotId, listener, context, iface, in, out,
+                        motionEnabled, splitPads, gripsMode, rumbleHoldMs, stickRim));
+            }
+        }
+    }
+
+    public int getUsbDeviceId() {
+        return device.getDeviceId();
+    }
+
+    /** Takes ownership of the connection, including cleanup if an interface cannot be claimed. */
+    public boolean start() {
+        if (started || stopped) return false;
+        try {
+            if (!canClaimDevice(device) || slots.isEmpty()) {
+                stopped = true;
+                releaseResources();
+                return false;
+            }
+            for (Slot slot : slots) {
+                if (!connection.claimInterface(slot.iface, true)) {
+                    stopped = true;
+                    releaseResources();
+                    return false;
+                }
+                slot.claimed = true;
+            }
+            outputThread.start();
+            outputHandler = new Handler(outputThread.getLooper());
+            started = true;
+            for (Slot slot : slots) {
+                slot.reader = new Thread(slot::readLoop, "SteamControllerUsb-" + slot.iface.getId());
+                slot.reader.start();
+            }
+            outputHandler.post(keepAlive);
+            return true;
+        } catch (RuntimeException e) {
+            LimeLog.warning("Steam Controller USB: startup failed: " + e);
+            if (started) stop();
+            else {
+                stopped = true;
+                releaseResources();
+                outputThread.quitSafely();
+            }
+            return false;
+        }
+    }
+
+    private void releaseResources() {
+        try {
+            for (Slot slot : slots) {
+                if (slot.claimed) {
+                    try { connection.releaseInterface(slot.iface); } catch (RuntimeException ignored) { }
+                    slot.claimed = false;
+                }
+            }
+        } finally {
+            connection.close();
+        }
+    }
+
+    public void reportAttachedControllers(UsbDriverListener listener) {
+        for (Slot slot : slots) {
+            synchronized (slot) {
+                if (!stopped && slot.connected) {
+                    slot.resetInputState();
+                    listener.deviceAdded(slot);
+                }
+            }
+        }
+    }
+
+    /** Retire input immediately. Bounded restore writes and USB release run off the UI thread. */
+    public void stop() {
+        synchronized (this) {
+            if (stopped) return;
+            stopped = true;
+        }
+        if (!started) return;
+        outputHandler.removeCallbacksAndMessages(null);
+        List<Slot> restore = new ArrayList<>();
+        for (Slot slot : slots) {
+            synchronized (slot) {
+                if (slot.connected) restore.add(slot);
+                slot.disconnect();
+            }
+            if (slot.reader != null) slot.reader.interrupt();
+        }
+        outputHandler.post(() -> {
+            try {
+                for (Slot slot : restore) {
+                    // Stop internal rumble and both pad pulse/command engines.
+                    writeOutput(slot, new byte[]{(byte) 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+                    for (byte side = 0; side < 2; side++) {
+                        writeOutput(slot, new byte[]{(byte) 0x81, side, 0, 0, 0, 0, 0, 0});
+                        writeOutput(slot, new byte[]{(byte) 0x82, side, 0, 0});
+                    }
+                    configure(slot, false);
+                }
+            } finally {
+                releaseResources();
+                outputThread.quitSafely();
+            }
+        });
+    }
+
+    private final Runnable keepAlive = new Runnable() {
+        @Override public void run() {
+            if (stopped) return;
+            for (Slot slot : slots) {
+                int generation;
+                synchronized (slot) {
+                    if (!slot.connected) continue;
+                    generation = slot.generation;
+                }
+                if (!configure(slot, true)) slot.writeFailed(generation);
+            }
+            if (!stopped) outputHandler.postDelayed(this, KEEPALIVE_MS);
+        }
+    };
+
+    private boolean configure(Slot slot, boolean active) {
+        // Enable the firmware watchdog even if a previous BLE/Steam session disabled it:
+        // if Android dies, lizard mode can recover.
+        // HID feature report 1: SET_SETTINGS_VALUES(0x87), three (id,u16) triples.
+        byte[] feature = new byte[64];
+        feature[0] = 1; feature[1] = (byte) 0x87; feature[2] = 9;
+        feature[3] = 9; feature[4] = (byte) (active ? 0 : 1);
+        feature[6] = 48; feature[7] = (byte) (active && slot.motionEnabled ? 0x18 : 0);
+        feature[9] = 71; feature[10] = 1;
+        try {
+            return connection.controlTransfer(0x21, 0x09, 0x0301, slot.iface.getId(),
+                    feature, feature.length, IO_TIMEOUT_MS) == feature.length;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private boolean writeOutput(Slot slot, byte[] report) {
+        try {
+            if (slot.out != null) {
+                return connection.bulkTransfer(slot.out, report, report.length, IO_TIMEOUT_MS) == report.length;
+            }
+            // HID permits output reports on EP0 when no interrupt OUT endpoint exists.
+            return connection.controlTransfer(0x21, 0x09, 0x0200 | (report[0] & 0xff),
+                    slot.iface.getId(), report, report.length, IO_TIMEOUT_MS) == report.length;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static int outputSize(int id) {
+        switch (id) {
+            case 0x80: return 10;
+            case 0x81: return 8;
+            case 0x82: return 4;
+            case 0x83: return 10;
+            case 0x84: return 9;
+            case 0x85: return 4;
+            default: return 0;
+        }
+    }
+
+    private static int stopKey(byte[] report) {
+        int id = report[0] & 0xff;
+        if (id == 0x80 && report[4] == 0 && report[5] == 0 && report[7] == 0 && report[8] == 0) return 0x80;
+        if ((id == 0x81 && ((report[6] == 0 && report[7] == 0) || (report[2] == 0 && report[3] == 0))) ||
+                (id == 0x82 && report[2] == 0)) {
+            return (id << 8) | (report[1] & 0xff);
+        }
+        return -1;
+    }
+
+    private final class Slot extends SteamControllerInput {
+        final UsbInterface iface;
+        final UsbEndpoint in, out;
+        final int rumbleHoldMs;
+        boolean claimed;
+        Thread reader;
+        boolean connected;
+        int generation;
+        long lastStateMs, retryAtMs;
+        final ArrayDeque<byte[]> outputs = new ArrayDeque<>();
+        boolean drainScheduled;
+        byte[] repeatingRumble;
+        long rumbleDeadline;
+
+        Slot(int id, UsbDriverListener listener, Context context, UsbInterface iface, UsbEndpoint in,
+             UsbEndpoint out, boolean motion, boolean split, int grips, int holdMs, boolean rim) {
+            // A puck slot may host a different controller after reconnect. Do not persist its
+            // learned stick extents under the receiver's identity or share BLE calibration.
+            super(id, listener, device.getProductId(), context, null, "USB slot " + iface.getId(),
+                    motion, split, grips, rim);
+            this.iface = iface; this.in = in; this.out = out;
+            rumbleHoldMs = Math.max(0, holdMs);
+        }
+
+        @Override public boolean start() { return false; } // The receiver owns the physical link.
+        @Override public void stop() { SteamControllerUsb.this.stop(); }
+        @Override public void rumbleTriggers(short left, short right) { }
+
+        void readLoop() {
+            byte[] report = new byte[64];
+            while (!stopped && !Thread.currentThread().isInterrupted()) {
+                long before = SystemClock.uptimeMillis();
+                int size;
+                try {
+                    size = connection.bulkTransfer(in, report, report.length, READ_TIMEOUT_MS);
+                } catch (RuntimeException e) {
+                    size = -1;
+                }
+                synchronized (this) {
+                    if (stopped) return;
+                    if (size > 0) handleReport(report, size);
+                    if (connected && SystemClock.uptimeMillis() - lastStateMs >= STALE_STATE_MS) disconnect();
+                }
+                // Android exposes the same -1 for timeout, detach and I/O errors. A detached
+                // receiver must not spin, even if its broadcast is delayed or absent.
+                if (size <= 0 && SystemClock.uptimeMillis() - before < READ_TIMEOUT_MS / 2) {
+                    try { Thread.sleep(READ_TIMEOUT_MS); } catch (InterruptedException e) { return; }
+                }
+            }
+        }
+
+        private void connect() {
+            if (connected || stopped || SystemClock.uptimeMillis() < retryAtMs) return;
+            connected = true;
+            generation++;
+            resetInputState();
+            lastStateMs = SystemClock.uptimeMillis();
+            notifyDeviceAdded();
+            final int current = generation;
+            outputHandler.post(() -> {
+                synchronized (Slot.this) {
+                    if (!connected || stopped || current != generation) return;
+                }
+                if (!configure(Slot.this, true)) writeFailed(current);
+            });
+        }
+
+        private void disconnect() {
+            generation++;
+            outputs.clear();
+            drainScheduled = false;
+            repeatingRumble = null;
+            outputHandler.removeCallbacks(rumbleTick);
+            outputHandler.removeCallbacks(drain);
+            resetInputState();
+            if (connected) {
+                connected = false;
+                notifyDeviceRemoved();
+            }
+        }
+
+        private void handleReport(byte[] report, int size) {
+            int id = report[0] & 0xff;
+            if ((id == 0x79 || id == 0x46) && size >= 2) {
+                if (report[1] == 1) disconnect();
+                else if (report[1] == 2) connect();
+                return;
+            }
+            int expected = id == 0x42 ? 54 : (id == 0x45 || id == 0x47) ? 46 : 0;
+            if (expected != 0 && size >= expected) {
+                connect(); // The puck may already be paired when Moonlight claims it.
+                if (connected) {
+                    lastStateMs = SystemClock.uptimeMillis();
+                    handleState(report, 1, id == 0x47);
+                }
+            } else if (id == 0x43 && size >= 15 && connected) {
+                handleBattery(report, 1);
+            }
+            // 0x44 haptic acknowledgements and 0x7B radio diagnostics are not game input.
+        }
+
+        synchronized void writeFailed(int current) {
+            if (!stopped && connected && generation == current) {
+                LimeLog.warning("Steam Controller USB: output failed on interface " + iface.getId());
+                retryAtMs = SystemClock.uptimeMillis() + KEEPALIVE_MS;
+                disconnect();
+            }
+        }
+
+        @Override public void rumble(short low, short high) {
+            steamHaptic(new byte[]{(byte) 0x80, 0, 0, 0, (byte) low, (byte) (low >> 8),
+                    0, (byte) high, (byte) (high >> 8), 0});
+        }
+
+        @Override public synchronized void steamHaptic(byte[] report) {
+            if (stopped || !connected || report == null || report.length == 0 ||
+                    report.length != outputSize(report[0] & 0xff)) return;
+            int id = report[0] & 0xff;
+            // Invalid side values must not consume the finite stop-priority queue.
+            if ((id == 0x81 || id == 0x82) && (report[1] & 0xff) > 2) return;
+            byte[] copy = Arrays.copyOf(report, report.length);
+            if ((copy[0] & 0xff) == 0x80) {
+                outputHandler.removeCallbacks(rumbleTick);
+                repeatingRumble = stopKey(copy) >= 0 ? null : copy;
+                rumbleDeadline = rumbleHoldMs == 0 ? Long.MAX_VALUE : SystemClock.uptimeMillis() + rumbleHoldMs;
+                if (repeatingRumble != null) outputHandler.postDelayed(rumbleTick, 40);
+            }
+            enqueue(copy);
+        }
+
+        private final Runnable rumbleTick = new Runnable() {
+            @Override public void run() {
+                synchronized (Slot.this) {
+                    if (stopped || !connected || repeatingRumble == null) return;
+                    if (SystemClock.uptimeMillis() >= rumbleDeadline) {
+                        repeatingRumble = null;
+                        enqueue(new byte[]{(byte) 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+                    } else {
+                        enqueue(repeatingRumble);
+                        outputHandler.postDelayed(this, 40);
+                    }
+                }
+            }
+        };
+
+        private void enqueue(byte[] report) {
+            int stop = stopKey(report);
+            // Latest rumble wins; duplicate stop packets need only one queue entry.
+            outputs.removeIf(old -> ((report[0] & 0xff) == 0x80 && old[0] == report[0]) ||
+                    (stop >= 0 && stopKey(old) == stop));
+            if (outputs.size() >= MAX_OUTPUTS) {
+                Iterator<byte[]> it = outputs.iterator();
+                boolean evicted = false;
+                while (it.hasNext()) {
+                    if (stopKey(it.next()) < 0) { it.remove(); evicted = true; break; }
+                }
+                // Stops are never evicted by effects. Each stop key is coalesced above.
+                if (!evicted) return;
+            }
+            outputs.addLast(report);
+            if (!drainScheduled) {
+                drainScheduled = true;
+                outputHandler.post(drain);
+            }
+        }
+
+        private final Runnable drain = new Runnable() {
+            @Override public void run() {
+                byte[] report;
+                int current;
+                synchronized (Slot.this) {
+                    if (stopped || !connected || (report = outputs.pollFirst()) == null) {
+                        drainScheduled = false;
+                        return;
+                    }
+                    current = generation;
+                }
+                if (!writeOutput(Slot.this, report)) writeFailed(current);
+                synchronized (Slot.this) {
+                    if (!stopped && connected && generation == current && !outputs.isEmpty()) {
+                        // One transfer per dispatch gives other puck slots a turn.
+                        outputHandler.post(this);
+                    } else {
+                        drainScheduled = false;
+                    }
+                }
+            }
+        };
+    }
+}

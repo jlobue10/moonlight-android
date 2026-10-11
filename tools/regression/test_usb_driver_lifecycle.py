@@ -36,10 +36,11 @@ public class UsbDriverService {
  static class Build {static class VERSION {static int SDK_INT=35;} static class VERSION_CODES {static final int S=31;}}
  static class Intent {Intent(String a){} void setPackage(String p){}}
  static class PendingIntent {static final int FLAG_MUTABLE=1; static PendingIntent getBroadcast(Object c,int r,Intent i,int f){return new PendingIntent();}}
- static class UsbDevice {String name="dev"; String getDeviceName(){return name;}}
+ static class UsbDevice {String name="dev"; String getDeviceName(){return name;} int getDeviceId(){return 7;}}
  static class UsbDeviceConnection {int closes; void close(){++closes;}}
  static class UsbManager {
-  boolean permission=true; int opens, requests;
+  boolean permission=true, present=true; int opens, requests;
+  Map<String,UsbDevice> getDeviceList(){return present?Map.of("dev",new UsbDevice()):Map.of();}
   boolean hasPermission(UsbDevice d){return permission;}
   UsbDeviceConnection openDevice(UsbDevice d){++opens;return new UsbDeviceConnection();}
   void requestPermission(UsbDevice d,PendingIntent p){++requests;}
@@ -52,7 +53,8 @@ public class UsbDriverService {
   void removeCallbacksAndMessages(Object token){queue.clear();}
   void drain(){List<Runnable> run=new ArrayList<>(queue);queue.clear();for(Runnable r:run)r.run();}
  }
- interface UsbDriverListener {void deviceRemoved(AbstractController c); void deviceAdded(AbstractController c);}
+ interface UsbDriverListener {void deviceRemoved(AbstractController c); void deviceAdded(AbstractController c);
+ default void reportControllerTouch(int i,byte p,byte e,int id,float x,float y,float pressure){} default void reportControllerBattery(int i,byte s,byte p){} }
  interface UsbDriverStateListener {void onUsbPermissionPromptStarting(); void onUsbPermissionPromptCompleted();}
  static abstract class AbstractController {
   final UsbDriverService service; int stops; boolean startResult=true;
@@ -77,7 +79,12 @@ public class UsbDriverService {
   ProConController(UsbDevice d,UsbDeviceConnection c,int id,UsbDriverService s){super(s);}
   static boolean canClaimDevice(UsbDevice d){return false;}
  }
- static class Prefs {boolean bindAllUsb;}
+ static class SteamControllerUsb {
+ static boolean claim;int stops;SteamControllerUsb(UsbDevice d,UsbDeviceConnection c,int id,Object l,Object ctx,boolean m,boolean s,int g,int h,boolean r){}
+ static boolean canClaimDevice(UsbDevice d){return claim;}int getUsbDeviceId(){return 7;} boolean start(){return true;}void stop(){stops++;}
+ }
+ static class SteamControllerBleManager {static int gripsModeFromPref(String s){return 0;}static int rumbleHoldFromPref(String s){return 500;}}
+ static class Prefs {boolean bindAllUsb,steamControllerMotion,steamControllerSplitPads,steamControllerStickRim;String steamControllerGrips,steamControllerRumbleHold; }
  private static final String ACTION_USB_PERMISSION = "com.limelight.USB_PERMISSION";
  static boolean shouldClaimDevice(UsbDevice d,boolean all){return true;}
  final UsbManager usbManager=new UsbManager();
@@ -90,6 +97,7 @@ public class UsbDriverService {
  String getPackageName(){return "test";}
  CharSequence getText(int id){return "";}
  final List<AbstractController> controllers=new CopyOnWriteArrayList<>();
+ final List<SteamControllerUsb> steamUsbDevices=new CopyOnWriteArrayList<>();
  final Handler mainHandler=new Handler();
  UsbDriverListener listener;
  UsbDriverStateListener stateListener;
@@ -118,13 +126,23 @@ suffix = r"""
    check(s.controllers.size()==1&&first.stops==1,"a controller removing itself from its input thread leaves the list consistent");
    s.stop();
    check(s.controllers.isEmpty()&&first.stops==1&&second.stops==1,"stop stops each remaining controller exactly once");}
+  SteamControllerUsb.claim=true;
+  UsbDriverService puckService=new UsbDriverService();puckService.handleUsbDeviceState(new UsbDevice());puckService.handleUsbDeviceState(new UsbDevice());
+  check(puckService.usbManager.opens==1&&puckService.steamUsbDevices.size()==1&&puckService.nextDeviceId==4,"duplicate receiver broadcasts preserve one owner and four slot IDs");
+  SteamControllerUsb puck=puckService.steamUsbDevices.get(0);puckService.stop();check(puck.stops==1&&puckService.steamUsbDevices.isEmpty(),"service shutdown stops the receiver even when no wireless slot is connected");
+  UsbDriverService stale=new UsbDriverService();stale.usbManager.present=false;stale.handleUsbDeviceState(new UsbDevice());check(stale.usbManager.opens==0,"an attach queued before unplug cannot reclaim the detached puck");
+  final int[] forwarded={0,0};stale.listener=new UsbDriverListener(){public void deviceRemoved(AbstractController c){}public void deviceAdded(AbstractController c){}
+   public void reportControllerTouch(int i,byte p,byte e,int id,float x,float y,float pressure){if(i==2&&p==1&&x==.75f&&pressure==.5f)forwarded[0]++;}
+   public void reportControllerBattery(int i,byte state,byte percent){if(i==2&&state==3&&percent==80)forwarded[1]++;}};
+  stale.reportControllerTouch(2,(byte)1,(byte)0,0,.75f,.25f,.5f);stale.reportControllerBattery(2,(byte)3,(byte)80);
+  check(forwarded[0]==1&&forwarded[1]==1,"USB service forwards touchpad and battery callbacks to the stream listener");
   if(failures!=0)System.exit(1);
  }
 }
 """
 if not uses_main_handler:
     print('UsbDriverService has no mainHandler; the baseline would claim devices after stop()')
-code = prefix + '\n'.join(method(m) for m in ['    private void handleUsbDeviceState(UsbDevice device)', '    private void stop()', '    public void deviceRemoved(AbstractController controller)']).replace('@Override', '') + suffix
+code = prefix + '\n'.join(method(m) for m in ['    private void handleUsbDeviceState(UsbDevice device)', '    private void stop()', '    public void deviceRemoved(AbstractController controller)', '    public void reportControllerTouch(', '    public void reportControllerBattery(']).replace('@Override', '') + suffix
 XBOX = 'app/src/main/java/com/limelight/binding/input/driver/AbstractXboxController.java'
 xbox = (subprocess.check_output(['git', 'show', 'HEAD:' + XBOX], cwd=ROOT, text=True)
         if '--baseline' in sys.argv else (ROOT / XBOX).read_text())

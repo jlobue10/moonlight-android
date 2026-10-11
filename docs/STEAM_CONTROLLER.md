@@ -1,4 +1,8 @@
-# 2026 Steam Controller over Bluetooth
+# 2026 Steam Controller
+
+The built-in driver now also supports the **USB puck on the Android client**, and direct USB.
+See [puck setup, feature coverage and hardware validation](SC2026_USB_PUCK.md). The Bluetooth
+transport described below shares its input decoder and settings with USB.
 
 ## Why Android does not see it
 

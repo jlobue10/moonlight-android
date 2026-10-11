@@ -31,4 +31,9 @@ public class ControllerPacket {
     // Capacitive stick touch (LI_CCAP_STICK_TOUCH): held, not pressed
     public static final int LEFT_STICK_TOUCH_FLAG  = 0x1000000;
     public static final int RIGHT_STICK_TOUCH_FLAG = 0x2000000;
+    // Physical SC2026 clicks, advertised by LI_CCAP_SC26_BUTTONS.
+    public static final int LEFT_PAD_CLICK_FLAG      = 0x04000000;
+    public static final int RIGHT_PAD_CLICK_FLAG     = 0x08000000;
+    public static final int LEFT_TRIGGER_CLICK_FLAG  = 0x10000000;
+    public static final int RIGHT_TRIGGER_CLICK_FLAG = 0x20000000;
 }
