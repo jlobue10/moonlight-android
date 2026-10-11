@@ -83,6 +83,7 @@ public class UsbDriverService {
  final UsbManager usbManager=new UsbManager();
  final Prefs prefConfig=new Prefs();
  boolean started=true;
+ boolean permissionPromptPending;
  final Object receiver=new Object();
  int unregistrations;
  void unregisterReceiver(Object r){++unregistrations;}

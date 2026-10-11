@@ -379,7 +379,12 @@ public class ShortcutTrampoline extends AppCompatActivity {
             String value = line.substring(separatorIndex + 1).trim();
             if (key.endsWith("]")) {
                 key = key.substring(1, key.length() - 1);
-                if (artData.size() >= ART_MAX_ENTRIES && !artData.containsKey(key)) {
+                if (artData.containsKey(key)) {
+                    // Last-key-wins let a second "[host_uuid]" line (injected through a
+                    // host-supplied name) silently retarget the shortcut.
+                    throw new IOException(".art file repeats key " + key);
+                }
+                if (artData.size() >= ART_MAX_ENTRIES) {
                     throw new IOException(".art file has too many entries");
                 }
                 artData.put(key, value);

@@ -8,6 +8,7 @@ the IOException handler never saw.
 import pathlib, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ST = 'app/src/main/java/com/limelight/ShortcutTrampoline.java'
+SH = 'app/src/main/java/com/limelight/utils/ShortcutHelper.java'
 NV = 'app/src/main/java/com/limelight/nvstream/http/NvHTTP.java'
 
 def read(path):
@@ -27,6 +28,8 @@ def field(source, name):
 
 st = read(ST)
 nv = read(NV)
+sh = read(SH)
+exporter = block(sh, '    static String artValue(') if 'artValue(' in sh else 'static String artValue(String v) { return v; }'
 parser = '\n'.join(filter(None, [field(st, 'ART_MAX_BYTES'), field(st, 'ART_MAX_LINE'), field(st, 'ART_MAX_ENTRIES'),
                                   block(st, '    static void applyArtLine(') if 'applyArtLine(' in st else '',
                                   block(st, '    static Map<String, String> parseArtReader(') if 'parseArtReader(' in st else '']))
@@ -40,6 +43,7 @@ import java.util.*;
 public class ArtFileRegression {
     static int checks, failures;
     static void check(boolean ok, String message) { ++checks; if (!ok) ++failures; System.out.println((ok ? "PASS " : "FAIL ") + message); }
+''' + exporter + r'''
 ''' + parser + '\n' + bound + r'''
     static String repeat(char c, int n) { char[] a = new char[n]; Arrays.fill(a, c); return new String(a); }
     public static void main(String[] args) throws Exception {
@@ -56,6 +60,13 @@ public class ArtFileRegression {
         for (int i = 0; i < 300; i++) many.append("[k").append(i).append("] v\n");
         try { parseArtReader(new StringReader(many.toString())); check(false, "too many entries are rejected"); }
         catch (IOException e) { check(true, "too many entries are rejected"); }
+
+        try { parseArtReader(new StringReader("[host_uuid] a\n[app_name] x\n[host_uuid] b\n")); check(false, "a repeated key is rejected instead of retargeting the shortcut"); }
+        catch (IOException e) { check(true, "a repeated key is rejected instead of retargeting the shortcut"); }
+        check(artValue("Desk\n[host_uuid] evil").equals("Desk [host_uuid] evil"), "an exported value cannot carry a line of its own");
+        check(artValue("  plain \r\n").equals("plain"), "an exported value is trimmed");
+        Map<String, String> exported = parseArtReader(new StringReader("[host_name] " + artValue("Desk\n[host_uuid] evil") + "\n[host_uuid] good\n"));
+        check("good".equals(exported.get("host_uuid")), "the sanitised export keeps the real host uuid");
 
         List<String> big = new ArrayList<>();
         for (int i = 0; i < 1000; i++) big.add(repeat('c', 1000));

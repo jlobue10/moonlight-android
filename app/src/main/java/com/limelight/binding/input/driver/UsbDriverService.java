@@ -48,6 +48,11 @@ public class UsbDriverService extends Service implements UsbDriverListener {
 
     private UsbDriverListener listener;
     private UsbDriverStateListener stateListener;
+    // Set while a permission dialog this service requested is open. The permission action
+    // is unprotected (and the receiver exported below API 33), so completions are only
+    // honoured while a prompt is pending: a spoofed broadcast must neither NPE on a missing
+    // device nor unbalance the PiP suppression the state listener keeps.
+    private boolean permissionPromptPending;
     private int nextDeviceId;
 
     @Override
@@ -113,6 +118,11 @@ public class UsbDriverService extends Service implements UsbDriverListener {
             // Subsequent permission dialog completion intent
             else if (action.equals(ACTION_USB_PERMISSION)) {
                 UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                if (!permissionPromptPending || device == null) {
+                    LimeLog.warning("Ignoring USB permission broadcast without a pending prompt or a device");
+                    return;
+                }
+                permissionPromptPending = false;
 
                 // Permission dialog is now closed
                 if (stateListener != null) {
@@ -170,6 +180,7 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                     if (stateListener != null) {
                         stateListener.onUsbPermissionPromptStarting();
                     }
+                    permissionPromptPending = true;
 
                     int intentFlags = 0;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -191,6 +202,7 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                     usbManager.requestPermission(device, PendingIntent.getBroadcast(UsbDriverService.this, 0, i, intentFlags));
                 } catch (SecurityException e) {
                     Toast.makeText(this, this.getText(R.string.error_usb_prohibited), Toast.LENGTH_LONG).show();
+                    permissionPromptPending = false;
                     if (stateListener != null) {
                         stateListener.onUsbPermissionPromptCompleted();
                     }
