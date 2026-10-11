@@ -39,8 +39,10 @@ public class PyroWaveDecoderRenderer {
     private Surface surface;
     private int width, height, frameRate;
     private boolean chroma444, tenBit;
-    private boolean hdrEnabled;
-    private float hdrPeakNits;
+    // Written by the control-stream thread, applied by whichever thread next holds the lock.
+    private volatile boolean hdrEnabled;
+    private volatile float hdrPeakNits;
+    private volatile boolean hdrDirty;
 
     // Touched by the submitting thread only.
     private int consecutiveSubmitErrors;
@@ -92,6 +94,7 @@ public class PyroWaveDecoderRenderer {
             recreated = false;
             dead = false;
             handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
+            applyPendingHdrMode();
             return handle != 0;
         } finally {
             handleLock.writeLock().unlock();
@@ -117,6 +120,7 @@ public class PyroWaveDecoderRenderer {
             if (handle == 0) {
                 return false;
             }
+            hdrDirty = false;
             nativeSetHdrMode(handle, hdrEnabled, hdrPeakNits);
             return true;
         } finally {
@@ -135,15 +139,26 @@ public class PyroWaveDecoderRenderer {
      * the mastering display peak, 0 for the default).
      */
     public void setHdrMode(boolean enabled, float peakNits) {
-        handleLock.readLock().lock();
-        try {
-            hdrEnabled = enabled;
-            hdrPeakNits = peakNits;
-            if (handle != 0) {
-                nativeSetHdrMode(handle, enabled, peakNits);
+        hdrEnabled = enabled;
+        hdrPeakNits = peakNits;
+        hdrDirty = true;
+        // Never queue behind a writer: a cleanup()/setup() waiting on a stalled submitFrame
+        // would otherwise hold this thread (and the rumble/haptic callbacks behind it) for
+        // the whole present. When the lock is busy the submitting thread applies the mode.
+        if (handleLock.readLock().tryLock()) {
+            try {
+                applyPendingHdrMode();
+            } finally {
+                handleLock.readLock().unlock();
             }
-        } finally {
-            handleLock.readLock().unlock();
+        }
+    }
+
+    /** Pushes a pending HDR mode to the native renderer. The caller holds the read or write lock. */
+    private void applyPendingHdrMode() {
+        if (hdrDirty && handle != 0) {
+            hdrDirty = false;
+            nativeSetHdrMode(handle, hdrEnabled, hdrPeakNits);
         }
     }
 
@@ -156,6 +171,7 @@ public class PyroWaveDecoderRenderer {
             if (handle == 0) {
                 return MoonBridge.DR_NEED_IDR;
             }
+            applyPendingHdrMode();
             // Skipped frames are fine: every frame is a keyframe, so the next one recovers.
             // PyroWave has no IDR to request, so an error only asks for the next frame.
             result = nativeSubmitFrame(handle, data, length);

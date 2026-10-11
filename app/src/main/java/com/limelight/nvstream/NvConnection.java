@@ -259,7 +259,9 @@ public class NvConnection {
         if (config.getPyroWaveMaxMbps() > 0) {
             kbps = Math.min(kbps, config.getPyroWaveMaxMbps() * 1000.0);
         }
-        return (int) Math.max(500.0, Math.min(10_000_000.0, kbps));
+        // Vibepollo rejects an ANNOUNCE above 800000 kbps outright (no fallback); common-c caps
+        // the advertised value as well, this keeps the local budget honest.
+        return (int) Math.max(500.0, Math.min(800_000.0, kbps));
     }
 
     // Mirror RTSP's codec priority using the advertised capabilities. A matching

@@ -86,15 +86,20 @@ STUBS = {
 TEST = r'''import java.lang.reflect.*; import java.util.*; import android.bluetooth.*; import android.content.*; import android.os.*;
 import com.limelight.binding.input.driver.*; import com.limelight.binding.input.driver.ble.*;
 public class BleRegression {
- static int failed,checks,states,added;
+ static int failed,checks,states,added,batteryState=-1,batteryPercent=-1;
  static void check(boolean ok,String name){checks++;System.out.println((ok?"PASS ":"FAIL ")+name);if(!ok)failed++;}
  static Object get(Object o,String name)throws Exception{Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(o);}
  static void set(Object o,String name,Object v)throws Exception{Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);f.set(o,v);}
+ static Object tryGet(Object o,String name){try{return get(o,name);}catch(Exception e){return null;}}
+ static void battery(SteamControllerBle d,int chargeState,int percent)throws Exception{
+  Method m=SteamControllerBle.class.getDeclaredMethod("handleBattery",byte[].class);m.setAccessible(true);
+  batteryState=-1;batteryPercent=-1;m.invoke(d,(Object)new byte[]{(byte)chargeState,(byte)percent});}
  static SteamControllerBle create(BluetoothDevice device)throws Exception{
   SteamControllerBle d=new SteamControllerBle(1,new UsbDriverListener(){
    public void reportControllerState(int i,int b,float x,float y,float z,float w,float l,float r){states++;}
    public void reportControllerMotion(int i,byte t,float x,float y,float z){}
    public void deviceRemoved(AbstractController c){} public void deviceAdded(AbstractController c){added++;}
+   public void reportControllerBattery(int i,byte s,byte p){batteryState=s;batteryPercent=p;}
   },new Context(),device,false,false,0,0,0,false);return d;
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
@@ -237,6 +242,37 @@ public class BleRegression {
    check(m.drivers.size()==1,"a later ACL connection starts the driver");
    BluetoothDevice other=new BluetoothDevice();other.name="Keyboard";acl.extra=other;Context.receiver.onReceive(m.context,acl);
    check(m.drivers.size()==1,"an ACL connection from another device is ignored");m.stop();}
+  // Battery report: byte 0 is the firmware's EChargeState (1 discharging, 2 charging,
+  // 3 source validate, 4 done, 0 reset). Non-zero used to mean "charging".
+  {d=make();set(d,"announced",true);
+   battery(d,1,80);check(batteryState==com.limelight.nvstream.jni.MoonBridge.LI_BATTERY_STATE_DISCHARGING&&batteryPercent==80,"charge state 1 is reported as discharging");
+   battery(d,1,100);check(batteryState==com.limelight.nvstream.jni.MoonBridge.LI_BATTERY_STATE_DISCHARGING,"a full battery on battery power is still discharging");
+   battery(d,2,50);check(batteryState==com.limelight.nvstream.jni.MoonBridge.LI_BATTERY_STATE_CHARGING,"charge state 2 is charging");
+   battery(d,3,90);check(batteryState==com.limelight.nvstream.jni.MoonBridge.LI_BATTERY_STATE_CHARGING,"source validate counts as charging");
+   battery(d,4,100);check(batteryState==com.limelight.nvstream.jni.MoonBridge.LI_BATTERY_STATE_FULL,"charge state 4 (done) is full");
+   battery(d,0,0);check(batteryState==com.limelight.nvstream.jni.MoonBridge.LI_BATTERY_STATE_UNKNOWN,"charge state 0 (reset) is unknown, not discharging");
+   d.stop();}
+  // Setup watchdog: an accepted requestMtu whose onMtuChanged never arrives used to leave the
+  // link half-open forever (gatt set, nothing announced, manager restart disarmed).
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   Handler h=(Handler)get(d,"handler");h.delayed.clear();
+   callback.onConnectionStateChange(old,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
+   Runnable watchdog=(Runnable)tryGet(d,"setupWatchdog");
+   check(watchdog!=null&&h.delayed.contains(watchdog),"a connection arms the setup watchdog");
+   if(watchdog!=null){watchdog.run();}
+   check(get(d,"gatt")==null&&old.closed,"a setup that never completes recycles the link");
+   check(!h.delayed.isEmpty(),"the recycled link schedules a reconnect");
+   d.stop();}
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   old.service.chars.add(command());old.service.chars.add(notify);Handler h=(Handler)get(d,"handler");
+   callback.onConnectionStateChange(old,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
+   callback.onServicesDiscovered(old,0);Runnable watchdog=(Runnable)tryGet(d,"setupWatchdog");
+   check(watchdog!=null&&!h.delayed.contains(watchdog)&&get(d,"gatt")==old,"a completed setup disarms the watchdog");
+   d.stop();}
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   callback.onConnectionStateChange(old,133,BluetoothProfile.STATE_CONNECTED);
+   check(get(d,"gatt")==null&&old.closed,"CONNECTED with an error status is a lost link, not a half-open one");
+   d.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
