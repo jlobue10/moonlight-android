@@ -151,13 +151,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private final HandlerThread backgroundHandlerThread;
     private final Handler backgroundThreadHandler;
     private boolean hasGameController;
-    private boolean stopped = false;
+    private volatile boolean stopped = false;
 
     private final PreferenceConfiguration prefConfig;
     private short currentControllers, initialControllers;
     // The number masks are reserved from the main thread (InputDevice events) and from
     // driver binder threads (USB, Steam Controller BLE); one lock keeps two first-input
-    // events from taking the same slot or losing a release.
+    // events from taking the same slot or losing a release. Removal callbacks also
+    // hold this lock through native submission; stop cannot retire the handler
+    // while an old removal is still able to affect the process-wide session.
     private final Object controllerMaskLock = new Object();
 
     public ControllerHandler(Activity activityContext, NvConnection conn, GameGestures gestures, PreferenceConfiguration prefConfig) {
@@ -265,13 +267,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @Override
     public void onInputDeviceRemoved(int deviceId) {
-        InputDeviceContext context = inputDeviceContexts.get(deviceId);
-        if (context != null) {
-            LimeLog.info("Removed controller: "+context.name+" ("+deviceId+")");
-            releaseControllerNumber(context);
-            context.destroy();
-            inputDeviceContexts.remove(deviceId);
-            refreshInputDeviceContextSnapshot();
+        synchronized (controllerMaskLock) {
+            if (stopped) {
+                return;
+            }
+            InputDeviceContext context = inputDeviceContexts.get(deviceId);
+            if (context != null) {
+                LimeLog.info("Removed controller: "+context.name+" ("+deviceId+")");
+                releaseControllerNumber(context);
+                context.destroy();
+                inputDeviceContexts.remove(deviceId);
+                refreshInputDeviceContextSnapshot();
+            }
         }
     }
 
@@ -300,12 +307,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     public void stop() {
-        if (stopped) {
-            return;
-        }
+        synchronized (controllerMaskLock) {
+            if (stopped) {
+                return;
+            }
 
-        // Stop new device contexts from being created or used
-        stopped = true;
+            // Wait for admitted removal callbacks, then suppress late ones before
+            // native teardown allows a replacement stream to use the same slots.
+            stopped = true;
+        }
 
         // Unregister our input device callbacks
         inputManager.unregisterInputDeviceListener(this);
@@ -3151,12 +3161,17 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @Override
     public void deviceRemoved(AbstractController controller) {
-        UsbDeviceContext context = usbDeviceContexts.get(controller.getControllerId());
-        if (context != null) {
-            LimeLog.info("Removed controller: "+controller.getControllerId());
-            releaseControllerNumber(context);
-            context.destroy();
-            usbDeviceContexts.remove(controller.getControllerId());
+        synchronized (controllerMaskLock) {
+            if (stopped) {
+                return;
+            }
+            UsbDeviceContext context = usbDeviceContexts.get(controller.getControllerId());
+            if (context != null) {
+                LimeLog.info("Removed controller: "+controller.getControllerId());
+                releaseControllerNumber(context);
+                context.destroy();
+                usbDeviceContexts.remove(controller.getControllerId());
+            }
         }
     }
 
