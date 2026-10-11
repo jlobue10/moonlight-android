@@ -146,10 +146,16 @@ public class ExternalDisplayControlActivity extends AppCompatActivity implements
     }
 
     private void initViews() {
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
         if (Game.instance == null) {
             if (failCount > 10) {
                 Toast.makeText(this, getString(R.string.no_game_instance), Toast.LENGTH_LONG).show();
                 finish();
+                // No further retries: the old code kept re-posting itself and later built
+                // the UI (and a GameMenu with no context) from a finished activity.
+                return;
             }
             // Wait for the intent to get started
             handler.postDelayed(this::initViews, 500);
@@ -214,6 +220,7 @@ public class ExternalDisplayControlActivity extends AppCompatActivity implements
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        handler.removeCallbacksAndMessages(null);
         instance = null;
     }
 

@@ -98,6 +98,14 @@ public class ExternalControllerView extends FrameLayout {
             }
 
             @Override
+            public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+                if (inputCallbacks != null && inputCallbacks.handleDeleteSurroundingText(beforeLength, afterLength)) {
+                    return true;
+                }
+                return super.deleteSurroundingTextInCodePoints(beforeLength, afterLength);
+            }
+
+            @Override
             public boolean sendKeyEvent(KeyEvent event) {
                 // Keep IME Enter/editor actions behind pending text and deletes,
                 // just as on the main streaming view.
