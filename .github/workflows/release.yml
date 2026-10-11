@@ -47,6 +47,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0   # the previous release tag, for the versionCode check
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -91,6 +92,39 @@ jobs:
             echo "::error::Tag $TAG does not match versionName $VERSION_NAME in app/build.gradle"
             exit 1
           fi
+
+      - name: versionCode must increase over the previous release
+        if: env.RELEASE_TAG != ''
+        run: |
+          set -euo pipefail
+          NEW=$(sed -nE 's/^\s*versionCode\s*=?\s*([0-9]+).*/\1/p' app/build.gradle | head -1)
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          echo "versionCode=$NEW previous_tag=${PREV_TAG:-none}"
+          if [ -n "$PREV_TAG" ]; then
+            OLD=$(git show "$PREV_TAG:app/build.gradle" | sed -nE 's/^\s*versionCode\s*=?\s*([0-9]+).*/\1/p' | head -1)
+            if [ -z "$OLD" ] || [ "$NEW" -le "$OLD" ]; then
+              echo "::error::versionCode $NEW is not above $OLD ($PREV_TAG); Android would refuse the update"
+              exit 1
+            fi
+          fi
+
+      # The tag usually sits on a bump commit pushed directly to the branch, which no PR
+      # validated: run the same gates as pr-build.yml on the exact tree being released.
+      - name: Run regression scripts
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          set -euo pipefail
+          for regression in tools/regression/test_*.py; do
+            echo "== $regression"
+            python3 "$regression"
+          done
+
+      - name: Run unit tests
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace testNonRoot_gameDebugUnitTest
 
       - name: Build release APKs
         run: |

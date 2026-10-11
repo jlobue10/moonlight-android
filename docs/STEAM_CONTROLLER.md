@@ -111,8 +111,9 @@ original; these were used as documentation.
 - Lizard-mode disable via 0x81 + settings (the Android project sends 0x85 instead; the kernel and
   SDL use the sequence implemented here). If keyboard/mouse events keep arriving while streaming,
   try adding a 0x85 write to the keep-alive.
-- Battery charge-state semantics (byte 0 of the battery characteristic; non-zero is treated as
-  charging).
+- Battery charge-state values on a real unit (byte 0 of the battery characteristic is mapped per
+  the firmware's EChargeState: 1 discharging, 2/3 charging, 4 full, 0 unknown; not yet observed
+  on battery).
 - Rumble feel of the 0xEB rumble command and the 0xEA click/tick replay over BLE (fork.27; the
   constants are documented for the Deck's haptic engine, which the Triton's output reports mirror
   field for field). If nothing is felt, switch "Rumble method" to pulse trains and report.

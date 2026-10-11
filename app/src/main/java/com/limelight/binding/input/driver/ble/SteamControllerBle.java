@@ -108,6 +108,9 @@ public class SteamControllerBle extends AbstractController {
     private static final int RUMBLE_CMD_MIN_GAP_MS = 20;
     /** A write whose completion never arrives would wedge the queue; clear it after this. */
     private static final long WRITE_WATCHDOG_MS = 2000;
+    // connectGatt -> onReady: an accepted requestMtu/discoverServices/writeDescriptor whose
+    // callback never arrives must not leave the link half-open for the rest of the stream.
+    private static final long SETUP_WATCHDOG_MS = 10_000;
     /** Retry delay after the stack refused a write (one operation outstanding at a time). */
     private static final long WRITE_RETRY_MS = 50;
     private static final int MAX_PENDING_WRITES = 32;
@@ -184,6 +187,17 @@ public class SteamControllerBle extends AbstractController {
     private volatile boolean stopped;
     private int reconnectAttempts;
     private boolean everConnected;
+
+    // Armed on CONNECTED, disarmed by onReady/onLinkLost. A setup that stalls after an accepted
+    // GATT operation used to keep `gatt` set forever, which also disarmed the manager's ACL
+    // restart (it only restarts a driver whose link is down). Recycle the link instead.
+    private final Runnable setupWatchdog = () -> {
+        BluetoothGatt g = gatt;
+        if (g != null && !announced && !stopped) {
+            LimeLog.warning("Steam Controller BLE: setup did not complete within " + SETUP_WATCHDOG_MS + " ms; recycling the link");
+            onLinkLost(g);
+        }
+    };
     // Stick extent diagnostics (stream log, every 10 s while a stick is away from centre).
     // All of it is measured on the raw BLE values, before the rim calibration below.
     private float stickLogLeftMax, stickLogRightMax;
@@ -406,10 +420,19 @@ public class SteamControllerBle extends AbstractController {
             if (stopped || g != gatt) {
                 return;
             }
-            if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    // Some stacks report a failed connection attempt as CONNECTED with an error
+                    // status; nothing follows it, so treat it as a lost link (which reconnects).
+                    LimeLog.warning("Steam Controller BLE: connected with status " + status + "; recycling the link");
+                    onLinkLost(g);
+                    return;
+                }
                 LimeLog.info("Steam Controller BLE: connected, negotiating");
                 everConnected = true;
                 mtuRequested = true;
+                handler.removeCallbacks(setupWatchdog);
+                handler.postDelayed(setupWatchdog, SETUP_WATCHDOG_MS);
                 g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
                 if (!g.requestMtu(DESIRED_MTU)) {
                     mtuRequested = false;
@@ -608,6 +631,7 @@ public class SteamControllerBle extends AbstractController {
             return;
         }
         reconnectAttempts = 0;
+        handler.removeCallbacks(setupWatchdog);
         enqueueWrite(new byte[]{ID_CLEAR_DIGITAL_MAPPINGS});
         // All settings in one command: keep-alive deduplication must not discard the IMU setup.
         enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
@@ -641,6 +665,7 @@ public class SteamControllerBle extends AbstractController {
         handler.removeCallbacks(retryFlush);
         handler.removeCallbacks(writeWatchdog);
         handler.removeCallbacks(batteryRead);
+        handler.removeCallbacks(setupWatchdog);
         synchronized (this) {
             writeQueue.clear();
             writeBusy = false;
@@ -1204,16 +1229,32 @@ public class SteamControllerBle extends AbstractController {
         return touched;
     }
 
-    /** Battery characteristic / report 0x43 without the id: [0] charge state, [1] percent. */
+    /**
+     * Battery characteristic / report 0x43 without the id: [0] charge state, [1] percent.
+     * The charge state follows the firmware's EChargeState (libvirtualgamepad sc26_usb.h):
+     * 0 reset (not measured yet), 1 discharging, 2 charging, 3 source validate, 4 done.
+     */
     private void handleBattery(byte[] data) {
         if (data == null || data.length < 2) {
             return;
         }
         int chargeState = data[0] & 0xFF;
         int percent = Math.min(100, data[1] & 0xFF);
-        byte state = chargeState != 0 ? MoonBridge.LI_BATTERY_STATE_CHARGING : MoonBridge.LI_BATTERY_STATE_DISCHARGING;
-        if (percent >= 100 && chargeState != 0) {
-            state = MoonBridge.LI_BATTERY_STATE_FULL;
+        byte state;
+        switch (chargeState) {
+            case 1:
+                state = MoonBridge.LI_BATTERY_STATE_DISCHARGING;
+                break;
+            case 2:
+            case 3:
+                state = MoonBridge.LI_BATTERY_STATE_CHARGING;
+                break;
+            case 4:
+                state = MoonBridge.LI_BATTERY_STATE_FULL;
+                break;
+            default:
+                state = MoonBridge.LI_BATTERY_STATE_UNKNOWN;
+                break;
         }
         reportBattery(state, (byte) percent);
     }

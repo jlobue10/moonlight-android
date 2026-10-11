@@ -11,7 +11,7 @@ def block(marker):
  return s[start:end+1]
 fields=s[s.index('    private final ReentrantReadWriteLock'):s.index('    private static boolean loadLibrary')]
 fields=fields.replace('new ReentrantReadWriteLock()', 'new HookLock()')
-methods=[block(x) for x in ['    public boolean setup(', '    private boolean recreate(', '    public void setHdrMode(', '    public int submitFrame(', '    public boolean isDead()', '    public void cleanup()']]
+methods=[block(x) for x in ['    public boolean setup(', '    private boolean recreate(', '    public void setHdrMode(', '    private void applyPendingHdrMode()', '    public int submitFrame(', '    public boolean isDead()', '    public void cleanup()']]
 pre=r'''
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class PyroRecovery {
