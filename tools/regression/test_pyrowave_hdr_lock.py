@@ -36,11 +36,19 @@ class LimeLog { static void info(String s) {} static void warning(String s) {} s
 class MoonBridge { static final int DR_OK = 0, DR_NEED_IDR = 1; }
 class Fake {
     static final CountDownLatch inSubmit = new CountDownLatch(1), release = new CountDownLatch(1);
+    static volatile boolean delayOldHdr;
+    static final CountDownLatch oldHdrEntered = new CountDownLatch(1), releaseOldHdr = new CountDownLatch(1);
     static volatile int hdrCalls; static volatile boolean lastEnabled; static volatile float lastPeak;
     static void loaded() {}
     static boolean nativeIsAvailable() { return true; }
     static long nativeCreate(Surface s, int w, int h, int f, boolean c, boolean t) { return 1; }
-    static void nativeSetHdrMode(long h, boolean e, float p) { hdrCalls++; lastEnabled = e; lastPeak = p; }
+    static void nativeSetHdrMode(long h, boolean e, float p) {
+        if (delayOldHdr && e && p == 1000f) {
+            oldHdrEntered.countDown();
+            try { releaseOldHdr.await(); } catch (InterruptedException x) { throw new RuntimeException(x); }
+        }
+        hdrCalls++; lastEnabled = e; lastPeak = p;
+    }
     static int nativeSubmitFrame(long h, byte[] d, int l) { inSubmit.countDown(); try { release.await(); } catch (InterruptedException x) {} return 0; }
     static int nativeGetLastGpuDecodeUs(long h) { return 0; }
     static void nativeDestroy(long h) {}
@@ -71,6 +79,20 @@ public class PyroHdrLockRegression {
         Fake.lastEnabled = false; Fake.lastPeak = 0f; before = Fake.hdrCalls;
         check(r.setup(new Surface(), 1920, 1080, 60, false, true), "the renderer sets up again");
         check(Fake.hdrCalls > before && Fake.lastEnabled && Fake.lastPeak == 1000f, "the current HDR mode reaches the next native renderer");
+        // A submitting/control reader may be descheduled during the native HDR write.
+        // A newer control message must remain pending if that old write finishes last.
+        Fake.delayOldHdr = true;
+        Thread oldHdr = new Thread(() -> r.setHdrMode(true, 1000f)); oldHdr.start();
+        check(Fake.oldHdrEntered.await(5, java.util.concurrent.TimeUnit.SECONDS), "the old HDR application is in flight");
+        Thread newHdr = new Thread(() -> r.setHdrMode(false, 800f)); newHdr.start();
+        newHdr.join(500);
+        check(!newHdr.isAlive(), "a newer HDR update does not wait on the older native call");
+        Fake.releaseOldHdr.countDown(); oldHdr.join(5000); newHdr.join(5000);
+        check(!oldHdr.isAlive() && !newHdr.isAlive(), "both HDR callers finish");
+        r.submitFrame(new byte[16], 16);
+        check(!Fake.lastEnabled && Fake.lastPeak == 800f, "the next frame applies the latest complete HDR mode instead of losing it");
+        r.cleanup(); r.setup(new Surface(), 1920, 1080, 60, false, true);
+        check(!Fake.lastEnabled && Fake.lastPeak == 800f, "the latest HDR mode also survives renderer replacement");
         System.out.println(checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);
     }
