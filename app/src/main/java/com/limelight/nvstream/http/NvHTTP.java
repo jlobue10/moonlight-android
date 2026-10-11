@@ -433,6 +433,12 @@ public class NvHTTP {
         return new ComputerDetails.AddressTuple(address, port);
     }
 
+    // A host-supplied identifier that is later used as a path component: letters,
+    // digits and hyphens only (GUIDs with or without hyphens), bounded length.
+    public static boolean isValidComputerUuid(String uuid) {
+        return uuid != null && !uuid.isEmpty() && uuid.length() <= 64 && uuid.matches("[A-Za-z0-9-]+");
+    }
+
     public ComputerDetails getComputerDetails(String serverInfo) throws IOException, XmlPullParserException {
         ComputerDetails details = new ComputerDetails();
 
@@ -441,8 +447,12 @@ public class NvHTTP {
             details.name = "UNKNOWN";
         }
 
-        // UUID is mandatory to determine which machine is responding
+        // UUID is mandatory to determine which machine is responding. It also names
+        // cache files and directories on disk, so it has to be a plain identifier.
         details.uuid = getXmlString(serverInfo, "uniqueid", true);
+        if (!isValidComputerUuid(details.uuid)) {
+            throw new XmlPullParserException("Malformed XML: uniqueid is not a valid identifier");
+        }
 
         String permStr = getXmlString(serverInfo, "Permission", false);
         if (permStr != null) {
@@ -808,13 +818,18 @@ public class NvHTTP {
                 }
                 break;
             case (XmlPullParser.TEXT):
+                if (appList.isEmpty()) {
+                    // Whitespace or text before the first <App> (a pretty-printed list)
+                    break;
+                }
                 NvApp app = appList.getLast();
                 if (currentTag.peek().equals("AppTitle")) {
                     app.setAppName(xpp.getText());
                 } else if (currentTag.peek().equals("UUID")) {
                     app.setAppUUID(xpp.getText());
                 } else if (currentTag.peek().equals("IDX")) {
-                    app.setAppIndex(Integer.parseInt(xpp.getText()));
+                    // The String overload tolerates a non-numeric index
+                    app.setAppIndex(xpp.getText());
                 } else if (currentTag.peek().equals("ID")) {
                     app.setAppId(xpp.getText());
                 } else if (currentTag.peek().equals("IsHdrSupported")) {

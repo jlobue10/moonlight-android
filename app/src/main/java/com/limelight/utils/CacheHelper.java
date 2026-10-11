@@ -13,10 +13,22 @@ import java.io.OutputStream;
 import java.io.Reader;
 
 public class CacheHelper {
+    // Cache paths are built from host-supplied names (computer uuid, app id). A
+    // component that could leave its directory is replaced by a fixed safe name so
+    // a rogue host can neither read nor delete outside the cache.
+    static String safeComponent(String component) {
+        if (component == null || component.isEmpty() || component.equals(".") || component.equals("..") ||
+                component.indexOf('/') >= 0 || component.indexOf('\\') >= 0 || component.indexOf('\0') >= 0 ||
+                component.indexOf(':') >= 0) {
+            return "_invalid_";
+        }
+        return component;
+    }
+
     public static File openPath(boolean createPath, File root, String... path) {
         File f = root;
         for (int i = 0; i < path.length; i++) {
-            String component = path[i];
+            String component = safeComponent(path[i]);
 
             if (i == path.length - 1) {
                 // This is the file component so now we create parent directories

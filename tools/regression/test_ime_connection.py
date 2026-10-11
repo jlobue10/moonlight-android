@@ -61,6 +61,7 @@ public class ImeConnectionRegression {
         public boolean commitText(CharSequence cs, int pos) { replaceText(cs, false); sendCurrentText(); return true; }
         public boolean finishComposingText() { editable.composeStart = editable.composeEnd = -1; sendCurrentText(); return true; }
         public boolean deleteSurroundingText(int before, int after) { keyEvents.add("delete:" + before + "," + after); return true; }
+        public boolean deleteSurroundingTextInCodePoints(int before, int after) { keyEvents.add("deleteCP:" + before + "," + after); return true; }
         public boolean sendKeyEvent(KeyEvent event) { keyEvents.add(event.toString()); return true; }
         public boolean performEditorAction(int action) {
             sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
@@ -108,6 +109,10 @@ public class ImeConnectionRegression {
         rec.host.clear();
         ic.deleteSurroundingText(2, 1);
         check(keys().isEmpty() && rec.host.equals(Arrays.asList("delete:2,1")), "deletions go through the callback");
+
+        rec.host.clear();
+        ic.deleteSurroundingTextInCodePoints(1, 0);
+        check(keys().isEmpty() && rec.host.equals(Arrays.asList("delete:1,0")), "code-point deletions go through the callback too");
 
         rec.host.clear(); rec.accept = false;
         ic.setComposingText("x", 1); ic.commitText("x", 1); ic.performEditorAction(EditorInfo.IME_ACTION_DONE);
