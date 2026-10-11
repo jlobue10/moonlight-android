@@ -7,6 +7,7 @@ import com.limelight.LimeLog;
 import com.limelight.nvstream.jni.MoonBridge;
 
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Decodes and presents PyroWave streams with Vulkan compute (native pyrowave-renderer).
@@ -39,10 +40,20 @@ public class PyroWaveDecoderRenderer {
     private Surface surface;
     private int width, height, frameRate;
     private boolean chroma444, tenBit;
-    // Written by the control-stream thread, applied by whichever thread next holds the lock.
-    private volatile boolean hdrEnabled;
-    private volatile float hdrPeakNits;
-    private volatile boolean hdrDirty;
+    // Publish the mode as one immutable value. Readers may share handleLock, so
+    // serialize native HDR writes separately without blocking the control thread.
+    private static final class HdrMode {
+        final boolean enabled;
+        final float peakNits;
+
+        HdrMode(boolean enabled, float peakNits) {
+            this.enabled = enabled;
+            this.peakNits = peakNits;
+        }
+    }
+    private volatile HdrMode hdrMode = new HdrMode(false, 0);
+    private final ReentrantLock hdrApplyLock = new ReentrantLock();
+    private HdrMode appliedHdrMode;
 
     // Touched by the submitting thread only.
     private int consecutiveSubmitErrors;
@@ -96,8 +107,8 @@ public class PyroWaveDecoderRenderer {
             handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
             if (handle != 0) {
                 // A new native renderer starts in SDR: push the current mode, pending or not.
-                hdrDirty = false;
-                nativeSetHdrMode(handle, hdrEnabled, hdrPeakNits);
+                appliedHdrMode = null;
+                applyPendingHdrMode();
             }
             return handle != 0;
         } finally {
@@ -124,8 +135,8 @@ public class PyroWaveDecoderRenderer {
             if (handle == 0) {
                 return false;
             }
-            hdrDirty = false;
-            nativeSetHdrMode(handle, hdrEnabled, hdrPeakNits);
+            appliedHdrMode = null;
+            applyPendingHdrMode();
             return true;
         } finally {
             handleLock.writeLock().unlock();
@@ -143,9 +154,7 @@ public class PyroWaveDecoderRenderer {
      * the mastering display peak, 0 for the default).
      */
     public void setHdrMode(boolean enabled, float peakNits) {
-        hdrEnabled = enabled;
-        hdrPeakNits = peakNits;
-        hdrDirty = true;
+        hdrMode = new HdrMode(enabled, peakNits);
         // Never queue behind a writer: a cleanup()/setup() waiting on a stalled submitFrame
         // would otherwise hold this thread (and the rumble/haptic callbacks behind it) for
         // the whole present. When the lock is busy the submitting thread applies the mode.
@@ -160,9 +169,19 @@ public class PyroWaveDecoderRenderer {
 
     /** Pushes a pending HDR mode to the native renderer. The caller holds the read or write lock. */
     private void applyPendingHdrMode() {
-        if (hdrDirty && handle != 0) {
-            hdrDirty = false;
-            nativeSetHdrMode(handle, hdrEnabled, hdrPeakNits);
+        if (!hdrApplyLock.tryLock()) {
+            return;
+        }
+        try {
+            HdrMode pending = hdrMode;
+            if (handle != 0 && pending != appliedHdrMode) {
+                nativeSetHdrMode(handle, pending.enabled, pending.peakNits);
+                // A newer publication during the native call remains pending for
+                // the next frame; an older write cannot mark that update applied.
+                appliedHdrMode = pending;
+            }
+        } finally {
+            hdrApplyLock.unlock();
         }
     }
 

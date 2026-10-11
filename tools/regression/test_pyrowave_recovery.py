@@ -14,6 +14,7 @@ fields=fields.replace('new ReentrantReadWriteLock()', 'new HookLock()')
 methods=[block(x) for x in ['    public boolean setup(', '    private boolean recreate(', '    public void setHdrMode(', '    private void applyPendingHdrMode()', '    public int submitFrame(', '    public boolean isDead()', '    public void cleanup()']]
 pre=r'''
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 public class PyroRecovery {
  static final boolean LIBRARY_LOADED=true;static final int SUBMIT_ERROR=-1,RECREATE_AFTER_ERRORS=30;
  static class Surface {boolean isValid(){return true;}}
