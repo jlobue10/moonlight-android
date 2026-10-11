@@ -96,6 +96,27 @@ public class UsbRegression {
   // Fill the bounded queue while the output worker is held. A stop must survive effects.
   byte[] zeroDuration=pulse(0,5);zeroDuration[2]=0;c5.steamHaptic(zeroDuration);for(int i=0;i<100;i++)c5.steamHaptic(pulse(1,1));check(((ArrayDeque<?>)get(s5,"outputs")).size()<=32,"effect overload keeps the output queue bounded");io.tx.clear();Handler.runReady();check(io.tx.stream().anyMatch(t->Arrays.equals(t.data,zeroDuration)),"zero-duration motor stop survives effect overload");
   io.tx.clear();c5.rumble((short)1234,(short)5678);Handler.runReady();SystemClock.now+=40;Handler.runReady();check(io.tx.stream().filter(t->t.endpoint==5&&t.data[0]==(byte)0x80).count()==2,"rumble refreshes at 40 ms without host reissuance");SystemClock.now+=500;Handler.runReady();check(io.tx.stream().anyMatch(t->t.endpoint==5&&t.data.length==10&&t.data[4]==0&&t.data[5]==0&&t.data[7]==0&&t.data[8]==0),"rumble hold deadline sends motors off");
+  // A tolerated transfer failure must not discard a motor-stop command.
+  byte[] motorStop=pulse(0,0);io.tx.clear();io.failOut=true;c5.steamHaptic(motorStop);Handler.runReady();
+  check((boolean)get(s5,"connected")&&((ArrayDeque<?>)get(s5,"outputs")).size()==1,"failed stop remains queued while the slot tolerates a transient error");
+  int attempts=io.tx.size();Handler.runReady();check(io.tx.size()==attempts,"failed stop retry waits instead of spinning");
+  for(int i=0;i<100;i++)c5.steamHaptic(pulse(1,1));
+  check(((ArrayDeque<?>)get(s5,"outputs")).size()<=32,"retained stop shares the bounded output queue under overload");
+  io.failOut=false;io.tx.clear();SystemClock.now+=40;Handler.runReady();
+  check(!io.tx.isEmpty()&&Arrays.equals(io.tx.get(0).data,motorStop),"recovered USB link sends the retained stop before later effects");
+  io.failOut=true;c5.steamHaptic(motorStop);Handler.runReady();input(s5,new byte[]{0x79,1},2);input(s5,state(0x42),54);
+  io.failOut=false;io.tx.clear();SystemClock.now+=40;Handler.runReady();
+  check(io.tx.stream().noneMatch(t->Arrays.equals(t.data,motorStop)),"disconnect cancels a pending stop retry before a new controller generation");
+  // Stops retry autonomously, but the existing three-failure budget still retires a dead link.
+  io.failOut=true;io.tx.clear();c5.steamHaptic(motorStop);Handler.runReady();
+  SystemClock.now+=40;Handler.runReady();check((boolean)get(s5,"connected"),"two failed stop attempts retain the slot");
+  SystemClock.now+=40;Handler.runReady();check(!(boolean)get(s5,"connected"),"a third failed stop retry retires the slot without another host event");
+  io.failOut=false;SystemClock.now+=1000;input(s5,state(0x42),54);Handler.runReady();
+  // Latest 0x80 state supersedes an obsolete stop, even while it awaits retry.
+  io.failOut=true;c5.rumble((short)0,(short)0);Handler.runReady();
+  c5.rumble((short)1,(short)2);io.failOut=false;io.tx.clear();SystemClock.now+=40;Handler.runReady();
+  check(io.tx.stream().noneMatch(t->t.endpoint==5&&t.data[0]==(byte)0x80&&t.data[4]==0&&t.data[7]==0),"new rumble supersedes an obsolete pending rumble stop");
+  c5.rumble((short)0,(short)0);Handler.runReady();
   io.failOut=true;c5.steamHaptic(pulse(0,1));Handler.runReady();check((boolean)get(s5,"connected"),"one short USB output transfer does not retire the slot (Android reports a timeout, a STALL and a detach alike)");for(int i=0;i<2;i++){c5.steamHaptic(pulse(0,1));Handler.runReady();}check(!(boolean)get(s5,"connected"),"three consecutive short USB output transfers retire the affected slot");input(s5,state(0x42),54);check(!(boolean)get(s5,"connected"),"failed output has a reconnect backoff");io.failOut=false;SystemClock.now+=1000;input(s5,state(0x42),54);Handler.runReady();check((boolean)get(s5,"connected"),"later state recovers after transient output failure");
   io.failControl=true;SystemClock.now+=1000;Handler.runReady();check((boolean)get(s5,"connected"),"one feature keepalive failure does not retire the slot");for(int i=0;i<2;i++){SystemClock.now+=1000;Handler.runReady();}check(!(boolean)get(s5,"connected"),"three consecutive keepalive failures retire the slot");io.failControl=false;SystemClock.now+=1000;input(s5,state(0x42),54);Handler.runReady();check((boolean)get(s5,"connected"),"state reconnects after feature failure");
   close(d);d.stop();Handler.runReady();check(io.closes==1&&new HashSet<>(io.releases).equals(Set.of(2,3,4,5)),"stop closes once and releases only owned controller interfaces");check(io.tx.stream().anyMatch(t->t.value==0x301&&t.data[4]==1&&t.data[7]==0),"stop restores lizard mode and disables raw IMU");int adds=e.added.size();check(!d.start()&&e.added.size()==adds,"stopped receiver cannot restart on its retired output thread");
