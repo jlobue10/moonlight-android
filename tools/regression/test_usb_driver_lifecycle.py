@@ -39,11 +39,11 @@ public class UsbDriverService {
  static class UsbDevice {String name="dev"; String getDeviceName(){return name;} int getDeviceId(){return 7;}}
  static class UsbDeviceConnection {int closes; void close(){++closes;}}
  static class UsbManager {
-  boolean permission=true, present=true; int opens, requests;
+  boolean permission=true, present=true, deniedByPolicy; int opens, requests;
   Map<String,UsbDevice> getDeviceList(){return present?Map.of("dev",new UsbDevice()):Map.of();}
   boolean hasPermission(UsbDevice d){return permission;}
   UsbDeviceConnection openDevice(UsbDevice d){++opens;return new UsbDeviceConnection();}
-  void requestPermission(UsbDevice d,PendingIntent p){++requests;}
+  void requestPermission(UsbDevice d,PendingIntent p){++requests;if(deniedByPolicy)throw new SecurityException();}
  }
  static class Looper {static Object getMainLooper(){return null;}}
  static class Handler {
@@ -126,6 +126,23 @@ suffix = r"""
    check(s.controllers.size()==1&&first.stops==1,"a controller removing itself from its input thread leaves the list consistent");
    s.stop();
    check(s.controllers.isEmpty()&&first.stops==1&&second.stops==1,"stop stops each remaining controller exactly once");}
+  {UsbDriverService s=new UsbDriverService();s.usbManager.permission=false;
+   final int[] prompts={0,0};s.stateListener=new UsbDriverStateListener(){
+    public void onUsbPermissionPromptStarting(){prompts[0]++;}
+    public void onUsbPermissionPromptCompleted(){prompts[1]++;}};
+   UsbDevice dev=new UsbDevice();s.handleUsbDeviceState(dev);s.handleUsbDeviceState(dev);
+   check(s.usbManager.requests==1&&prompts[0]==1&&s.permissionPromptsPending.size()==1,"duplicate attach while permission is pending opens one prompt");
+   s.stop();check(prompts[0]==prompts[1]&&s.permissionPromptsPending.isEmpty(),"stop balances PiP suppression after duplicate permission requests");}
+  {UsbDriverService s=new UsbDriverService();s.usbManager.permission=false;
+   final int[] balance={0};s.stateListener=new UsbDriverStateListener(){public void onUsbPermissionPromptStarting(){balance[0]++;}public void onUsbPermissionPromptCompleted(){balance[0]--;}};
+   UsbDevice a=new UsbDevice(),b=new UsbDevice();b.name="other";
+   s.handleUsbDeviceState(a);s.handleUsbDeviceState(b);
+   check(s.usbManager.requests==2&&balance[0]==2,"distinct USB devices still receive independent prompts");
+   s.stop();check(balance[0]==0,"shutdown balances all independent prompts");}
+  {UsbDriverService s=new UsbDriverService();s.usbManager.permission=false;s.usbManager.deniedByPolicy=true;
+   final int[] balance={0};s.stateListener=new UsbDriverStateListener(){public void onUsbPermissionPromptStarting(){balance[0]++;}public void onUsbPermissionPromptCompleted(){balance[0]--;}};
+   s.handleUsbDeviceState(new UsbDevice());
+   check(balance[0]==0&&s.permissionPromptsPending.isEmpty(),"policy denial releases prompt ownership and PiP suppression");}
   SteamControllerUsb.claim=true;
   UsbDriverService puckService=new UsbDriverService();puckService.handleUsbDeviceState(new UsbDevice());puckService.handleUsbDeviceState(new UsbDevice());
   check(puckService.usbManager.opens==1&&puckService.steamUsbDevices.size()==1&&puckService.nextDeviceId==4,"duplicate receiver broadcasts preserve one owner and four slot IDs");

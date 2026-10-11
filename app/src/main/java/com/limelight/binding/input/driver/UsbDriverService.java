@@ -218,13 +218,14 @@ public class UsbDriverService extends Service implements UsbDriverListener {
         if (shouldClaimDevice(device, prefConfig.bindAllUsb)) {
             // Do we have permission yet?
             if (!usbManager.hasPermission(device)) {
-                // Let's ask for permission
+                // Attach enumeration and a delayed broadcast can reach the same device
+                // before permission completes. Own one prompt and one PiP suppression.
+                if (!permissionPromptsPending.add(device.getDeviceName())) return;
                 try {
                     // Tell the state listener that we're about to display a permission dialog
                     if (stateListener != null) {
                         stateListener.onUsbPermissionPromptStarting();
                     }
-                    permissionPromptsPending.add(device.getDeviceName());
 
                     int intentFlags = 0;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

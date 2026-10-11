@@ -36,6 +36,7 @@ public final class SteamControllerUsb {
     private static final int KEEPALIVE_MS = 1000;
     private static final int STALE_STATE_MS = 3000;
     private static final int MAX_OUTPUTS = 32;
+    private static final int OUTPUT_RETRY_MS = 40;
 
     private final UsbDevice device;
     private final UsbDeviceConnection connection;
@@ -443,17 +444,26 @@ public final class SteamControllerUsb {
                 byte[] report;
                 int current;
                 synchronized (Slot.this) {
-                    if (stopped || !connected || (report = outputs.pollFirst()) == null) {
+                    if (stopped || !connected || (report = outputs.peekFirst()) == null) {
                         drainScheduled = false;
                         return;
                     }
                     current = generation;
                 }
-                if (writeOutput(Slot.this, report)) writeSucceeded(); else writeFailed(current);
+                boolean success = writeOutput(Slot.this, report);
                 synchronized (Slot.this) {
+                    // A disconnect may have queued work for a new controller while this
+                    // transfer was in flight. Its queue and failure budget belong to it.
+                    if (generation != current) return;
+                    if (success) writeSucceeded(); else writeFailed(current);
+                    // Retain an idempotent motor stop until it succeeds or the slot retires.
+                    // Keeping it in the bounded queue also lets newer 0x80 rumble replace
+                    // an obsolete stop. Failed effects are not replayed.
+                    if (success || stopKey(report) < 0) outputs.remove(report);
                     if (!stopped && connected && generation == current && !outputs.isEmpty()) {
-                        // One transfer per dispatch gives other puck slots a turn.
-                        outputHandler.post(this);
+                        // One transfer per dispatch gives other puck slots a turn. Back off
+                        // failures so retries cannot spin or starve other slots.
+                        outputHandler.postDelayed(this, success ? 0 : OUTPUT_RETRY_MS);
                     } else {
                         drainScheduled = false;
                     }
