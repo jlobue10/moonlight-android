@@ -90,3 +90,9 @@ surface replacement and verifies buffer/flag isolation and deferred model close.
   against a recording OkHttp stub and checks that none of the three clients follows
   redirects (the paired host is addressed directly; a 302 must not steer fetches or
   offer the client certificate elsewhere) while the derived clients keep their timeouts.
+
+- `test_controller_removal_lifecycle.py`: production controller removal/stop
+  methods and the actual NvConnection native-send wrapper. Checks normal and
+  duplicate removals, late USB/BLE and Android callbacks after stop, and a native
+  removal send held across a concurrent stop. It verifies session isolation at
+  fake native/device boundaries; reconnect behavior still needs hardware checks.
