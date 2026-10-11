@@ -96,6 +96,13 @@ public abstract class SteamControllerInput extends AbstractController {
         supportedButtonFlags = SUPPORTED_BUTTONS;
     }
 
+    /** Sends an UP for every pad touch the host still thinks is down; both transports call this on link loss. */
+    protected void releaseTouches() {
+        if (leftPadTouched) reportTouch((byte) 0, MoonBridge.LI_TOUCH_EVENT_UP, 0, 0, 0, 0);
+        if (rightPadTouched) reportTouch(splitPads ? (byte) 0 : (byte) 1, MoonBridge.LI_TOUCH_EVENT_UP, splitPads ? 1 : 0, 0, 0, 0);
+        leftPadTouched = rightPadTouched = false;
+    }
+
     protected void resetInputState() {
         reportedStateValid = false;
         if (calibrationKey == null) {

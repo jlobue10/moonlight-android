@@ -55,7 +55,10 @@ public class UsbDriverService extends Service implements UsbDriverListener {
     // is unprotected (and the receiver exported below API 33), so completions are only
     // honoured while a prompt is pending: a spoofed broadcast must neither NPE on a missing
     // device nor unbalance the PiP suppression the state listener keeps.
-    private boolean permissionPromptPending;
+    // One entry per device whose prompt is open: two devices needing permission at stream
+    // start (puck + pad) each complete separately, and the state listener's PiP suppression
+    // is balanced per prompt.
+    private final java.util.Set<String> permissionPromptsPending = new java.util.HashSet<>();
     private int nextDeviceId;
 
     @Override
@@ -148,11 +151,10 @@ public class UsbDriverService extends Service implements UsbDriverListener {
             // Subsequent permission dialog completion intent
             else if (action.equals(ACTION_USB_PERMISSION)) {
                 UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                if (!permissionPromptPending || device == null) {
+                if (device == null || !permissionPromptsPending.remove(device.getDeviceName())) {
                     LimeLog.warning("Ignoring USB permission broadcast without a pending prompt or a device");
                     return;
                 }
-                permissionPromptPending = false;
 
                 // Permission dialog is now closed
                 if (stateListener != null) {
@@ -222,7 +224,7 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                     if (stateListener != null) {
                         stateListener.onUsbPermissionPromptStarting();
                     }
-                    permissionPromptPending = true;
+                    permissionPromptsPending.add(device.getDeviceName());
 
                     int intentFlags = 0;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -244,7 +246,7 @@ public class UsbDriverService extends Service implements UsbDriverListener {
                     usbManager.requestPermission(device, PendingIntent.getBroadcast(UsbDriverService.this, 0, i, intentFlags));
                 } catch (SecurityException e) {
                     Toast.makeText(this, this.getText(R.string.error_usb_prohibited), Toast.LENGTH_LONG).show();
-                    permissionPromptPending = false;
+                    permissionPromptsPending.remove(device.getDeviceName());
                     if (stateListener != null) {
                         stateListener.onUsbPermissionPromptCompleted();
                     }
@@ -416,6 +418,14 @@ public class UsbDriverService extends Service implements UsbDriverListener {
 
         // Stop the attachment receiver
         unregisterReceiver(receiver);
+
+        // Prompts still open never complete for this service: balance the state listener.
+        if (stateListener != null) {
+            for (int i = permissionPromptsPending.size(); i > 0; i--) {
+                stateListener.onUsbPermissionPromptCompleted();
+            }
+        }
+        permissionPromptsPending.clear();
 
         for (SteamControllerUsb driver : steamUsbDevices) driver.stop();
         steamUsbDevices.clear();

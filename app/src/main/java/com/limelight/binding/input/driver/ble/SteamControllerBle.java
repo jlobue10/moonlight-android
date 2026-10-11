@@ -603,9 +603,7 @@ public class SteamControllerBle extends SteamControllerInput {
         if (announced) {
             announced = false;
             // Release any touches the host still thinks are down
-            if (leftPadTouched) reportTouch((byte) 0, MoonBridge.LI_TOUCH_EVENT_UP, 0, 0, 0, 0);
-            if (rightPadTouched) reportTouch(splitPads ? (byte) 0 : (byte) 1, MoonBridge.LI_TOUCH_EVENT_UP, splitPads ? 1 : 0, 0, 0, 0);
-            leftPadTouched = rightPadTouched = false;
+            releaseTouches();
             notifyDeviceRemoved();
         }
         try {

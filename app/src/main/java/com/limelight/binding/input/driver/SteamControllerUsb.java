@@ -27,7 +27,11 @@ import java.util.List;
  */
 public final class SteamControllerUsb {
     private static final int VALVE = 0x28DE, WIRED = 0x1302, PUCK = 0x1304;
-    private static final int IO_TIMEOUT_MS = 100;
+    // Android reports a timeout, a STALL and a detach alike (-1); a slow SET_REPORT on a busy
+    // receiver must not flap the controller, so a slot is retired only after several
+    // consecutive failures (input staleness remains the authority for a gone controller).
+    private static final int IO_TIMEOUT_MS = 250;
+    private static final int OUTPUT_FAILURES_BEFORE_DISCONNECT = 3;
     private static final int READ_TIMEOUT_MS = 250;
     private static final int KEEPALIVE_MS = 1000;
     private static final int STALE_STATE_MS = 3000;
@@ -74,7 +78,9 @@ public final class SteamControllerUsb {
                     out = endpoint;
                 }
             }
-            if (!duplicate && in != null && in.getMaxPacketSize() >= 54) {
+            // Wired 0x42 state reports are 54 bytes; the puck's 0x45/0x47 frames are 46.
+            final int minimumPacket = device.getProductId() == PUCK ? 46 : 54;
+            if (!duplicate && in != null && in.getMaxPacketSize() >= minimumPacket) {
                 // Use the interface ID, not descriptor order, as the puck slot identity.
                 int slotId = device.getProductId() == PUCK ? id - 2 : 0;
                 slots.add(new Slot(firstId + slotId, listener, context, iface, in, out,
@@ -92,6 +98,8 @@ public final class SteamControllerUsb {
         if (started || stopped) return false;
         try {
             if (!canClaimDevice(device) || slots.isEmpty()) {
+                LimeLog.warning("Steam Controller USB: no usable interface on " + device.getDeviceName()
+                        + " (product " + Integer.toHexString(device.getProductId()) + "); not claiming it");
                 stopped = true;
                 releaseResources();
                 return false;
@@ -192,7 +200,7 @@ public final class SteamControllerUsb {
                     if (!slot.connected) continue;
                     generation = slot.generation;
                 }
-                if (!configure(slot, true)) slot.writeFailed(generation);
+                if (configure(slot, true)) slot.writeSucceeded(); else slot.writeFailed(generation);
             }
             if (!stopped) outputHandler.postDelayed(this, KEEPALIVE_MS);
         }
@@ -317,13 +325,18 @@ public final class SteamControllerUsb {
             });
         }
 
+        private int outputFailures;
+
         private void disconnect() {
             generation++;
             outputs.clear();
             drainScheduled = false;
             repeatingRumble = null;
+            outputFailures = 0;
             outputHandler.removeCallbacks(rumbleTick);
             outputHandler.removeCallbacks(drain);
+            // Release any touches the host still thinks are down (the BLE driver does the same).
+            if (connected) releaseTouches();
             resetInputState();
             if (connected) {
                 connected = false;
@@ -353,10 +366,19 @@ public final class SteamControllerUsb {
 
         synchronized void writeFailed(int current) {
             if (!stopped && connected && generation == current) {
-                LimeLog.warning("Steam Controller USB: output failed on interface " + iface.getId());
+                if (++outputFailures < OUTPUT_FAILURES_BEFORE_DISCONNECT) {
+                    LimeLog.warning("Steam Controller USB: output failed on interface " + iface.getId()
+                            + " (" + outputFailures + " of " + OUTPUT_FAILURES_BEFORE_DISCONNECT + ")");
+                    return;
+                }
+                LimeLog.warning("Steam Controller USB: output keeps failing on interface " + iface.getId() + "; retiring the slot");
                 retryAtMs = SystemClock.uptimeMillis() + KEEPALIVE_MS;
                 disconnect();
             }
+        }
+
+        synchronized void writeSucceeded() {
+            outputFailures = 0;
         }
 
         @Override public void rumble(short low, short high) {
@@ -427,7 +449,7 @@ public final class SteamControllerUsb {
                     }
                     current = generation;
                 }
-                if (!writeOutput(Slot.this, report)) writeFailed(current);
+                if (writeOutput(Slot.this, report)) writeSucceeded(); else writeFailed(current);
                 synchronized (Slot.this) {
                     if (!stopped && connected && generation == current && !outputs.isEmpty()) {
                         // One transfer per dispatch gives other puck slots a turn.
