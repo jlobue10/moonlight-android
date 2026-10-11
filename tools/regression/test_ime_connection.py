@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the production IME InputConnection (StreamContainer.onCreateInputConnection) against a
+"""Run both active production IME InputConnections against a
 fake BaseInputConnection that reproduces AOSP's fallback mode (own editable copy, composing
 text, commit/finish replayed as key events).
 
@@ -8,15 +8,21 @@ keys (Enter from performEditorAction) must go through the callback instead of ov
 """
 import pathlib, subprocess, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-PATH = 'app/src/main/java/com/limelight/ui/StreamContainer.java'
-source = (subprocess.check_output(['git', 'show', 'HEAD:' + PATH], cwd=ROOT, text=True, encoding='utf-8')
-          if '--baseline' in sys.argv else (ROOT / PATH).read_text(encoding='utf-8'))
+VIEWS = ('StreamContainer', 'ExternalControllerView')
 
-marker = 'return new BaseInputConnection(this, false) {'
-start = source.index(marker); end = source.index('{', start); depth = 1
-while depth:
-    end += 1; depth += (source[end] == '{') - (source[end] == '}')
-connection = source[start:end + 1]
+def production_connection(view):
+    path = 'app/src/main/java/com/limelight/ui/' + view + '.java'
+    source = (subprocess.check_output(['git', 'show', 'HEAD:' + path], cwd=ROOT, text=True, encoding='utf-8')
+              if '--baseline' in sys.argv else (ROOT / path).read_text(encoding='utf-8'))
+    # Only adapt Android type names and the callback field to the fixture.
+    source = source.replace('android.view.inputmethod.BaseInputConnection', 'BaseInputConnection')
+    source = source.replace('android.text.Editable', 'Editable')
+    source = source.replace('inputCallbacks', 'mInputCallbacks')
+    marker = 'return new BaseInputConnection(this, false) {'
+    start = source.index(marker); end = source.index('{', start); depth = 1
+    while depth:
+        end += 1; depth += (source[end] == '{') - (source[end] == '}')
+    return source[start:end + 1]
 code = r'''
 import java.util.*;
 public class ImeConnectionRegression {
@@ -86,22 +92,22 @@ public class ImeConnectionRegression {
         BaseInputConnection ic = owner.make();
 
         ic.setComposingText("hel", 1); ic.setComposingText("hello", 1); ic.commitText("hello", 1); ic.finishComposingText();
-        check(rec.host.equals(Arrays.asList("text:hello")) && keys().isEmpty(),
+        check(keys().isEmpty() && rec.host.equals(Arrays.asList("text:hello")),
               "composed then committed text reaches the host once (" + rec.host + ")");
 
         rec.host.clear();
         ic.setComposingText("hi", 1); ic.finishComposingText();
-        check(rec.host.equals(Arrays.asList("text:hi")) && keys().isEmpty(),
+        check(keys().isEmpty() && rec.host.equals(Arrays.asList("text:hi")),
               "text finished without a commit goes through the callback, not key events");
 
         rec.host.clear();
         ic.commitText("abc", 1); ic.performEditorAction(EditorInfo.IME_ACTION_DONE);
-        check(rec.host.equals(Arrays.asList("text:abc", "key:down:66", "key:up:66")) && keys().isEmpty(),
+        check(keys().isEmpty() && rec.host.equals(Arrays.asList("text:abc", "key:down:66", "key:up:66")),
               "an editor action's Enter is routed through the callback behind the text");
 
         rec.host.clear();
         ic.deleteSurroundingText(2, 1);
-        check(rec.host.equals(Arrays.asList("delete:2,1")) && keys().isEmpty(), "deletions go through the callback");
+        check(keys().isEmpty() && rec.host.equals(Arrays.asList("delete:2,1")), "deletions go through the callback");
 
         rec.host.clear(); rec.accept = false;
         ic.setComposingText("x", 1); ic.commitText("x", 1); ic.performEditorAction(EditorInfo.IME_ACTION_DONE);
@@ -112,10 +118,13 @@ public class ImeConnectionRegression {
     }
 }
 '''
-code = code.replace('CONNECTION', connection.rstrip().rstrip(';'))
-with tempfile.TemporaryDirectory(prefix='ime-connection-') as directory:
-    work = pathlib.Path(directory)
-    path = work / 'ImeConnectionRegression.java'
-    path.write_text(code, encoding='utf-8')
-    subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(work), str(path)], check=True)
-    raise SystemExit(subprocess.run(['java', '-cp', str(work), 'ImeConnectionRegression']).returncode)
+failed = False
+for view in VIEWS:
+    print(view, flush=True)
+    with tempfile.TemporaryDirectory(prefix='ime-connection-') as directory:
+        work = pathlib.Path(directory)
+        path = work / 'ImeConnectionRegression.java'
+        path.write_text(code.replace('CONNECTION', production_connection(view)), encoding='utf-8')
+        subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(work), str(path)], check=True)
+        failed |= subprocess.run(['java', '-cp', str(work), 'ImeConnectionRegression']).returncode != 0
+raise SystemExit(failed)
