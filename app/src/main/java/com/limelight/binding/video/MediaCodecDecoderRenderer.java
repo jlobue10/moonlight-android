@@ -1588,8 +1588,6 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     }
 
-    @SuppressWarnings("deprecation")
-    @Override
     // Codec configuration from the host that cannot be used: report it once through the
     // crash listener and unwind with the diagnosed RendererException instead of letting a
     // BufferOverflowException or a parser error abort the process.
@@ -1629,6 +1627,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     }
 
+    @SuppressWarnings("deprecation")
+    @Override
     public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
                                 int frameNumber, int frameType, char frameHostProcessingLatency,
                                 long receiveTimeUs, long enqueueTimeUs) {
