@@ -94,7 +94,11 @@ public class PyroWaveDecoderRenderer {
             recreated = false;
             dead = false;
             handle = nativeCreate(surface, width, height, frameRate, chroma444, tenBit);
-            applyPendingHdrMode();
+            if (handle != 0) {
+                // A new native renderer starts in SDR: push the current mode, pending or not.
+                hdrDirty = false;
+                nativeSetHdrMode(handle, hdrEnabled, hdrPeakNits);
+            }
             return handle != 0;
         } finally {
             handleLock.writeLock().unlock();

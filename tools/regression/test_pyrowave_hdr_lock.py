@@ -66,9 +66,11 @@ public class PyroHdrLockRegression {
         check(!control.isAlive(), "setHdrMode returns while cleanup waits on a stalled present");
         Fake.release.countDown(); submitter.join(5000); cleaner.join(5000); control.join(5000);
         check(!submitter.isAlive() && !cleaner.isAlive() && !control.isAlive(), "all threads finish once the present completes");
-        before = Fake.hdrCalls;
+        // tryLock may barge past the queued writer (mode applied at once) or fail (mode pending);
+        // either way a new native renderer, which starts in SDR, must receive the current mode.
+        Fake.lastEnabled = false; Fake.lastPeak = 0f; before = Fake.hdrCalls;
         check(r.setup(new Surface(), 1920, 1080, 60, false, true), "the renderer sets up again");
-        check(Fake.hdrCalls > before && Fake.lastEnabled && Fake.lastPeak == 1000f, "the pending HDR mode reaches the next native renderer");
+        check(Fake.hdrCalls > before && Fake.lastEnabled && Fake.lastPeak == 1000f, "the current HDR mode reaches the next native renderer");
         System.out.println(checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);
     }
