@@ -25,6 +25,9 @@ helpers = '\n'.join(block(marker) for marker in (
     '    private void enqueueTextInput(', '    private void stopCommitText(', '    private Runnable sendImeKeys(')
     if marker in source).replace('com.limelight.nvstream.input.KeyboardPacket.', 'KeyboardPacket.')
 queue_field = re.search(r'private final Queue<[^;]+;', source).group()
+constants = '\n'.join(re.search(r'private static final int ' + name + r' = \d+;', source).group()
+                      for name in ('UTF8_CHUNK_SIZE', 'MAX_IME_DELETE', 'IME_KEYS_PER_STEP')
+                      if re.search(r'private static final int ' + name + r' = \d+;', source))
 stopped_field = 'private boolean commitTextStopped;' if 'commitTextStopped' in source else ''
 prefix = r'''
 import java.nio.charset.StandardCharsets;
@@ -74,9 +77,7 @@ public class CommitTextRegression {
     Controller controllerHandler = new Controller();
     Translator keyboardTranslator = new Translator();
     Pref prefConfig = new Pref();
-    private static final int UTF8_CHUNK_SIZE = 512;
-    private static final int MAX_IME_DELETE = 512;
-    private static final int IME_KEYS_PER_STEP = 16;
+    // CONSTANTS
     // QUEUE_FIELD
     private final Handler commitTextHandler = new Handler();
     Conn conn = new Conn();
@@ -173,7 +174,7 @@ suffix = r'''
 with tempfile.TemporaryDirectory(prefix='commit-text-') as directory:
     work = pathlib.Path(directory)
     path = work / 'CommitTextRegression.java'
-    prefix = prefix.replace('// QUEUE_FIELD', queue_field + '\n' + stopped_field)
+    prefix = prefix.replace('// CONSTANTS', constants).replace('// QUEUE_FIELD', queue_field + '\n' + stopped_field)
     path.write_text(prefix + flush + '\n' + enqueue + '\n' + deletion + '\n' + stop + '\n' + helpers + '\n' + suffix, encoding='utf-8')
     subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(work), str(path)], check=True)
     raise SystemExit(subprocess.run(['java', '-cp', str(work), 'CommitTextRegression']).returncode)

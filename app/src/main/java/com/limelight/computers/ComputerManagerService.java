@@ -950,6 +950,10 @@ public class ComputerManagerService extends Service {
                             e.printStackTrace();
                         } catch (XmlPullParserException e) {
                             e.printStackTrace();
+                        } catch (RuntimeException e) {
+                            // A malformed app list must not take the poller thread (and the
+                            // process) down; the next poll retries.
+                            LimeLog.warning("App list poll failed for " + computer.uuid + ": " + e);
                         }
                     } while (waitPollingDelay());
                 }

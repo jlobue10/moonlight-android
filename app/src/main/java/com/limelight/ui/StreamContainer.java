@@ -370,6 +370,13 @@ public class StreamContainer extends FrameLayout implements SurfaceHolder.Callba
                 return mInputCallbacks != null && mInputCallbacks.handleDeleteSurroundingText(beforeLength, afterLength) || super.deleteSurroundingText(beforeLength, afterLength);
             }
             @Override
+            public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+                // IMEs using the code-point API otherwise edit the empty base editable
+                // and every backspace is lost; the host deletes characters, which is
+                // the same thing for the BMP text these keyboards send.
+                return mInputCallbacks != null && mInputCallbacks.handleDeleteSurroundingText(beforeLength, afterLength) || super.deleteSurroundingTextInCodePoints(beforeLength, afterLength);
+            }
+            @Override
             public boolean sendKeyEvent(KeyEvent event) {
                 // performEditorAction() (Enter) arrives here too.
                 return mInputCallbacks != null && mInputCallbacks.handleImeKeyEvent(event) || super.sendKeyEvent(event);
