@@ -37,6 +37,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.Reader;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -355,6 +356,65 @@ public class ShortcutTrampoline extends AppCompatActivity {
         return true;
     }
 
+    // Any app can hand us a content:// URI for a ".art" file; readLine() on an
+    // unbounded line allocated until the process died (an OutOfMemoryError is not
+    // an IOException). Read character by character with hard limits instead.
+    static final int ART_MAX_BYTES = 64 * 1024;
+    static final int ART_MAX_LINE = 4096;
+    static final int ART_MAX_ENTRIES = 256;
+
+    static void applyArtLine(Map<String, String> artData, String line) throws IOException {
+        line = line.trim();
+        if (line.startsWith("#") || line.isEmpty()) {
+            return; // Skip comments and empty lines
+        }
+
+        if (!line.startsWith("[")) {
+            throw new IOException("Invalid .art file format");
+        }
+
+        int separatorIndex = line.indexOf(' ');
+        if (separatorIndex > 0 && separatorIndex < line.length() - 1) {
+            String key = line.substring(0, separatorIndex).trim();
+            String value = line.substring(separatorIndex + 1).trim();
+            if (key.endsWith("]")) {
+                key = key.substring(1, key.length() - 1);
+                if (artData.size() >= ART_MAX_ENTRIES && !artData.containsKey(key)) {
+                    throw new IOException(".art file has too many entries");
+                }
+                artData.put(key, value);
+            } else {
+                throw new IOException("Invalid .art file format");
+            }
+        }
+    }
+
+    static Map<String, String> parseArtReader(Reader reader) throws IOException {
+        Map<String, String> artData = new HashMap<>();
+        StringBuilder line = new StringBuilder();
+        int total = 0;
+        while (true) {
+            int c = reader.read();
+            boolean eof = c < 0;
+            if (!eof && ++total > ART_MAX_BYTES) {
+                throw new IOException(".art file is too large");
+            }
+            if (eof || c == '\n') {
+                applyArtLine(artData, line.toString());
+                line.setLength(0);
+                if (eof) {
+                    break;
+                }
+            } else if (c != '\r') {
+                if (line.length() >= ART_MAX_LINE) {
+                    throw new IOException(".art file line is too long");
+                }
+                line.append((char) c);
+            }
+        }
+        return artData;
+    }
+
     private Map<String, String> parseArtFileData(Uri fileUri) {
         if (fileUri == null) {
             return null;
@@ -364,29 +424,7 @@ public class ShortcutTrampoline extends AppCompatActivity {
 
         try (InputStream inputStream = getContentResolver().openInputStream(fileUri);
              BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.startsWith("#") || line.isEmpty()) {
-                    continue; // Skip comments and empty lines
-                }
-
-                if (!line.startsWith("[")) {
-                    throw new IOException("Invalid .art file format");
-                }
-
-                int separatorIndex = line.indexOf(' ');
-                if (separatorIndex > 0 && separatorIndex < line.length() - 1) {
-                    String key = line.substring(0, separatorIndex).trim();
-                    String value = line.substring(separatorIndex + 1).trim();
-                    if (key.endsWith("]")) {
-                        key = key.substring(1, key.length() - 1);
-                        artData.put(key, value);
-                    } else {
-                        throw new IOException("Invalid .art file format");
-                    }
-                }
-            }
+            artData = parseArtReader(reader);
         } catch (IOException e) {
             Log.e(TAG, "Error reading .art file", e);
             Dialog.displayDialog(ShortcutTrampoline.this,
