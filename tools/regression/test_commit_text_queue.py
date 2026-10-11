@@ -21,8 +21,14 @@ enqueue = block('    private void enqueueCommitText(')
 deletion = block('    public boolean handleDeleteSurroundingText(').replace(
     'com.limelight.nvstream.input.KeyboardPacket.', 'KeyboardPacket.')
 stop = block('    private void stopConnection(').replace('Game.this', 'CommitTextRegression.this')
+destroy = block('    protected void onDestroy(')
+destroy = destroy[:destroy.index('        if (prefConfig.enableFullExDisplay)')] + '\n}'
+destroy = destroy.replace('super.onDestroy();', '')  # Android Activity boundary
+motion_guard = block('    public boolean handleMotionEvent(')
+motion_guard = motion_guard[:motion_guard.index('        int deviceId')] + '\nreturn true;\n}'
 helpers = '\n'.join(block(marker) for marker in (
-    '    private void enqueueTextInput(', '    private void stopCommitText(', '    private Runnable sendImeKeys(')
+    '    private void enqueueTextInput(', '    private void stopCommitText(', '    private Runnable sendImeKeys(',
+    '    private void stopTouchInput(')
     if marker in source).replace('com.limelight.nvstream.input.KeyboardPacket.', 'KeyboardPacket.')
 queue_field = re.search(r'private final Queue<[^;]+;', source).group()
 constants = '\n'.join(re.search(r'private static final int ' + name + r' = \d+;', source).group()
@@ -56,6 +62,15 @@ public class CommitTextRegression {
     static class Translator { short translate(int key, int modifiers, int id) { return (short)key; } }
     static class Pref { boolean enableCommitText = true; }
     static class Controller { void stop() {} }
+    static class TouchContext { int cancellations; void cancelTouch() { ++cancellations; } }
+    static class View {}
+    static class MotionEvent {}
+    boolean touchInputStopped, grabbedInput = true;
+    static class StreamLog { static void stop() {} }
+    static CommitTextRegression instance;
+    final TouchContext[] touchContextMap = {new TouchContext(), null};
+    final TouchContext[] trackpadContextMap = {null, new TouchContext()};
+    final Handler timerHandler = new Handler();
     static class UiHelper { static void notifyStreamEnded(Object owner) {} }
     // The background network teardown is outside this fixture. The production
     // main-thread stopConnection path, including queue cancellation, runs normally.
@@ -152,6 +167,9 @@ suffix = r'''
         r.enqueueCommitText(big);
         r.handleDeleteSurroundingText(1, 0);
         r.stopConnection();
+        check(r.touchContextMap[0].cancellations == 1 && r.trackpadContextMap[1].cancellations == 1,
+              "disconnect cancels both touchscreen and physical-trackpad contexts, including partially initialized maps");
+        check(!r.handleMotionEvent(null, null), "late motion events cannot revive a retired activity's input");
         check(r.commitTextQueue.isEmpty() && r.commitTextHandler.pending.isEmpty(),
               "disconnect cancels pending IME work and releases queued payloads");
         // NvConnection's JNI input entry points address the active native session;
@@ -166,6 +184,10 @@ suffix = r'''
         r.handleDeleteSurroundingText(1, 0);
         r.commitTextHandler.drain();
         check(Conn.hostInput.isEmpty(), "late IME callbacks after disconnect cannot revive the queue");
+        CommitTextRegression destroyed = new CommitTextRegression();
+        destroyed.onDestroy();
+        check(destroyed.touchContextMap[0].cancellations == 1 && destroyed.trackpadContextMap[1].cancellations == 1,
+              "direct activity destruction also retires both touch context maps");
         System.out.println(checks + " checks, " + failures + " failures");
         if (failures != 0) System.exit(1);
     }
@@ -175,6 +197,6 @@ with tempfile.TemporaryDirectory(prefix='commit-text-') as directory:
     work = pathlib.Path(directory)
     path = work / 'CommitTextRegression.java'
     prefix = prefix.replace('// CONSTANTS', constants).replace('// QUEUE_FIELD', queue_field + '\n' + stopped_field)
-    path.write_text(prefix + flush + '\n' + enqueue + '\n' + deletion + '\n' + stop + '\n' + helpers + '\n' + suffix, encoding='utf-8')
+    path.write_text(prefix + flush + '\n' + enqueue + '\n' + deletion + '\n' + stop + '\n' + destroy + '\n' + motion_guard + '\n' + helpers + '\n' + suffix, encoding='utf-8')
     subprocess.run(['java', 'com.sun.tools.javac.Main', '-d', str(work), str(path)], check=True)
     raise SystemExit(subprocess.run(['java', '-cp', str(work), 'CommitTextRegression']).returncode)

@@ -152,6 +152,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
     private final TouchContext[] trackpadContextMap = new TouchContext[2];
+    private boolean touchInputStopped;
     private PanZoomHandler panZoomHandler;
 
     /** StreamContainer swapped the view that carries the stream (XR -> flat fallback). */
@@ -1794,6 +1795,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         StreamLog.stop();
         timerHandler.removeCallbacksAndMessages(null);
         stopCommitText();
+        stopTouchInput();
 
         if (prefConfig.enableFullExDisplay) handleDisplayRemoved();
         unregisterExternalDisplayListener();
@@ -2939,7 +2941,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     // NB: View is only present if called from a view callback
     public boolean handleMotionEvent(View view, MotionEvent event) {
         // Pass through mouse/touch/joystick input if we're not grabbing
-        if (!grabbedInput) {
+        if (touchInputStopped || !grabbedInput) {
             return false;
         }
 
@@ -3620,10 +3622,23 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     public void stageComplete(String stage) {
     }
 
+    private void stopTouchInput() {
+        touchInputStopped = true;
+        // These contexts own their own Handlers. Retire them before native
+        // teardown so delayed releases/momentum cannot reach the next stream.
+        for (TouchContext context : touchContextMap) {
+            if (context != null) context.cancelTouch();
+        }
+        for (TouchContext context : trackpadContextMap) {
+            if (context != null) context.cancelTouch();
+        }
+    }
+
     private void stopConnection() {
         // NvConnection input uses the process-wide native session. Retire pending
         // IME work before asynchronous teardown can let another stream start.
         stopCommitText();
+        stopTouchInput();
         if (connecting || connected) {
             connecting = connected = false;
             updatePipAutoEnter();
