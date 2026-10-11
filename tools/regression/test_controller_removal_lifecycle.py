@@ -52,6 +52,7 @@ public class RemovalLifecycle {
  final Preferences prefConfig=new Preferences();final NvConnection conn=new NvConnection();
  final InputManager inputManager=new InputManager();final Vibrator deviceVibrator=new Vibrator();
  final SparseArray<InputDeviceContext> inputDeviceContexts=new SparseArray<>();
+ final InputDeviceContext defaultContext=new InputDeviceContext();
  final ConcurrentHashMap<Integer,UsbDeviceContext> usbDeviceContexts=new ConcurrentHashMap<>();
  void refreshInputDeviceContextSnapshot(){}
  static int checks,failures;
@@ -74,6 +75,7 @@ suffix=r'''
    if(usb)h.deviceRemoved(new AbstractController(7));else h.onInputDeviceRemoved(7);
    check(MoonBridge.events.isEmpty(),"late "+(usb?"USB/BLE":"Android")+" removal cannot remove a replacement session's controller");
    check(context.destroys==1,"late removal does not destroy an already stopped context twice");
+   check(h.defaultContext.destroys==1,"stop retires the default (device id 0) context as well");
   }
   MoonBridge.reset();RemovalLifecycle h=new RemovalLifecycle();h.usbDeviceContexts.put(7,new UsbDeviceContext());MoonBridge.block=true;
   Thread removal=new Thread(()->h.deviceRemoved(new AbstractController(7)));removal.start();
