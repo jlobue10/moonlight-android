@@ -1588,6 +1588,45 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     }
 
+    // Codec configuration from the host that cannot be used: report it once through the
+    // crash listener and unwind with the diagnosed RendererException instead of letting a
+    // BufferOverflowException or a parser error abort the process.
+    private RendererException codecConfigFailure(RuntimeException cause) {
+        if (!reportedCrash) {
+            reportedCrash = true;
+            crashListener.notifyCrash(cause);
+        }
+        return new RendererException(this, cause);
+    }
+
+    // Append every buffered VPS/SPS/PPS to the current input buffer, after checking that
+    // they fit (the host chooses their sizes).
+    private void putCodecConfig() {
+        int codecConfigLength = 0;
+        for (byte[] vpsBuffer : vpsBuffers) {
+            codecConfigLength += vpsBuffer.length;
+        }
+        for (byte[] spsBuffer : spsBuffers) {
+            codecConfigLength += spsBuffer.length;
+        }
+        for (byte[] ppsBuffer : ppsBuffers) {
+            codecConfigLength += ppsBuffer.length;
+        }
+        if (codecConfigLength > nextInputBuffer.remaining()) {
+            throw codecConfigFailure(new IllegalArgumentException(
+                    "Codec config length "+codecConfigLength+" too large for input buffer "+nextInputBuffer.limit()));
+        }
+        for (byte[] vpsBuffer : vpsBuffers) {
+            nextInputBuffer.put(vpsBuffer);
+        }
+        for (byte[] spsBuffer : spsBuffers) {
+            nextInputBuffer.put(spsBuffer);
+        }
+        for (byte[] ppsBuffer : ppsBuffers) {
+            nextInputBuffer.put(ppsBuffer);
+        }
+    }
+
     @SuppressWarnings("deprecation")
     @Override
     public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
@@ -1750,7 +1789,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             if (decodeUnitType == MoonBridge.BUFFER_TYPE_SPS && (videoFormat & MoonBridge.VIDEO_FORMAT_MASK_H264) != 0) {
                 numSpsIn++;
 
-                ByteBuffer spsBuf = ByteBuffer.wrap(decodeUnitData);
+                // Only the unit itself: the array is reused and its tail is stale data.
+                ByteBuffer spsBuf = ByteBuffer.wrap(decodeUnitData, 0, decodeUnitLength);
                 int startSeqLen = decodeUnitData[2] == 0x01 ? 3 : 4;
 
                 // Skip to the start of the NALU data
@@ -1758,7 +1798,13 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
                 // The H264Utils.readSPS function safely handles
                 // Annex B NALUs (including NALUs with escape sequences)
-                SeqParameterSet sps = H264Utils.readSPS(spsBuf);
+                SeqParameterSet sps;
+                try {
+                    sps = H264Utils.readSPS(spsBuf);
+                } catch (RuntimeException e) {
+                    // Host data: report it through the diagnosed path, do not abort the process.
+                    throw codecConfigFailure(e);
+                }
 
                 // Some decoders rely on H264 level to decide how many buffers are needed
                 // Since we only need one frame buffered, we'll set the level as low as we can
@@ -1870,7 +1916,12 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
                 // The H264Utils.writeSPS function safely handles
                 // Annex B NALUs (including NALUs with escape sequences)
-                ByteBuffer escapedNalu = H264Utils.writeSPS(sps, decodeUnitLength);
+                ByteBuffer escapedNalu;
+                try {
+                    escapedNalu = H264Utils.writeSPS(sps, decodeUnitLength);
+                } catch (RuntimeException e) {
+                    throw codecConfigFailure(e);
+                }
 
                 // Construct the patched SPS
                 byte[] naluBuffer = new byte[startSeqLen + 1 + escapedNalu.limit()];
@@ -1918,15 +1969,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                     }
 
                     // Submit all CSD when we receive the first non-CSD blob in an IDR frame
-                    for (byte[] vpsBuffer : vpsBuffers) {
-                        nextInputBuffer.put(vpsBuffer);
-                    }
-                    for (byte[] spsBuffer : spsBuffers) {
-                        nextInputBuffer.put(spsBuffer);
-                    }
-                    for (byte[] ppsBuffer : ppsBuffers) {
-                        nextInputBuffer.put(ppsBuffer);
-                    }
+                    putCodecConfig();
 
                     if (!queueNextInputBuffer(0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)) {
                         return MoonBridge.DR_NEED_IDR;
@@ -1984,15 +2027,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
             // If we are using fused IDR frames, submit the CSD with each IDR frame
             if (fusedIdrFrame && !csdSubmittedForThisFrame) {
-                for (byte[] vpsBuffer : vpsBuffers) {
-                    nextInputBuffer.put(vpsBuffer);
-                }
-                for (byte[] spsBuffer : spsBuffers) {
-                    nextInputBuffer.put(spsBuffer);
-                }
-                for (byte[] ppsBuffer : ppsBuffers) {
-                    nextInputBuffer.put(ppsBuffer);
-                }
+                putCodecConfig();
             }
         }
 
@@ -2012,13 +2047,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         numFramesIn++;
 
         if (decodeUnitLength > nextInputBuffer.limit() - nextInputBuffer.position()) {
-            IllegalArgumentException exception = new IllegalArgumentException(
-                    "Decode unit length "+decodeUnitLength+" too large for input buffer "+nextInputBuffer.limit());
-            if (!reportedCrash) {
-                reportedCrash = true;
-                crashListener.notifyCrash(exception);
-            }
-            throw new RendererException(this, exception);
+            throw codecConfigFailure(new IllegalArgumentException(
+                    "Decode unit length "+decodeUnitLength+" too large for input buffer "+nextInputBuffer.limit()));
         }
 
         // Copy data from our buffer list into the input buffer

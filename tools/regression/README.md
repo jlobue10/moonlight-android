@@ -96,3 +96,10 @@ surface replacement and verifies buffer/flag isolation and deferred model close.
   duplicate removals, late USB/BLE and Android callbacks after stop, and a native
   removal send held across a concurrent stop. It verifies session isolation at
   fake native/device boundaries; reconnect behavior still needs hardware checks.
+
+- `test_controller_default_context_stop.py`: text gate that `ControllerHandler.stop()`
+  retires the default input context (device id 0 / Android 11 virtual device) so a
+  mouse-emulation runnable cannot outlive the stream.
+- `test_decoder_csd_bounds.py`: text gate that host-supplied codec configuration fails
+  through the decoder's diagnosed `RendererException` path (capacity-checked CSD appends,
+  SPS parsed over the unit length, guarded SPS parser/writer).

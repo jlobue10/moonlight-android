@@ -329,6 +329,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             deviceContext.destroy();
         }
 
+        // The default context (device id 0, the Android 11 virtual device) is in neither
+        // map; its mouse-emulation runnable would otherwise keep re-posting for the
+        // process lifetime and drive sendMouseMove into a later stream.
+        defaultContext.destroy();
+
         deviceVibrator.cancel();
     }
 
