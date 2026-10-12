@@ -682,7 +682,7 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
+                        UiHelper.toastSafe(PcView.this, toastMessage, Toast.LENGTH_LONG);
                     }
                 });
             }
@@ -734,7 +734,7 @@ public class PcView extends AppCompatActivity implements AdapterFragmentCallback
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        Toast.makeText(PcView.this, toastMessage, Toast.LENGTH_LONG).show();
+                        UiHelper.toastSafe(PcView.this, toastMessage, Toast.LENGTH_LONG);
                     }
                 });
             }

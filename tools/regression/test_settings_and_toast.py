@@ -29,10 +29,24 @@ def block(source, marker):
 
 settings = read('app/src/main/java/com/limelight/preferences/StreamSettings.java')
 game = read('app/src/main/java/com/limelight/Game.java')
+server_helper = read('app/src/main/java/com/limelight/utils/ServerHelper.java')
+pcview = read('app/src/main/java/com/limelight/PcView.java')
+ui_helper = read('app/src/main/java/com/limelight/utils/UiHelper.java')
 bitrate = block(settings, 'bitrateEditPref.setOnPreferenceChangeListener(')
 display = block(game, '    public void displayMessage(final String message) {')
+stop = block(game, '    private void stopConnection() {')
+unpair = block(pcview, '    private void doUnpair(final ComputerDetails computer) {')
+toast_safe = block(ui_helper, '    public static void toastSafe(Context context, String text, int duration) {') if 'toastSafe(' in ui_helper else ''
 failures = 0
 for ok, name in (
+    ('text == null || text.isEmpty()' in toast_safe and 'Toast.makeText(context, text, duration).show()' in toast_safe,
+     'UiHelper.toastSafe substitutes a text for a null or empty message'),
+    ('Toast.makeText(Game.this, e.getMessage()' not in stop and 'UiHelper.toastSafe(Game.this, e.getMessage()' in stop,
+     'the quit-on-stop worker never toasts a raw exception message'),
+    ('Toast.makeText(parent, toastMessage,' not in server_helper and server_helper.count('UiHelper.toastSafe(parent, toastMessage') == 2,
+     'both doQuit overloads toast through toastSafe'),
+    ('Toast.makeText(PcView.this, toastMessage,' not in unpair and 'UiHelper.toastSafe(PcView.this, toastMessage' in unpair,
+     'the unpair thread toasts through toastSafe'),
     ('String.format(Locale.ROOT, "%.3f", refreshRate)' in settings, 'the custom refresh rate is formatted with Locale.ROOT'),
     ('catch (NumberFormatException' in bitrate and bitrate.index('Float.parseFloat(value)') < bitrate.index('catch (NumberFormatException'),
      'the custom bitrate parse is guarded against NumberFormatException'),

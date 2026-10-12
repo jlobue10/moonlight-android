@@ -3715,7 +3715,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                             httpConn.quitApp();
                             Game.this.runOnUiThread(() -> Toast.makeText(Game.this, Game.this.getResources().getString(R.string.applist_quit_success) + " " + appName, Toast.LENGTH_LONG).show());
                         } catch (Exception e) {
-                            Game.this.runOnUiThread(() -> Toast.makeText(Game.this, e.getMessage(), Toast.LENGTH_LONG).show());
+                            Game.this.runOnUiThread(() -> UiHelper.toastSafe(Game.this, e.getMessage(), Toast.LENGTH_LONG));
                         }
                     }
                 }
