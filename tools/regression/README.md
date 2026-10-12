@@ -168,3 +168,9 @@ including on-screen retransmission and removal coverage; no hardware is used.
   verification; `AUDIT_GSON_JAR` supplies an offline copy. `--baseline` reads HEAD.
   Android context/preferences are fakes; native device filesystem validation is
   separate. The existing workflow glob includes this regression automatically.
+
+- `test_asset_cache_limits.py`: complete production asset loader and cache helper;
+  real PNG metadata, bounded decode requests on both Android decoder paths,
+  read-error descriptor cleanup and a real buffered close/flush failure using
+  Linux `/dev/full`. Android bitmap allocation is recorded by boundary stubs;
+  device bitmap decoding/rendering still requires Android integration testing.

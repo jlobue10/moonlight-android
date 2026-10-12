@@ -19,6 +19,10 @@ public class DiskAssetLoader {
     // 5 MB
     private static final long MAX_ASSET_SIZE = 5 * 1024 * 1024;
 
+    // The compressed-file limit does not bound bitmap memory or texture size.
+    // Keep ordinary cover scaling, but cap either axis for extreme aspect ratios.
+    private static final int MAX_DECODED_DIMENSION = 2048;
+
     // Standard box art is 300x400
     private static final int STANDARD_ASSET_WIDTH = 300;
     private static final int STANDARD_ASSET_HEIGHT = 400;
@@ -53,6 +57,14 @@ public class DiskAssetLoader {
             while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
                 inSampleSize *= 2;
             }
+        }
+
+        // The cover-fit loop above stops when either axis reaches its requested
+        // size. A very thin image can therefore retain an enormous other axis.
+        // Use ceiling division and long arithmetic to cover decoder rounding.
+        while ((width + (long) inSampleSize - 1) / inSampleSize > MAX_DECODED_DIMENSION ||
+                (height + (long) inSampleSize - 1) / inSampleSize > MAX_DECODED_DIMENSION) {
+            inSampleSize *= 2;
         }
 
         return inSampleSize;
@@ -117,16 +129,12 @@ public class DiskAssetLoader {
                         scaledBitmap.originalWidth = imageInfo.getSize().getWidth();
                         scaledBitmap.originalHeight = imageInfo.getSize().getHeight();
 
-                        float aspectRatio = (float) scaledBitmap.originalWidth / scaledBitmap.originalHeight;
-                        float standardAspectRatio = (float) STANDARD_ASSET_WIDTH / STANDARD_ASSET_HEIGHT;
-                        int targetWidth = STANDARD_ASSET_WIDTH;
-                        int targetHeight = STANDARD_ASSET_HEIGHT;
-
-                        if (aspectRatio < standardAspectRatio) {
-                            targetHeight = (int) (standardAspectRatio / aspectRatio * targetHeight);
-                        } else {
-                            targetWidth = (int) (aspectRatio / standardAspectRatio * targetWidth);
-                        }
+                        double scale = Math.max((double) STANDARD_ASSET_WIDTH / scaledBitmap.originalWidth,
+                                (double) STANDARD_ASSET_HEIGHT / scaledBitmap.originalHeight);
+                        scale = Math.min(scale, (double) MAX_DECODED_DIMENSION /
+                                Math.max(scaledBitmap.originalWidth, scaledBitmap.originalHeight));
+                        int targetWidth = Math.max(1, (int) Math.round(scaledBitmap.originalWidth * scale));
+                        int targetHeight = Math.max(1, (int) Math.round(scaledBitmap.originalHeight * scale));
                         imageDecoder.setTargetSize(targetWidth, targetHeight);
                         if (isLowRamDevice) {
                             imageDecoder.setMemorySizePolicy(ImageDecoder.MEMORY_POLICY_LOW_RAM);
@@ -159,10 +167,12 @@ public class DiskAssetLoader {
 
     public void populateCacheWithStream(CachedAppAssetLoader.LoaderTuple tuple, InputStream input) {
         boolean success = false;
-        try (final OutputStream out = CacheHelper.openCacheFileForOutput(
-                cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png")
-        ) {
-            CacheHelper.writeInputStreamToOutputStream(input, out, MAX_ASSET_SIZE);
+        try {
+            try (final OutputStream out = CacheHelper.openCacheFileForOutput(
+                    cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png")) {
+                CacheHelper.writeInputStreamToOutputStream(input, out, MAX_ASSET_SIZE);
+            }
+            // Buffered output can fail only when close flushes its final bytes.
             success = true;
         } catch (IOException e) {
             e.printStackTrace();
