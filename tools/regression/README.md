@@ -138,3 +138,10 @@ including on-screen retransmission and removal coverage; no hardware is used.
 - `test_settings_and_toast.py`: text gate that the custom refresh rate is formatted with
   `Locale.ROOT`, the custom bitrate parse is guarded, and `displayMessage()` never hands a
   null text to Toast.
+
+- `test_custom_stream_rates.py`: executes the production bitrate and refresh-rate
+  preference listeners on the JVM with storage, toast and reload boundary fakes.
+  Rejects non-finite/out-of-range bitrate values and non-positive rounded refresh
+  rates before persistence. Models preference callback persistence to ensure the
+  normalized refresh rate survives, including on comma-decimal locales.
+  `--baseline` reads HEAD; Android device UI behavior is outside this fixture.

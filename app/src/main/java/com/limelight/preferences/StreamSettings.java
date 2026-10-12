@@ -1065,14 +1065,19 @@ public class StreamSettings extends AppCompatActivity {
                     }
                     float bitrateValue;
                     try {
-                        bitrateValue = Float.parseFloat(value) * 1000;
+                        bitrateValue = Float.parseFloat(value);
                     } catch (NumberFormatException e) {
                         // A comma decimal or letters from a hardware keyboard must not crash
                         // the settings activity.
                         Toast.makeText(getActivity(), getString(R.string.pref_enter_value_0_9999), Toast.LENGTH_SHORT).show();
                         return false;
                     }
-                    int bitrate = (int) bitrateValue;
+                    if (Float.isNaN(bitrateValue) || Float.isInfinite(bitrateValue) ||
+                            bitrateValue < 0 || bitrateValue > 9999) {
+                        Toast.makeText(getActivity(), getString(R.string.pref_enter_value_0_9999), Toast.LENGTH_SHORT).show();
+                        return false;
+                    }
+                    int bitrate = (int) (bitrateValue * 1000);
                     SharedPreferences prefs = getPrefs();
                     prefs.edit().putInt(PreferenceConfiguration.BITRATE_PREF_STRING, bitrate).apply();
                     Toast.makeText(getActivity(), getString(R.string.pref_set_success), Toast.LENGTH_SHORT).show();
@@ -1149,7 +1154,7 @@ public class StreamSettings extends AppCompatActivity {
                     
                     try {
                         float refreshRate = Float.parseFloat(value);
-                        if (refreshRate <= 0) {
+                        if (Float.isNaN(refreshRate) || Float.isInfinite(refreshRate) || refreshRate <= 0) {
                             Toast.makeText(getActivity(), getString(R.string.pref_enter_value_0_9999), Toast.LENGTH_SHORT).show();
                             return false;
                         }
@@ -1162,9 +1167,14 @@ public class StreamSettings extends AppCompatActivity {
                         // Remove trailing zeros
                         formattedValue = formattedValue.replaceAll("0+$", "").replaceAll("\\.$", "");
 
+                        if (Float.parseFloat(formattedValue) <= 0) {
+                            Toast.makeText(getActivity(), getString(R.string.pref_enter_value_0_9999), Toast.LENGTH_SHORT).show();
+                            return false;
+                        }
                         editAndReload(PreferenceConfiguration.CUSTOM_REFRESH_RATE_PREF_STRING, formattedValue);
 
-                        return true;
+                        // Keep the normalized value when the preference would otherwise save the raw input.
+                        return formattedValue.equals(value);
                     } catch (NumberFormatException e) {
                         Toast.makeText(getActivity(), getString(R.string.pref_error_occurred), Toast.LENGTH_SHORT).show();
                         return false;
