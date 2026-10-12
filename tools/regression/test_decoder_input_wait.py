@@ -34,8 +34,11 @@ caps = block(renderer, '    public int getCapabilities() {')
 failures = 0
 for ok, name in (
     ('< INPUT_BUFFER_WAIT_MS' in fetch and '< 5000' not in fetch, 'one input-buffer wait is bounded by INPUT_BUFFER_WAIT_MS, not the hang threshold'),
-    ('inputStallStartMs' in fetch and fetch.index('inputStallStartMs') < fetch.index('new DecoderHungException('),
-     'the hung exception is measured across calls from the first failed wait'),
+    ('if (inputStallStartMs == 0) {' in fetch and 'inputStallStartMs = startTime;' in fetch and
+     'if (!stopping && stalledMs >= DECODER_HUNG_MS && initialException == null) {' in fetch and 'inputStallStartMs = 0;' in fetch,
+     'the hung exception is measured across calls from the first failed wait and reset on success'),
+    ('outputBufferQueue.take()' not in block(renderer, '    private void startRendererThread()') and 'outputBufferQueue.poll()' in block(renderer, '    private void startRendererThread()'),
+     'the render thread never blocks on its own output queue (poll, not take)'),
     ('directSubmitAllowed' in caps[caps.index('CAPABILITY_DIRECT_SUBMIT') - 200:caps.index('CAPABILITY_DIRECT_SUBMIT')],
      'direct submit is advertised only when the activity allowed it'),
     ('setDirectSubmitAllowed(prefConfig.renderMode == 0)' in game and game.index('setDirectSubmitAllowed(') < game.index('conn.start('),

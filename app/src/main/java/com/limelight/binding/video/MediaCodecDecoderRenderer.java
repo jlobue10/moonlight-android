@@ -1251,13 +1251,14 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                 // NB: We have to do this on the producer side because the consumer may not
                                 // run for a while (if there is a huge mismatch between stream FPS and display
                                 // refresh rate).
-                                if (outputBufferQueue.size() == OUTPUT_BUFFER_QUEUE_LIMIT) {
-                                    try {
-                                        videoDecoder.releaseOutputBuffer(outputBufferQueue.take(), false);
-                                    } catch (InterruptedException e) {
-                                        // We're shutting down, so we can just drop this buffer on the floor
-                                        // and it will be reclaimed when the codec is released.
-                                        return;
+                                // The consumer may drain the queue between the size check and the
+                                // take: this thread is the only producer, so a blocking take() here
+                                // parked it for good (no more input buffers freed, then the hung
+                                // decoder path on the receive thread). poll() never blocks.
+                                if (outputBufferQueue.size() >= OUTPUT_BUFFER_QUEUE_LIMIT) {
+                                    Integer stale = outputBufferQueue.poll();
+                                    if (stale != null) {
+                                        videoDecoder.releaseOutputBuffer(stale, false);
                                     }
                                 }
 
