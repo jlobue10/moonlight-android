@@ -158,3 +158,13 @@ including on-screen retransmission and removal coverage; no hardware is used.
   missing results are ignored. Covers successful UTF-8 input and the 4 MiB size
   boundary. Android framework, preferences and JSON interpretation are boundary
   fakes; `--baseline` reads HEAD.
+
+- `test_profile_persistence.py`: executes the complete ProfilesManager with real
+  Gson and filesystem I/O. Serialization failures, a child-process file-size
+  limit, and rename failures must preserve the prior save and clean temporary
+  files. Invalid profile collections must not replace the live map or active
+  selection; valid UTF-8 saves, empty collections and recovery remain supported.
+  Requires Linux and JDK 17+. Uses the app's pinned Gson artifact with SHA-256
+  verification; `AUDIT_GSON_JAR` supplies an offline copy. `--baseline` reads HEAD.
+  Android context/preferences are fakes; native device filesystem validation is
+  separate. The existing workflow glob includes this regression automatically.

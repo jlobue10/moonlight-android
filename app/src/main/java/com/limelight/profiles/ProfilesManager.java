@@ -13,12 +13,15 @@ import com.limelight.LimeLog;
 import com.limelight.preferences.PreferenceConfiguration;
 
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Type;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -74,22 +77,31 @@ public class ProfilesManager {
                 // We don't want to warn user about profile not exist
                 return true;
             }
-            try (Reader reader = new FileReader(file)) {
+            ProfilesData data;
+            try (Reader reader = new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8)) {
                 Gson gson = new Gson();
                 Type type = new TypeToken<ProfilesData>(){}.getType();
-                ProfilesData data = gson.fromJson(reader, type);
-                if (data != null && data.profiles != null) {
-                    profiles.clear();
-                    for (SettingsProfile p : data.profiles) {
-                        profiles.put(p.getUuid(), p);
-                    }
-                    activeProfileId = data.activeProfileId;
-                }
+                data = gson.fromJson(reader, type);
             } catch (IOException e) {
                 LimeLog.warning("ArtemisProfile: Failed to load profiles from file:" + e);
                 e.printStackTrace();
                 return false;
             }
+            // Validate a complete snapshot before replacing the live collection. A
+            // malformed later entry must not leave only the successfully read prefix.
+            if (data == null || data.profiles == null) {
+                throw new IOException("Missing profile collection");
+            }
+            Map<UUID, SettingsProfile> loaded = new LinkedHashMap<>();
+            for (SettingsProfile profile : data.profiles) {
+                if (profile == null || profile.getUuid() == null) {
+                    throw new IOException("Profile entry has no identity");
+                }
+                loaded.put(profile.getUuid(), profile);
+            }
+            profiles.clear();
+            profiles.putAll(loaded);
+            activeProfileId = data.activeProfileId;
         } catch (Exception e) {
             LimeLog.warning("ArtemisProfile: Failed to load profiles:" + e);
             e.printStackTrace();
@@ -104,27 +116,42 @@ public class ProfilesManager {
             return false;
         }
 
+        File temporary = null;
         try {
             File dir = new File(context.getFilesDir(), PROFILES_DIR);
             if (!dir.exists() && !dir.mkdirs()) {
                 return false;
             }
             File file = new File(dir, PROFILES_FILE);
-            try (Writer writer = new FileWriter(file)) {
+            // Keep the previous file until serialization, flush, sync and close
+            // have all succeeded. A same-directory rename replaces it atomically
+            // on Android, including when saving over an existing profile file.
+            temporary = File.createTempFile(PROFILES_FILE, ".tmp", dir);
+            try (FileOutputStream output = new FileOutputStream(temporary);
+                 Writer writer = new OutputStreamWriter(output, StandardCharsets.UTF_8)) {
                 Gson gson = new Gson();
                 ProfilesData data = new ProfilesData();
                 data.profiles = new ArrayList<>(profiles.values());
                 data.activeProfileId = activeProfileId;
                 gson.toJson(data, writer);
+                writer.flush();
+                output.getFD().sync();
             } catch (IOException e) {
                 LimeLog.warning("ArtemisProfile: Failed to save profiles to file:" + e);
                 e.printStackTrace();
                 return false;
             }
+            if (!temporary.renameTo(file)) {
+                throw new IOException("Failed to replace profiles file");
+            }
         } catch (Exception e) {
             LimeLog.warning("ArtemisProfile: Failed to save profiles:" + e);
             e.printStackTrace();
             return false;
+        } finally {
+            if (temporary != null && temporary.exists() && !temporary.delete()) {
+                LimeLog.warning("ArtemisProfile: Failed to remove temporary profiles file");
+            }
         }
 
         return true;
