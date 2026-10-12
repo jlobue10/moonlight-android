@@ -145,3 +145,9 @@ including on-screen retransmission and removal coverage; no hardware is used.
   rates before persistence. Models preference callback persistence to ensure the
   normalized refresh rate survives, including on comma-decimal locales.
   `--baseline` reads HEAD; Android device UI behavior is outside this fixture.
+
+- `test_decoder_input_wait_jvm.py`: executes the production `fetchNextInputBuffer()` on the
+  JVM with scripted MediaCodec/clock fakes: one call waits at most `INPUT_BUFFER_WAIT_MS`,
+  the hung exception fires once the stall measured from the first failed wait reaches
+  `DECODER_HUNG_MS` after exactly one `notifyCrash`, a success restarts the window, and a
+  stopping decoder never throws.
