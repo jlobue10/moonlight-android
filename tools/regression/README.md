@@ -114,3 +114,9 @@ surface replacement and verifies buffer/flag isolation and deferred model close.
 - `test_game_pip_after_destroy.py`: text gate that `Game.updatePipAutoEnter()` returns on a
   finishing/destroyed activity and that `onDestroy` detaches both USB service listeners
   before unbinding (the service's stop() still reports pending permission prompts).
+
+`test_controller_removal_lifecycle.py` also pauses the production USB/BLE state,
+motion, touch and battery forwarding at the native-send boundary. Both `stop()`
+and controller removal must wait for an admitted callback, and callbacks that
+arrive after retirement must send nothing. The harness exercises 55 checks,
+including on-screen retransmission and removal coverage; no hardware is used.

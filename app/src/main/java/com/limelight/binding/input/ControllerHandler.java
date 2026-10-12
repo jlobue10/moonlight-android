@@ -3049,46 +3049,50 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                                       float leftStickX, float leftStickY,
                                       float rightStickX, float rightStickY,
                                       float leftTrigger, float rightTrigger) {
-        if (stopped) {
-            return;
+        // Keep driver callbacks inside the same lifecycle gate as removal and stop.
+        // Native input is process-wide; an admitted send must finish before retirement.
+        synchronized (controllerMaskLock) {
+            if (stopped) {
+                return;
+            }
+            GenericControllerContext context = usbDeviceContexts.get(controllerId);
+            if (context == null) {
+                return;
+            }
+
+            // Per-device scratch vectors: this runs on the driver's binder thread (one per
+            // device) while handleMotionEvent uses the handler's cached one on the main thread.
+            // A Steam Controller reports at 250 Hz; allocating two per report is needless churn.
+            Vector2d leftStickVector = context.driverLeftStick;
+            leftStickVector.initialize(leftStickX, leftStickY);
+
+            handleDeadZone(leftStickVector, context.leftStickDeadzoneRadius);
+
+            context.leftStickX = driverStickAxis(leftStickVector.getX());
+            context.leftStickY = driverStickAxis(-leftStickVector.getY());
+
+            Vector2d rightStickVector = context.driverRightStick;
+            rightStickVector.initialize(rightStickX, rightStickY);
+
+            handleDeadZone(rightStickVector, context.rightStickDeadzoneRadius);
+
+            context.rightStickX = driverStickAxis(rightStickVector.getX());
+            context.rightStickY = driverStickAxis(-rightStickVector.getY());
+
+            if (leftTrigger <= context.triggerDeadzone) {
+                leftTrigger = 0;
+            }
+            if (rightTrigger <= context.triggerDeadzone) {
+                rightTrigger = 0;
+            }
+
+            context.leftTrigger = (byte)(leftTrigger * 0xFF);
+            context.rightTrigger = (byte)(rightTrigger * 0xFF);
+
+            context.inputMap = buttonFlags;
+
+            sendControllerInputPacket(context);
         }
-        GenericControllerContext context = usbDeviceContexts.get(controllerId);
-        if (context == null) {
-            return;
-        }
-
-        // Per-device scratch vectors: this runs on the driver's binder thread (one per
-        // device) while handleMotionEvent uses the handler's cached one on the main thread.
-        // A Steam Controller reports at 250 Hz; allocating two per report is needless churn.
-        Vector2d leftStickVector = context.driverLeftStick;
-        leftStickVector.initialize(leftStickX, leftStickY);
-
-        handleDeadZone(leftStickVector, context.leftStickDeadzoneRadius);
-
-        context.leftStickX = driverStickAxis(leftStickVector.getX());
-        context.leftStickY = driverStickAxis(-leftStickVector.getY());
-
-        Vector2d rightStickVector = context.driverRightStick;
-        rightStickVector.initialize(rightStickX, rightStickY);
-
-        handleDeadZone(rightStickVector, context.rightStickDeadzoneRadius);
-
-        context.rightStickX = driverStickAxis(rightStickVector.getX());
-        context.rightStickY = driverStickAxis(-rightStickVector.getY());
-
-        if (leftTrigger <= context.triggerDeadzone) {
-            leftTrigger = 0;
-        }
-        if (rightTrigger <= context.triggerDeadzone) {
-            rightTrigger = 0;
-        }
-
-        context.leftTrigger = (byte)(leftTrigger * 0xFF);
-        context.rightTrigger = (byte)(rightTrigger * 0xFF);
-
-        context.inputMap = buttonFlags;
-
-        sendControllerInputPacket(context);
     }
 
     /** Driver-fed controllers with their own IMU (the Steam Controller) must not have the
@@ -3100,76 +3104,82 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @Override
     public void reportControllerMotion(int controllerId, byte motionType, float motionX, float motionY, float motionZ) {
-        if (stopped) {
-            return;
-        }
-        UsbDeviceContext context = usbDeviceContexts.get(controllerId);
-        if (context == null) {
-            return;
-        }
-        synchronized (context) {
-            // Driver-fed controllers sample at their native rate (the Steam Controller's IMU
-            // at 250 Hz). Only forward what the host enabled; rate 0 means it never asked.
-            short reportRateHz = motionType == MoonBridge.LI_MOTION_TYPE_GYRO
-                    ? context.gyroReportRateHz : context.accelReportRateHz;
-            if (reportRateHz == 0) {
+        synchronized (controllerMaskLock) {
+            if (stopped) {
                 return;
             }
-            // The host asks for what its virtual pad consumes (the Steam profile asks for the
-            // native rate, which passes everything through). Lower rates are decimated with a
-            // credit scheme: BLE delivers notifications in bursts once per connection
-            // interval, so a per-sample deadline admitted one sample per burst and starved
-            // the stream. Credits accrue over a burst window and a burst may spend them; the
-            // long-run average still converges to the requested rate.
-            if (reportRateHz < NATIVE_MOTION_RATE_HZ) {
-                long now = System.nanoTime();
-                boolean gyro = motionType == MoonBridge.LI_MOTION_TYPE_GYRO;
-                long periodNs = 1_000_000_000L / reportRateHz;
-                long due = gyro ? context.nextGyroReportNs : context.nextAccelReportNs;
-                if (due != 0 && now < due - MOTION_BURST_WINDOW_NS) {
+            UsbDeviceContext context = usbDeviceContexts.get(controllerId);
+            if (context == null) {
+                return;
+            }
+            synchronized (context) {
+                // Driver-fed controllers sample at their native rate (the Steam Controller's IMU
+                // at 250 Hz). Only forward what the host enabled; rate 0 means it never asked.
+                short reportRateHz = motionType == MoonBridge.LI_MOTION_TYPE_GYRO
+                        ? context.gyroReportRateHz : context.accelReportRateHz;
+                if (reportRateHz == 0) {
                     return;
                 }
-                long next = Math.max(due, now - MOTION_BURST_WINDOW_NS) + periodNs;
-                if (gyro) {
-                    context.nextGyroReportNs = next;
-                } else {
-                    context.nextAccelReportNs = next;
+                // The host asks for what its virtual pad consumes (the Steam profile asks for the
+                // native rate, which passes everything through). Lower rates are decimated with a
+                // credit scheme: BLE delivers notifications in bursts once per connection
+                // interval, so a per-sample deadline admitted one sample per burst and starved
+                // the stream. Credits accrue over a burst window and a burst may spend them; the
+                // long-run average still converges to the requested rate.
+                if (reportRateHz < NATIVE_MOTION_RATE_HZ) {
+                    long now = System.nanoTime();
+                    boolean gyro = motionType == MoonBridge.LI_MOTION_TYPE_GYRO;
+                    long periodNs = 1_000_000_000L / reportRateHz;
+                    long due = gyro ? context.nextGyroReportNs : context.nextAccelReportNs;
+                    if (due != 0 && now < due - MOTION_BURST_WINDOW_NS) {
+                        return;
+                    }
+                    long next = Math.max(due, now - MOTION_BURST_WINDOW_NS) + periodNs;
+                    if (gyro) {
+                        context.nextGyroReportNs = next;
+                    } else {
+                        context.nextAccelReportNs = next;
+                    }
                 }
             }
-        }
 
-        conn.sendControllerMotionEvent((byte)context.controllerNumber, motionType, motionX, motionY, motionZ);
+            conn.sendControllerMotionEvent((byte)context.controllerNumber, motionType, motionX, motionY, motionZ);
+        }
     }
 
     @Override
     public void reportControllerTouch(int controllerId, byte touchpadIndex, byte eventType, int pointerId,
                                       float x, float y, float pressure) {
-        if (stopped) {
-            return;
-        }
-        GenericControllerContext context = usbDeviceContexts.get(controllerId);
-        if (context == null) {
-            return;
-        }
+        synchronized (controllerMaskLock) {
+            if (stopped) {
+                return;
+            }
+            GenericControllerContext context = usbDeviceContexts.get(controllerId);
+            if (context == null) {
+                return;
+            }
 
-        // Reserve the controller number and announce the arrival first, as the state path does;
-        // the first touch or battery notification can precede the first state report.
-        assignControllerNumberIfNeeded(context);
-        conn.sendControllerTouchEvent2((byte)context.controllerNumber, eventType, touchpadIndex, pointerId, x, y, pressure);
+            // Reserve the controller number and announce the arrival first, as the state path does;
+            // the first touch or battery notification can precede the first state report.
+            assignControllerNumberIfNeeded(context);
+            conn.sendControllerTouchEvent2((byte)context.controllerNumber, eventType, touchpadIndex, pointerId, x, y, pressure);
+        }
     }
 
     @Override
     public void reportControllerBattery(int controllerId, byte batteryState, byte batteryPercentage) {
-        if (stopped) {
-            return;
-        }
-        GenericControllerContext context = usbDeviceContexts.get(controllerId);
-        if (context == null) {
-            return;
-        }
+        synchronized (controllerMaskLock) {
+            if (stopped) {
+                return;
+            }
+            GenericControllerContext context = usbDeviceContexts.get(controllerId);
+            if (context == null) {
+                return;
+            }
 
-        assignControllerNumberIfNeeded(context);
-        conn.sendControllerBatteryEvent((byte)context.controllerNumber, batteryState, batteryPercentage);
+            assignControllerNumberIfNeeded(context);
+            conn.sendControllerBatteryEvent((byte)context.controllerNumber, batteryState, batteryPercentage);
+        }
     }
 
     @Override

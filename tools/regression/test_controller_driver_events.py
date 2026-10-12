@@ -40,6 +40,7 @@ public class DriverEvents {
   void sendControllerArrivalEvent(byte n){events.add("arrival:"+n);}
  }
  boolean stopped;
+ final Object controllerMaskLock=new Object();
  final Connection conn=new Connection();
  final ConcurrentHashMap<Integer,UsbDeviceContext> usbDeviceContexts=new ConcurrentHashMap<>();
  int assignments;
