@@ -957,6 +957,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 // Der Decoder erhält die jeweils aktive Oberfläche vom Container
                 decoderRenderer.setRenderTarget(streamContainer.getSurface());
 
+                // From here on a pending start must be stopped with the activity:
+                // stopConnection() only acts while connecting or connected, and a start
+                // left running completed against a destroyed activity and kept the
+                // process-wide connection permit forever.
+                connecting = true;
+
                 // Starten Sie die NvConnection
                 conn.start(new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio),
                         decoderRenderer, Game.this);
@@ -3909,6 +3915,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (isFinishing() || isDestroyed()) {
+                    // The activity left while the start was in flight; stopConnection()
+                    // has already asked the connection to stop. Nothing here may touch
+                    // the UI or re-arm pings on a dead activity.
+                    return;
+                }
                 if (spinner != null) {
                     spinner.dismiss();
                     spinner = null;

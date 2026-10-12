@@ -120,3 +120,9 @@ motion, touch and battery forwarding at the native-send boundary. Both `stop()`
 and controller removal must wait for an admitted callback, and callbacks that
 arrive after retirement must send nothing. The harness exercises 55 checks,
 including on-screen retransmission and removal coverage; no hardware is used.
+
+- `test_game_pending_start_stop.py`: text gate that Game marks itself connecting before
+  `conn.start()` (so leaving during the spinner stops the pending start), that
+  `NvConnection.stop()` releases the process-wide permit only when its start acquired it,
+  that the start thread honours a stop requested during the HTTP launch phase, and that
+  `connectionStarted()` ignores a destroyed activity.

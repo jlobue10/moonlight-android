@@ -49,6 +49,11 @@ public class NvConnection {
     private String uniqueId;
     private ConnectionContext context;
     private static Semaphore connectionAllowed = new Semaphore(1);
+    // The permit belongs to this instance only between its start thread's acquire and
+    // stop(); a stop issued before the acquire must neither release a permit it never
+    // held nor let the start thread go on to a native start nobody will stop.
+    private volatile boolean connectionPermitHeld;
+    private volatile boolean stopRequested;
     private final boolean isMonkey;
     private final Context appContext;
 
@@ -90,18 +95,27 @@ public class NvConnection {
     }
 
     public void stop() {
+        stopRequested = true;
+
         // Interrupt any pending connection. This is thread-safe.
         MoonBridge.interruptConnection();
 
         // Moonlight-core is not thread-safe with respect to connection start and stop, so
         // we must not invoke that functionality in parallel.
+        boolean releasePermit;
         synchronized (MoonBridge.class) {
-            MoonBridge.stopConnection();
-            MoonBridge.cleanupBridge();
+            releasePermit = connectionPermitHeld;
+            connectionPermitHeld = false;
+            if (releasePermit) {
+                MoonBridge.stopConnection();
+                MoonBridge.cleanupBridge();
+            }
         }
 
-        // Now a pending connection can be processed
-        connectionAllowed.release();
+        // Now a pending connection can be processed (only if this instance held the permit).
+        if (releasePermit) {
+            connectionAllowed.release();
+        }
     }
 
     private InetAddress resolveServerAddress() throws IOException {
@@ -523,6 +537,13 @@ public class NvConnection {
                 // Moonlight-core is not thread-safe with respect to connection start and stop, so
                 // we must not invoke that functionality in parallel.
                 synchronized (MoonBridge.class) {
+                    if (stopRequested) {
+                        // stop() ran while this thread was still launching the app over HTTP:
+                        // there is nobody left to stop a native connection, so do not start one.
+                        connectionAllowed.release();
+                        return;
+                    }
+                    connectionPermitHeld = true;
                     MoonBridge.setupBridge(videoDecoderRenderer, audioRenderer, connectionListener);
                     int ret = MoonBridge.startConnection(context.serverAddress.address,
                             context.serverAppVersion, context.serverGfeVersion, context.rtspSessionUrl,
@@ -545,6 +566,7 @@ public class NvConnection {
                         // LiStartConnection() failed, so the caller is not expected
                         // to stop the connection themselves. We need to release their
                         // semaphore count for them.
+                        connectionPermitHeld = false;
                         connectionAllowed.release();
                         return;
                     }
