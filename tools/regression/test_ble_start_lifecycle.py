@@ -16,7 +16,10 @@ cs=block('    public void connectionStarted()')
 ub=cs.index('        if (prefConfig.usbDriver) {');ue=cs.index('        if (prefConfig.steamControllerBle) {')
 usb_bind='    void bindUsbDriver() {\n'+cs[ub:ue]+'    }\n'
 od=block('    protected void onDestroy()')
-us=od.index('        if (usbDriverBindRequested) {');ue2=od.index('        }\n',us)+len('        }\n')
+us=od.index('        if (usbDriverBindRequested) {');ue2=od.index('{',us);d=1
+while d:
+ ue2+=1;d+=(od[ue2]=='{')-(od[ue2]=='}')
+ue2+=1  # brace-matched: the block nests the listener detach
 usb_unbind='    void unbindUsbDriver() {\n'+od[us:ue2]+'    }\n'
 method=(method+'\n'+usb_bind+usb_unbind+'\n'+block('    public void rumble(')+'\n'+block('    public void rumbleTriggers(')+'\n'+block('    public void steamHaptic(')
         +'\n    DisplayManager.DisplayListener externalDisplayListener;\n'+block('    private void listenForExternalDisplayRemoval()')+'\n'+block('    private void unregisterExternalDisplayListener()')).replace('Game.this','BleStartLifecycle.this').replace('@Override','')
@@ -43,6 +46,8 @@ public class BleStartLifecycle {
  boolean isFinishing(){return finishing;}boolean isDestroyed(){return destroyed;}
  void requestPermissions(String[] names,int request){++requests;}
  int binds,unbinds;boolean usbDriverBindRequested,connectedToUsbDriverService;Object usbDriverServiceConnection=new Object();
+ static int detaches;static class UsbDriverBinder {void setStateListener(Object o){++detaches;}void setListener(Object o){++detaches;}}
+ UsbDriverBinder usbDriverBinder=new UsbDriverBinder();
  static class Intent {Intent(Object c,Class<?> k){}} static class Service {static final int BIND_AUTO_CREATE=1;} static class UsbDriverService {}
  void runOnUiThread(Runnable r){r.run();}
  void bindService(Intent i,Object c,int f){++binds;} void unbindService(Object c){++unbinds;}
@@ -85,6 +90,7 @@ suffix=r'''
   check(u.binds==1 && u.usbDriverBindRequested,"live activity binds the USB driver once");
   u.unbindUsbDriver();
   check(u.unbinds==1 && !u.usbDriverBindRequested,"a requested bind is unbound even before onServiceConnected");
+  check(detaches==2 && u.usbDriverBinder==null,"both USB service listeners are detached before unbinding");
   // The external-display listener is unregistered with the activity (it holds the whole
   // finished stream otherwise) and a late display removal no longer reaches the dead instance.
   {BleStartLifecycle e=new BleStartLifecycle();e.listenForExternalDisplayRemoval();e.listenForExternalDisplayRemoval();
