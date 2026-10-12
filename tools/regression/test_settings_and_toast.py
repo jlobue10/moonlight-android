@@ -29,7 +29,7 @@ def block(source, marker):
 
 settings = read('app/src/main/java/com/limelight/preferences/StreamSettings.java')
 game = read('app/src/main/java/com/limelight/Game.java')
-bitrate = settings[settings.index('BITRATE_PREF_STRING, bitrate') - 900:settings.index('BITRATE_PREF_STRING, bitrate')]
+bitrate = block(settings, 'bitrateEditPref.setOnPreferenceChangeListener(')
 display = block(game, '    public void displayMessage(final String message) {')
 failures = 0
 for ok, name in (
