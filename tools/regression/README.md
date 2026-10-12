@@ -151,3 +151,10 @@ including on-screen retransmission and removal coverage; no hardware is used.
   the hung exception fires once the stall measured from the first failed wait reaches
   `DECODER_HUNG_MS` after exactly one `notifyCrash`, a success restarts the window, and a
   stopping decoder never throws.
+
+- `test_profile_import_io.py`: executes the production URI reader and settings
+  activity-result handler against scripted document providers. Read/close errors
+  and null streams preserve the existing profile and report an import error;
+  missing results are ignored. Covers successful UTF-8 input and the 4 MiB size
+  boundary. Android framework, preferences and JSON interpretation are boundary
+  fakes; `--baseline` reads HEAD.

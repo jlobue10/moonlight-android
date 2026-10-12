@@ -1223,7 +1223,10 @@ public class StreamSettings extends AppCompatActivity {
         @Override
         public void onActivityResult(int requestCode, int resultCode, Intent data) {
             super.onActivityResult(requestCode, resultCode, data);
-            if (requestCode == READ_REQUEST_CODE && resultCode == Activity.RESULT_OK && data.getData() != null) {
+            if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+                return;
+            }
+            if (requestCode == READ_REQUEST_CODE) {
                 try {
                     Uri uri = data.getData();
                     String json = FileUriUtils.openUriForRead(getActivity(), uri);
@@ -1250,7 +1253,7 @@ public class StreamSettings extends AppCompatActivity {
                 return;
             }
 
-            if (requestCode == READ_REQUEST_SPECIAL_CODE && resultCode == Activity.RESULT_OK && data.getData() != null) {
+            if (requestCode == READ_REQUEST_SPECIAL_CODE) {
                 try {
                     Uri uri = data.getData();
                     String json = FileUriUtils.openUriForRead(getActivity(), uri);

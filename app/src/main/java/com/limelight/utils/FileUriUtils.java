@@ -3,14 +3,13 @@ package com.limelight.utils;
 import android.content.Context;
 import android.net.Uri;
 
-import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.io.Reader;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Description
@@ -18,47 +17,31 @@ import java.io.Reader;
  * Time: 13:46
  */
 public class FileUriUtils {
-    public static String openUriForRead(Context context, Uri uri) {
-        if (uri == null)
+    // Keyboard and shortcut profiles are small JSON documents. Bound provider
+    // input before buffering it so selecting a large file cannot exhaust memory.
+    private static final int MAX_IMPORT_BYTES = 4 * 1024 * 1024;
+
+    public static String openUriForRead(Context context, Uri uri) throws IOException {
+        if (uri == null) {
             return "";
-        InputStream inputStream = null;
-        Reader reader = null;
-        BufferedReader bufferedReader = null;
-        StringBuilder result = new StringBuilder();
-        try {
-            inputStream = context.getContentResolver().openInputStream(uri);
-            reader = new InputStreamReader(inputStream);
-            bufferedReader = new BufferedReader(reader);
-            String temp;
-            while ((temp = bufferedReader.readLine()) != null) {
-                result.append(temp);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
-            if (inputStream != null) {
-                try {
-                    inputStream.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
-            if (bufferedReader != null) {
-                try {
-                    bufferedReader.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
         }
-        return result.toString();
+        try (InputStream inputStream = context.getContentResolver().openInputStream(uri)) {
+            if (inputStream == null) {
+                throw new IOException("Unable to open the selected profile");
+            }
+            ByteArrayOutputStream result = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = inputStream.read(buffer)) != -1) {
+                if (count > MAX_IMPORT_BYTES - result.size()) {
+                    throw new IOException("Profile exceeds the 4 MiB import limit");
+                }
+                result.write(buffer, 0, count);
+            }
+            // Propagate read/close failures to the import handler; never commit a
+            // partial document or report a provider failure as an empty file.
+            return new String(result.toByteArray(), StandardCharsets.UTF_8);
+        }
     }
 
     public static boolean openUriForWrite(Context context, Uri uri, String content) {
