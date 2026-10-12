@@ -52,8 +52,12 @@ public class NvConnection {
     // The permit belongs to this instance only between its start thread's acquire and
     // stop(); a stop issued before the acquire must neither release a permit it never
     // held nor let the start thread go on to a native start nobody will stop.
-    private volatile boolean connectionPermitHeld;
-    private volatile boolean stopRequested;
+    // Serializes ownership transitions with the process-wide interrupt. Never hold
+    // this lock while acquiring MoonBridge.class: a native start holds that monitor
+    // and stop() must still be able to interrupt it.
+    private final Object connectionStateLock = new Object();
+    private boolean connectionPermitHeld;
+    private boolean stopRequested;
     private final boolean isMonkey;
     private final Context appContext;
 
@@ -95,17 +99,25 @@ public class NvConnection {
     }
 
     public void stop() {
-        stopRequested = true;
-
-        // Interrupt any pending connection. This is thread-safe.
-        MoonBridge.interruptConnection();
+        synchronized (connectionStateLock) {
+            stopRequested = true;
+            // The native interrupt is process-wide. A cancelled HTTP launch or
+            // repeated stop must not interrupt another instance's connection.
+            // Keep the ownership check and interrupt atomic with permit retirement.
+            if (!connectionPermitHeld) {
+                return;
+            }
+            MoonBridge.interruptConnection();
+        }
 
         // Moonlight-core is not thread-safe with respect to connection start and stop, so
         // we must not invoke that functionality in parallel.
         boolean releasePermit;
         synchronized (MoonBridge.class) {
-            releasePermit = connectionPermitHeld;
-            connectionPermitHeld = false;
+            synchronized (connectionStateLock) {
+                releasePermit = connectionPermitHeld;
+                connectionPermitHeld = false;
+            }
             if (releasePermit) {
                 MoonBridge.stopConnection();
                 MoonBridge.cleanupBridge();
@@ -537,13 +549,15 @@ public class NvConnection {
                 // Moonlight-core is not thread-safe with respect to connection start and stop, so
                 // we must not invoke that functionality in parallel.
                 synchronized (MoonBridge.class) {
-                    if (stopRequested) {
-                        // stop() ran while this thread was still launching the app over HTTP:
-                        // there is nobody left to stop a native connection, so do not start one.
-                        connectionAllowed.release();
-                        return;
+                    synchronized (connectionStateLock) {
+                        if (stopRequested) {
+                            // stop() ran while this thread was still launching the app over HTTP:
+                            // there is nobody left to stop a native connection, so do not start one.
+                            connectionAllowed.release();
+                            return;
+                        }
+                        connectionPermitHeld = true;
                     }
-                    connectionPermitHeld = true;
                     MoonBridge.setupBridge(videoDecoderRenderer, audioRenderer, connectionListener);
                     int ret = MoonBridge.startConnection(context.serverAddress.address,
                             context.serverAppVersion, context.serverGfeVersion, context.rtspSessionUrl,
@@ -566,7 +580,12 @@ public class NvConnection {
                         // LiStartConnection() failed, so the caller is not expected
                         // to stop the connection themselves. We need to release their
                         // semaphore count for them.
-                        connectionPermitHeld = false;
+                        // Native startup already unwound its resources. Release the Java
+                        // bridge references too; stop() no longer owns this failed attempt.
+                        MoonBridge.cleanupBridge();
+                        synchronized (connectionStateLock) {
+                            connectionPermitHeld = false;
+                        }
                         connectionAllowed.release();
                         return;
                     }
