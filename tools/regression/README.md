@@ -6,6 +6,9 @@ start a stream, or load Android native libraries. They compile production
 sources or extract production methods verbatim, with deterministic platform
 boundaries. See each script for the exact boundary being replaced.
 
+- `test_connection_ownership.py`: production connection start/stop; cancelling HTTP
+  setup, stale/repeated stops, native-start failure cleanup, and interruption of a
+  blocked native start without leaking the process-wide semaphore.
 - `test_pyrowave_recovery.py`: renderer rebuilds, cleanup/replacement during recovery,
   HDR restoration and the terminal error budget, with JNI calls recorded.
 - `test_depth_failure_cleanup.py`: failed-model cleanup blocked across stop; the GL
