@@ -117,11 +117,16 @@ public class ConnectionOwnership {
         reset();
         NvConnection active=new NvConnection(); start(active); join(active.startThread);
         NvConnection cancelled=new NvConnection(); cancelled.holdHttp=true; start(cancelled);
-        cancelled.stop();
+        Thread cancelStop=new Thread(cancelled::stop); cancelStop.start();
+        cancelStop.join(200);
+        check(cancelStop.isAlive(), "a stop issued during the HTTP launch waits for the launch to be answered");
+        cancelled.httpResume.countDown(); join(cancelStop);
         check(MoonBridge.interrupts==0 && MoonBridge.stops==0 && MoonBridge.listener==active.context.connListener,
               "cancelling HTTP setup cannot interrupt another connection's native session");
         check(NvConnection.connectionAllowed.availablePermits()==0, "a non-owner stop cannot release the active permit");
-        cancelled.httpResume.countDown(); active.stop(); join(cancelled.startThread);
+        join(cancelled.startThread);
+        check(MoonBridge.starts==1, "a cancelled launch never queues for the permit nor starts JNI");
+        active.stop();
         check(MoonBridge.starts==1 && MoonBridge.stops==1, "cancelled waiter never starts JNI after acquiring the permit");
         check(MoonBridge.listener==null, "the active owner cleans up its bridge");
 
@@ -157,6 +162,17 @@ public class ConnectionOwnership {
         MoonBridge.allowNativeReturn.countDown(); join(pending.startThread); join(stop); join(unusedStop);
         check(MoonBridge.stops==1 && MoonBridge.cleanups==1,
               "native start and teardown remain serialized after interruption");
+
+        // The owner's interrupt makes the native start fail: the start thread cleans up on its
+        // own, and the owner's stop() then skips everything under the start/stop monitor.
+        reset(); MoonBridge.blocked=true; MoonBridge.result=-1;
+        NvConnection interrupted=new NvConnection(); start(interrupted); await(MoonBridge.nativeEntered);
+        Thread intStop=new Thread(interrupted::stop); intStop.start(); await(MoonBridge.nativeInterrupt);
+        MoonBridge.allowNativeReturn.countDown(); join(interrupted.startThread); join(intStop);
+        check(MoonBridge.interrupts==1 && MoonBridge.stops==0 && MoonBridge.cleanups==1 && MoonBridge.listener==null,
+              "an interrupted native start cleans up on its own thread and the owner's stop skips the native stop");
+        check(NvConnection.connectionAllowed.availablePermits()==1, "exactly one permit after an interrupted start");
+        MoonBridge.result=0;
 
         reset(); NvConnection preCancelled=new NvConnection(); preCancelled.stop(); start(preCancelled); join(preCancelled.startThread);
         check(MoonBridge.starts==0 && MoonBridge.interrupts==0 && MoonBridge.stops==0,
