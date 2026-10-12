@@ -57,7 +57,8 @@ public class NvConnection {
     // and stop() must still be able to interrupt it.
     private final Object connectionStateLock = new Object();
     private boolean connectionPermitHeld;
-    private boolean stopRequested;
+    // The HTTP retry and pre-permit checks run outside connectionStateLock.
+    private volatile boolean stopRequested;
     private final boolean isMonkey;
     private final Context appContext;
     // The thread start() spawned, so a stop issued during the HTTP launch can wait for
