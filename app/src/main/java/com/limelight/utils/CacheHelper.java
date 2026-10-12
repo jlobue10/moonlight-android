@@ -78,18 +78,21 @@ public class CacheHelper {
     public static String readInputStreamToString(InputStream in) throws IOException {
         Reader r = new InputStreamReader(in);
 
-        StringBuilder sb = new StringBuilder();
-        char[] buf = new char[256];
-        int bytesRead;
-        while ((bytesRead = r.read(buf)) != -1) {
-            sb.append(buf, 0, bytesRead);
-        }
-
         try {
-            in.close();
-        } catch (IOException ignored) {}
-
-        return sb.toString();
+            StringBuilder sb = new StringBuilder();
+            char[] buf = new char[256];
+            int bytesRead;
+            while ((bytesRead = r.read(buf)) != -1) {
+                sb.append(buf, 0, bytesRead);
+            }
+            return sb.toString();
+        } finally {
+            // Callers transfer ownership when opening the cache stream inline.
+            // Preserve any read error and the existing best-effort close policy.
+            try {
+                r.close();
+            } catch (IOException ignored) {}
+        }
     }
 
     public static void writeStringToOutputStream(OutputStream out, String str) throws IOException {
