@@ -296,4 +296,13 @@ public class UiHelper {
     public static float dpToPx(Context context, float dp) {
         return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, dp, context.getResources().getDisplayMetrics());
     }
+
+    // A text toast built from an exception message must never carry null: Toast.show()
+    // throws IllegalStateException on API 30+ for a text toast without text.
+    public static void toastSafe(Context context, String text, int duration) {
+        if (text == null || text.isEmpty()) {
+            text = context.getString(R.string.conn_error_title);
+        }
+        Toast.makeText(context, text, duration).show();
+    }
 }

@@ -117,6 +117,22 @@ public class ProfilePersistenceRegression {
     check(manager.getProfiles().size()==1 && manager.getProfiles().get(0).getUuid().equals(id) && manager.getActive()!=null,
           "failed load preserves the complete live profile map and active selection");
    }
+   // A31-02: a rejected collection is set aside, so the first save of the (empty) live map
+   // after a failed process-start load cannot destroy the only copy.
+   Path bad=root.resolve("profiles/profiles.json.bad");
+   String damaged="{\"profiles\":["+other+",null]}";
+   Files.writeString(file,damaged);
+   ProfilesManager.instance=null; manager=ProfilesManager.getInstance();
+   check(!manager.load(context) && manager.getProfiles().isEmpty(),"a process-start load rejects the damaged collection");
+   check(!Files.exists(file) && Files.readString(bad).equals(damaged),"a rejected collection is set aside as profiles.json.bad");
+   manager.add(new SettingsProfile(UUID.randomUUID(),"Fresh",1,2,Map.of()));
+   check(manager.save(context) && Files.readString(bad).equals(damaged),"the first save after a rejected load keeps the set-aside copy");
+   // A31-03: a profile without a name is not an identity; getActiveName() never returns null.
+   String nameless="{\"profiles\":[{\"uuid\":\""+id+"\"}],\"activeProfileId\":\""+id+"\"}";
+   Files.writeString(file,nameless);
+   check(!manager.load(context) && manager.getActiveName()!=null,"a profile without a name is rejected and getActiveName() stays non-null");
+   check(Files.readString(bad).equals(nameless),"the newest damaged copy replaces the previous quarantine");
+   Files.delete(bad);
    Files.write(file,original);
    check(manager.load(context),"valid reload recovers after failed loads");
    manager.getActive().setName("Updated");

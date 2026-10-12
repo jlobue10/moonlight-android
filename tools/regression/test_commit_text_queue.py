@@ -83,7 +83,7 @@ public class CommitTextRegression {
     final TouchContext[] touchContextMap = {new TouchContext(), null};
     final TouchContext[] trackpadContextMap = {null, new TouchContext()};
     final Handler timerHandler = new Handler();
-    static class UiHelper { static void notifyStreamEnded(Object owner) {} }
+    static class UiHelper { static void notifyStreamEnded(Object owner) {} static void toastSafe(Object context, String text, int duration) {} }
     // The background network teardown is outside this fixture. The production
     // main-thread stopConnection path, including queue cancellation, runs normally.
     static class Thread { public void run() {} void start() {} void sleep(int millis) {} }

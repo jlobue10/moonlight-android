@@ -85,16 +85,21 @@ public class ProfilesManager {
             } catch (IOException e) {
                 LimeLog.warning("ArtemisProfile: Failed to load profiles from file:" + e);
                 e.printStackTrace();
+                quarantine(file);
                 return false;
             }
             // Validate a complete snapshot before replacing the live collection. A
             // malformed later entry must not leave only the successfully read prefix.
             if (data == null || data.profiles == null) {
+                quarantine(file);
                 throw new IOException("Missing profile collection");
             }
             Map<UUID, SettingsProfile> loaded = new LinkedHashMap<>();
             for (SettingsProfile profile : data.profiles) {
-                if (profile == null || profile.getUuid() == null) {
+                // A name is part of the identity: the launcher activities call
+                // getActiveName().isEmpty() on every start.
+                if (profile == null || profile.getUuid() == null || profile.getName() == null) {
+                    quarantine(file);
                     throw new IOException("Profile entry has no identity");
                 }
                 loaded.put(profile.getUuid(), profile);
@@ -103,12 +108,33 @@ public class ProfilesManager {
             profiles.putAll(loaded);
             activeProfileId = data.activeProfileId;
         } catch (Exception e) {
+            // JsonSyntaxException and the identity failures above land here.
             LimeLog.warning("ArtemisProfile: Failed to load profiles:" + e);
             e.printStackTrace();
+            try {
+                File file = new File(new File(this.appContext.getFilesDir(), PROFILES_DIR), PROFILES_FILE);
+                if (file.exists()) {
+                    quarantine(file);
+                }
+            } catch (Exception ignored) {
+            }
             return false;
         }
 
         return true;
+    }
+
+    // A collection this build rejects is set aside instead of being left for the next
+    // save() of the (empty) live map to replace: the atomic rename that makes save()
+    // safe would otherwise reliably destroy the only copy. The newest damaged copy wins.
+    private static void quarantine(File file) {
+        File bad = new File(file.getParentFile(), PROFILES_FILE + ".bad");
+        if (bad.exists() && !bad.delete()) {
+            LimeLog.warning("ArtemisProfile: Failed to replace the previous quarantined profiles file");
+        }
+        if (!file.renameTo(bad)) {
+            LimeLog.warning("ArtemisProfile: Failed to quarantine the rejected profiles file");
+        }
     }
 
     public boolean save(Context context) {
@@ -195,7 +221,7 @@ public class ProfilesManager {
     @NonNull
     public String getActiveName() {
         SettingsProfile active = getActive();
-        return active == null ? "" : active.getName();
+        return active == null || active.getName() == null ? "" : active.getName();
     }
 
     public void addListener(ProfileChangeListener listener) {

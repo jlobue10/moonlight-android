@@ -246,7 +246,7 @@ public class ServerHelper {
                 }
 
                 final String toastMessage = message;
-                parent.runOnUiThread(() -> Toast.makeText(parent, toastMessage, Toast.LENGTH_LONG).show());
+                parent.runOnUiThread(() -> UiHelper.toastSafe(parent, toastMessage, Toast.LENGTH_LONG));
             }
         }).start();
 
@@ -277,7 +277,7 @@ public class ServerHelper {
             e.printStackTrace();
 
             final String toastMessage = e.getMessage();
-            parent.runOnUiThread(() -> Toast.makeText(parent, toastMessage, Toast.LENGTH_LONG).show());
+            parent.runOnUiThread(() -> UiHelper.toastSafe(parent, toastMessage, Toast.LENGTH_LONG));
         }
     }
 }
