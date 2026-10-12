@@ -174,7 +174,12 @@ public class ConnectionOwnership {
         check(NvConnection.connectionAllowed.availablePermits()==1, "exactly one permit after an interrupted start");
         MoonBridge.result=0;
 
-        reset(); NvConnection preCancelled=new NvConnection(); preCancelled.stop(); start(preCancelled); join(preCancelled.startThread);
+        // A pre-cancelled start returns before its first HTTP attempt, so there is no HTTP entry to await.
+        reset(); NvConnection preCancelled=new NvConnection(); preCancelled.stop();
+        preCancelled.start(new AudioRenderer(), new VideoDecoderRenderer(), new NvConnectionListener());
+        for (int i=0; i<300 && preCancelled.startThread==null; ++i) Thread.sleep(10);
+        check(preCancelled.startThread!=null, "the pre-cancelled start thread was spawned");
+        join(preCancelled.startThread);
         check(MoonBridge.starts==0 && MoonBridge.interrupts==0 && MoonBridge.stops==0,
               "stop before start does not call the process-wide native bridge");
         check(NvConnection.connectionAllowed.availablePermits()==1, "pre-cancelled start preserves permit balance");
