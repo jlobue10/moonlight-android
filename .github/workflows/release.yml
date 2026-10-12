@@ -27,8 +27,10 @@ on:
         default: false
         type: boolean
 
+# The build job runs the harnesses, Gradle plugins and the NDK build read-only; only the
+# publish job holds a token that can write to the repository.
 permissions:
-  contents: write
+  contents: read
 
 env:
   BUILD_TOOLS_VERSION: "36.0.0"
@@ -39,15 +41,20 @@ env:
 
 jobs:
   build:
-    name: Build, sign and publish
+    name: Build and sign
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
     steps:
       - name: Check out (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0   # the previous release tag, for the versionCode check
+          persist-credentials: false
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -183,21 +190,36 @@ jobs:
           (cd dist && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       - name: Name the workflow artifact
+        id: artifact
         # Artifact names may not contain "/", which branch names such as port/agp9 do.
-        run: echo "ARTIFACT_NAME=apks-$(printf '%s' "${RELEASE_TAG:-$GITHUB_REF_NAME}" | tr '/' '-')" >> "$GITHUB_ENV"
+        run: echo "name=apks-$(printf '%s' "${RELEASE_TAG:-$GITHUB_REF_NAME}" | tr '/' '-')" >> "$GITHUB_OUTPUT"
 
       - name: Upload APKs as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT_NAME }}
+          name: ${{ steps.artifact.outputs.name }}
           path: |
             dist/*.apk
             dist/SHA256SUMS.txt
             dist/SIGNING_NOTE.txt
           if-no-files-found: error
 
+  publish:
+    name: Publish GitHub release
+    needs: build
+    if: github.event_name == 'push' || inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the signed APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: dist
+
       - name: Write release notes
-        if: env.RELEASE_TAG != ''
         run: |
           set -euo pipefail
           {
@@ -214,7 +236,6 @@ jobs:
           } > dist/RELEASE_NOTES.md
 
       - name: Publish GitHub release
-        if: env.RELEASE_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}

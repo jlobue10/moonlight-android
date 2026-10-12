@@ -74,6 +74,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
 
 public class StreamSettings extends AppCompatActivity {
@@ -1062,7 +1063,15 @@ public class StreamSettings extends AppCompatActivity {
                         Toast.makeText(getActivity(), getString(R.string.pref_enter_value_0_9999), Toast.LENGTH_SHORT).show();
                         return false;
                     }
-                    float bitrateValue = Float.parseFloat(value) * 1000;
+                    float bitrateValue;
+                    try {
+                        bitrateValue = Float.parseFloat(value) * 1000;
+                    } catch (NumberFormatException e) {
+                        // A comma decimal or letters from a hardware keyboard must not crash
+                        // the settings activity.
+                        Toast.makeText(getActivity(), getString(R.string.pref_enter_value_0_9999), Toast.LENGTH_SHORT).show();
+                        return false;
+                    }
                     int bitrate = (int) bitrateValue;
                     SharedPreferences prefs = getPrefs();
                     prefs.edit().putInt(PreferenceConfiguration.BITRATE_PREF_STRING, bitrate).apply();
@@ -1146,7 +1155,10 @@ public class StreamSettings extends AppCompatActivity {
                         }
                         
                         // Format to max 3 decimal places
-                        String formattedValue = String.format("%.3f", refreshRate);
+                        // Locale.ROOT: the stored value is parsed back with a '.' decimal point;
+                        // the default locale produced "59,94" on comma-decimal locales, which the
+                        // guarded parse then silently deleted.
+                        String formattedValue = String.format(Locale.ROOT, "%.3f", refreshRate);
                         // Remove trailing zeros
                         formattedValue = formattedValue.replaceAll("0+$", "").replaceAll("\\.$", "");
 

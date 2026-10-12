@@ -785,6 +785,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
             Toast.makeText(this, "This device cannot decode PyroWave (needs a 64-bit Vulkan 1.3 GPU)", Toast.LENGTH_LONG).show();
         }
         decoderRenderer.setPyroWaveOffered(offerPyroWave);
+        // Direct submit only for the plain 2D surface; the stereo/XR render modes decode
+        // into a SurfaceTexture consumed by a GL thread (see setDirectSubmitAllowed).
+        decoderRenderer.setDirectSubmitAllowed(prefConfig.renderMode == 0);
 
         if (offerPyroWave && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             // PyroWave decodes on the GPU every frame, so ask for a stable sustained clock
@@ -4001,10 +4004,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public void displayMessage(final String message) {
+        // An IOException raised without a message (a bare EOFException when the host
+        // closes mid-body) reaches here as null, and Toast.show() throws on a null text.
+        final String text = message != null ? message : "Connection failed";
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                Toast.makeText(Game.this, message, Toast.LENGTH_LONG).show();
+                Toast.makeText(Game.this, text, Toast.LENGTH_LONG).show();
             }
         });
     }

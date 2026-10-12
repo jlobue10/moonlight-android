@@ -130,3 +130,11 @@ including on-screen retransmission and removal coverage; no hardware is used.
   `NvConnection.stop()` releases the process-wide permit only when its start acquired it,
   that the start thread honours a stop requested during the HTTP launch phase, and that
   `connectionStarted()` ignores a destroyed activity.
+
+- `test_decoder_input_wait.py`: text gate that one decoder input-buffer wait is bounded by
+  `INPUT_BUFFER_WAIT_MS` (with direct submit it runs on common-c's receive thread), that the
+  hung exception is measured across calls, and that direct submit is advertised only for the
+  plain 2D render path.
+- `test_settings_and_toast.py`: text gate that the custom refresh rate is formatted with
+  `Locale.ROOT`, the custom bitrate parse is guarded, and `displayMessage()` never hands a
+  null text to Toast.

@@ -473,6 +473,17 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         pyroWaveOffered = offered;
     }
 
+    // Direct submit decodes on common-c's network receive thread. Only the plain 2D
+    // render path may use it: a SurfaceTexture-backed target (the stereo/XR modes) is
+    // consumed by a GL thread that can stop acquiring without the activity noticing, and a
+    // decoder back-pressured that way would hold the receive thread. Those targets decode
+    // on common-c's own decoder thread, whose queue overflow requests an IDR instead.
+    private volatile boolean directSubmitAllowed = true;
+
+    public void setDirectSubmitAllowed(boolean allowed) {
+        directSubmitAllowed = allowed;
+    }
+
     public boolean isAv1Supported() {
         return av1Decoder != null;
     }
@@ -878,6 +889,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 // Input and output buffers are invalidated by stop() and reset().
                 nextInputBuffer = null;
                 nextInputBufferIndex = -1;
+                inputStallStartMs = 0;
                 outputBufferQueue.clear();
 
                 // If we just need a flush, do so now with all threads quiesced.
@@ -1286,6 +1298,16 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         rendererThread.setPriority(Thread.NORM_PRIORITY + 2);
         rendererThread.start();
     }
+    // One call may wait this long for an input buffer. With direct submit this runs on
+    // common-c's receive thread: a longer wait leaves the socket undrained, the kernel
+    // backlog then arrives as a burst and the host's live frames are rejected (common-c
+    // C28-01). A failed wait returns false, the caller answers DR_NEED_IDR and common-c
+    // drops P-frames and asks the host for an IDR, so the thread is held at most this long
+    // per host IDR. The hung exception fires once the stall has lasted DECODER_HUNG_MS.
+    private static final int INPUT_BUFFER_WAIT_MS = 100;
+    private static final int DECODER_HUNG_MS = 5000;
+    private long inputStallStartMs;
+
     private boolean fetchNextInputBuffer() {
         long startTime;
         boolean codecRecovered;
@@ -1298,11 +1320,11 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         startTime = SystemClock.uptimeMillis();
 
         try {
-            // If we don't have an input buffer index yet, fetch one now. Give up after the
-            // hang threshold so the DecoderHungException check below is reachable: a codec
-            // back-pressured by a stalled consumer otherwise spun here silently forever.
+            // If we don't have an input buffer index yet, fetch one now, bounded per call
+            // (see INPUT_BUFFER_WAIT_MS): a codec back-pressured by a stalled consumer
+            // otherwise held the receive thread.
             while (nextInputBufferIndex < 0 && !stopping &&
-                    SystemClock.uptimeMillis() - startTime < 5000) {
+                    SystemClock.uptimeMillis() - startTime < INPUT_BUFFER_WAIT_MS) {
                 nextInputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
             }
 
@@ -1346,10 +1368,15 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
 
         if (nextInputBuffer == null) {
-            // We've been hung for 5 seconds and no other exception was reported,
-            // so generate a decoder hung exception
-            if (deltaMs >= 5000 && initialException == null) {
-                DecoderHungException decoderHungException = new DecoderHungException(deltaMs);
+            // Track the stall across calls: each call waits only INPUT_BUFFER_WAIT_MS, so
+            // the hang is measured from the first failed wait, not from this one.
+            if (inputStallStartMs == 0) {
+                inputStallStartMs = startTime;
+            }
+            final int stalledMs = (int) (SystemClock.uptimeMillis() - inputStallStartMs);
+            if (!stopping && stalledMs >= DECODER_HUNG_MS && initialException == null) {
+                // Hung for DECODER_HUNG_MS with no other exception reported
+                DecoderHungException decoderHungException = new DecoderHungException(stalledMs);
                 if (!reportedCrash) {
                     reportedCrash = true;
                     crashListener.notifyCrash(decoderHungException);
@@ -1360,6 +1387,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             return false;
         }
 
+        inputStallStartMs = 0;
         return true;
     }
 
@@ -2157,7 +2185,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         // Enable direct submit on supported hardware. Not when PyroWave may be negotiated:
         // direct submit decodes on the network receive thread, and at PyroWave's packet
         // rates that thread must do nothing but drain the socket.
-        if (directSubmit && !pyroWaveOffered) {
+        if (directSubmit && !pyroWaveOffered && directSubmitAllowed) {
             capabilities |= MoonBridge.CAPABILITY_DIRECT_SUBMIT;
         }
 
