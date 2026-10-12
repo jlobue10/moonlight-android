@@ -61,6 +61,7 @@ public class MotionRegression {
   }
  }
  boolean stopped;
+ final Object controllerMaskLock=new Object();
  final Contexts inputDeviceContexts=new Contexts();
  InputDeviceContext[] inputDeviceContextSnapshot=new InputDeviceContext[0];
  final ConcurrentHashMap<Integer,UsbDeviceContext> usbDeviceContexts=new ConcurrentHashMap<>();

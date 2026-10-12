@@ -2,7 +2,8 @@
 """Execute production controller stop/removal and native-send methods with fake devices.
 
 Exercises stale removals and on-screen retransmissions after stop, plus sends paused
-at the native boundary. Device discovery is stubbed; aggregation and native sends are real.
+at the native boundary, including USB/BLE state, motion, touch and battery callbacks.
+Device discovery is stubbed; aggregation and native-send forwarding are production code.
 --baseline reads HEAD. No Android device or controller hardware is used.
 """
 from pathlib import Path
@@ -27,23 +28,36 @@ import java.util.*;import java.util.concurrent.*;
 public class RemovalLifecycle {
  static class LimeLog {static void info(String s){}}
  static class AbstractController {final int id;AbstractController(int id){this.id=id;}int getControllerId(){return id;}}
- static class GenericControllerContext {short controllerNumber;boolean reservedControllerNumber=true,assignedControllerNumber=true;
+ static class Vector2d {float x,y;void initialize(float a,float b){x=a;y=b;}float getX(){return x;}float getY(){return y;}}
+ static class GenericControllerContext {final Vector2d driverLeftStick=new Vector2d(),driverRightStick=new Vector2d();
+  float leftStickDeadzoneRadius,rightStickDeadzoneRadius,triggerDeadzone;
+  short controllerNumber;boolean reservedControllerNumber=true,assignedControllerNumber=true;
   int destroys,inputMap,mouseEmulationLastInputMap,mouseEmulationPixelMultiplier=1;
   boolean mouseEmulationActive,mouseEmulationXDown;byte leftTrigger,rightTrigger;
   short leftStickX,leftStickY,rightStickX,rightStickY;void destroy(){++destroys;}}
  static class InputDeviceContext extends GenericControllerContext {String name="test";}
- static class UsbDeviceContext extends InputDeviceContext {}
+ static class UsbDeviceContext extends InputDeviceContext {
+  short gyroReportRateHz=250,accelReportRateHz=250;long nextGyroReportNs,nextAccelReportNs;
+ }
  static class SparseArray<T> {final Map<Integer,T> m=new LinkedHashMap<>();T get(int n){return m.get(n);}void put(int n,T t){m.put(n,t);}
   void remove(int n){m.remove(n);}int size(){return m.size();}T valueAt(int n){return new ArrayList<T>(m.values()).get(n);}}
  static class InputManager {void unregisterInputDeviceListener(Object o){}}
  static class Vibrator {void cancel(){}}
  static class Preferences {boolean multiController=true,onscreenController;}
  static class MoonBridge {
+  static final int LI_ERR_UNSUPPORTED=-1;static final byte LI_MOTION_TYPE_GYRO=2;
+  static void forward(String kind){
+   if(block){block=false;entered.countDown();try{resume.await();}catch(InterruptedException e){throw new RuntimeException(e);}}
+   events.add(session+":"+kind);
+  }
+  static int sendControllerMotionEvent(byte n,byte t,float x,float y,float z){forward("motion");return 0;}
+  static int sendControllerTouchEvent2(byte n,byte t,byte pad,int p,float x,float y,float pressure){forward("touch");return 0;}
+  static void sendControllerBatteryEvent(byte n,byte s,byte p){forward("battery");}
   static final List<String> events=Collections.synchronizedList(new ArrayList<>());
   static volatile String session="old";static volatile boolean block;
   static CountDownLatch entered=new CountDownLatch(1),resume=new CountDownLatch(1);
   static void sendMultiControllerInput(short n,short mask,int buttons,byte lt,byte rt,short lx,short ly,short rx,short ry){
-   if(block){entered.countDown();try{resume.await();}catch(InterruptedException e){throw new RuntimeException(e);}}
+   if(block){block=false;entered.countDown();try{resume.await();}catch(InterruptedException e){throw new RuntimeException(e);}}
    events.add(session+":"+n+":"+mask);
   }
   static void reset(){events.clear();session="old";block=false;entered=new CountDownLatch(1);resume=new CountDownLatch(1);}
@@ -63,6 +77,8 @@ public class RemovalLifecycle {
  final InputDeviceContext defaultContext=new InputDeviceContext();
  final ConcurrentHashMap<Integer,UsbDeviceContext> usbDeviceContexts=new ConcurrentHashMap<>();
  final GenericControllerContext[] inputDeviceContextSnapshot={};
+ static final int NATIVE_MOTION_RATE_HZ=250;static final long MOTION_BURST_WINDOW_NS=40_000_000L;
+ void handleDeadZone(Vector2d vector,float radius){} // zero deadzone in this lifecycle fixture
  void assignControllerNumberIfNeeded(GenericControllerContext c){}
  void refreshInputDeviceContextSnapshot(){}
  static class VirtualController {
@@ -75,6 +91,14 @@ public class RemovalLifecycle {
  static void check(boolean ok,String name){++checks;if(!ok)++failures;System.out.println((ok?"PASS ":"FAIL ")+name);}
 '''
 suffix=r'''
+ void reportDriver(String kind) {
+  switch(kind) {
+   case "state": reportControllerState(7,1,0.5f,0,0,0,0,0);break;
+   case "motion": reportControllerMotion(7,(byte)2,1,2,3);break;
+   case "touch": reportControllerTouch(7,(byte)0,(byte)1,0,0.5f,0.5f,1);break;
+   case "battery": reportControllerBattery(7,(byte)1,(byte)80);break;
+  }
+ }
  public static void main(String[] args)throws Exception{
   for(boolean usb:new boolean[]{true,false}){
    MoonBridge.reset();RemovalLifecycle h=new RemovalLifecycle();InputDeviceContext context=new InputDeviceContext();
@@ -125,6 +149,28 @@ suffix=r'''
   MoonBridge.resume.countDown();input.join(2000);oscStop.join(2000);
   check(!input.isAlive()&&!oscStop.isAlive()&&MoonBridge.events.equals(Arrays.asList("old:0:1")),
         "an on-screen send racing stop finishes against the original session");
+  for (String kind : Arrays.asList("state", "motion", "touch", "battery")) {
+   MoonBridge.reset();RemovalLifecycle driver=new RemovalLifecycle();driver.usbDeviceContexts.put(7,new UsbDeviceContext());
+   driver.reportDriver(kind);
+   check(MoonBridge.events.size()==1,"live driver "+kind+" is forwarded");
+   driver.stop();MoonBridge.events.clear();driver.reportDriver(kind);
+   check(MoonBridge.events.isEmpty(),"late driver "+kind+" is suppressed");
+   for (boolean removing : new boolean[]{false,true}) {
+    MoonBridge.reset();RemovalLifecycle racing=new RemovalLifecycle();racing.usbDeviceContexts.put(7,new UsbDeviceContext());
+    MoonBridge.block=true;Thread sender=new Thread(()->racing.reportDriver(kind));sender.start();
+    check(MoonBridge.entered.await(2,TimeUnit.SECONDS),"driver "+kind+" reaches native boundary");
+    CountDownLatch retiring=new CountDownLatch(1),retired=new CountDownLatch(1);
+    Thread retirement=new Thread(()->{retiring.countDown();if(removing)racing.deviceRemoved(new AbstractController(7));else racing.stop();retired.countDown();});
+    retirement.start();retiring.await();boolean done=retired.await(200,TimeUnit.MILLISECONDS);
+    check(!done,(removing?"removal":"stop")+" waits for admitted driver "+kind);
+    if(done)MoonBridge.session="replacement";
+    MoonBridge.resume.countDown();sender.join(2000);retirement.join(2000);
+    check(!sender.isAlive()&&!retirement.isAlive()&&MoonBridge.events.stream().allMatch(e->e.startsWith("old:")),
+          "driver "+kind+" finishes before lifecycle retirement");
+    if(removing)check(MoonBridge.events.size()==2&&MoonBridge.events.get(1).equals("old:0:0"),
+          "driver "+kind+" precedes its controller release");
+   }
+  }
   System.out.println(checks+" checks, "+failures+" failures");System.exit(failures==0?0:1);
  }
 }
@@ -132,8 +178,13 @@ suffix=r'''
 methods=['    public void stop()', '    public void deviceRemoved(', '    public void onInputDeviceRemoved(',
          '    private void releaseControllerNumber(', '    private short getActiveControllerMask(',
          '    public void reportOscState(', '    private void sendControllerInputPacket(',
-         '    private byte maxByMagnitude(', '    private short maxByMagnitude(']
-code=prefix.replace('SEND',method(connection,'    public void sendControllerInput('))
+         '    private byte maxByMagnitude(', '    private short maxByMagnitude(',
+         '    private static short driverStickAxis(', '    public void reportControllerState(',
+         '    public void reportControllerMotion(', '    public void reportControllerTouch(',
+         '    public void reportControllerBattery(']
+code=prefix.replace('SEND','\n'.join(method(connection,m) for m in ['    public void sendControllerInput(',
+     '    public int sendControllerMotionEvent(', '    public int sendControllerTouchEvent2(',
+     '    public void sendControllerBatteryEvent(']))
 code=code.replace('STOPPED',re.search(r'    private (?:volatile )?boolean stopped = false;',source).group())
 code=code.replace('VIRTUAL',method(virtual,'    public static class ControllerInputContext')+'\n'+
                   method(virtual,'    private final Runnable delayedRetransmitRunnable')+';\n'+
