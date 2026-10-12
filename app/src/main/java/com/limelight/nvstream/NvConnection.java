@@ -60,6 +60,10 @@ public class NvConnection {
     private boolean stopRequested;
     private final boolean isMonkey;
     private final Context appContext;
+    // The thread start() spawned, so a stop issued during the HTTP launch can wait for
+    // the launch request to be answered (a quit that follows the stop must reach the
+    // host after the launch, not before it).
+    private volatile Thread startThread;
 
     public NvConnection(Context appContext, ComputerDetails.AddressTuple host, int httpsPort, String uniqueId, StreamConfiguration config, LimelightCryptoProvider cryptoProvider, X509Certificate serverCert)
     {
@@ -99,15 +103,33 @@ public class NvConnection {
     }
 
     public void stop() {
+        boolean owner;
+        Thread pendingStart;
         synchronized (connectionStateLock) {
             stopRequested = true;
             // The native interrupt is process-wide. A cancelled HTTP launch or
             // repeated stop must not interrupt another instance's connection.
             // Keep the ownership check and interrupt atomic with permit retirement.
-            if (!connectionPermitHeld) {
-                return;
+            owner = connectionPermitHeld;
+            pendingStart = owner ? null : startThread;
+            if (owner) {
+                MoonBridge.interruptConnection();
             }
-            MoonBridge.interruptConnection();
+        }
+        if (!owner) {
+            // No native session to stop. If the start thread is still launching the
+            // app over HTTP, wait for that request to be answered: the caller's
+            // quitApp() must not overtake the launch on the host. The start thread
+            // checks stopRequested after each attempt and before the permit, so this
+            // is bounded by one HTTP request.
+            if (pendingStart != null && pendingStart != Thread.currentThread()) {
+                try {
+                    pendingStart.join(10000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return;
         }
 
         // Moonlight-core is not thread-safe with respect to connection start and stop, so
@@ -483,6 +505,7 @@ public class NvConnection {
     {
         new Thread(new Runnable() {
             public void run() {
+                startThread = Thread.currentThread();
                 context.connListener = connectionListener;
                 context.videoCapabilities = videoDecoderRenderer.getCapabilities();
 
@@ -494,6 +517,10 @@ public class NvConnection {
 
                 do {
                     boolean retry = false;
+                    if (stopRequested) {
+                        // The activity left: no further launch attempts for a dead caller.
+                        return;
+                    }
                     try {
                         if (!startApp()) {
                             retry = context.connListener.stageFailed(appName, 0, 0);
@@ -535,6 +562,12 @@ public class NvConnection {
 
                 ByteBuffer ib = ByteBuffer.allocate(16);
                 ib.putInt(context.riKeyId);
+
+                if (stopRequested) {
+                    // Stopped during the launch: do not queue behind another session's
+                    // permit for a caller that is gone.
+                    return;
+                }
 
                 // Acquire the connection semaphore to ensure we only have one
                 // connection going at once.
