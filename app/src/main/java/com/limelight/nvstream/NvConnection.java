@@ -122,10 +122,13 @@ public class NvConnection {
             // app over HTTP, wait for that request to be answered: the caller's
             // quitApp() must not overtake the launch on the host. The start thread
             // checks stopRequested after each attempt and before the permit, so this
-            // is bounded by one HTTP request.
+            // is bounded by one HTTP request. That request (launch/resume) runs with
+            // no read timeout on purpose (prep commands, display switches, slow
+            // launchers), so the wait is uncapped: a cap let the quit overtake a launch
+            // slower than it, and the worker calling here does unbounded I/O anyway.
             if (pendingStart != null && pendingStart != Thread.currentThread()) {
                 try {
-                    pendingStart.join(10000);
+                    pendingStart.join();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
