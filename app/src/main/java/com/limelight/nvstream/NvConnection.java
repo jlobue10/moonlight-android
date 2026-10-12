@@ -25,6 +25,7 @@ import java.util.Objects;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -576,7 +577,14 @@ public class NvConnection {
                 // Acquire the connection semaphore to ensure we only have one
                 // connection going at once.
                 try {
-                    connectionAllowed.acquire();
+                    // Cancellation must also work after HTTP completed and another
+                    // connection owns the permit. Do not interrupt the HTTP request:
+                    // stop() still waits for its reply before the caller can quit.
+                    while (!connectionAllowed.tryAcquire(100, TimeUnit.MILLISECONDS)) {
+                        if (stopRequested) {
+                            return;
+                        }
+                    }
                 } catch (InterruptedException e) {
                     context.connListener.displayMessage(e.getMessage());
                     context.connListener.stageFailed(appName, 0, 0);

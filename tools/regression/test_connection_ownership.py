@@ -130,6 +130,23 @@ public class ConnectionOwnership {
         check(MoonBridge.starts==1 && MoonBridge.stops==1, "cancelled waiter never starts JNI after acquiring the permit");
         check(MoonBridge.listener==null, "the active owner cleans up its bridge");
 
+        // Cancel after HTTP completed and the start actually queued for the permit.
+        // Joining that start must not wait for a different, healthy session to end.
+        reset();
+        NvConnection holder=new NvConnection(); start(holder); join(holder.startThread);
+        NvConnection waiter=new NvConnection(); start(waiter);
+        for (int i=0; i<300 && !NvConnection.connectionAllowed.hasQueuedThreads(); ++i) Thread.sleep(10);
+        check(NvConnection.connectionAllowed.hasQueuedThreads(), "the second start is waiting for the active session's permit");
+        Thread waiterStop=new Thread(waiter::stop); waiterStop.start(); waiterStop.join(1000);
+        check(!waiterStop.isAlive() && !waiter.startThread.isAlive(),
+              "cancelling a permit waiter finishes while the other session is still active");
+        check(MoonBridge.starts==1 && MoonBridge.interrupts==0 && MoonBridge.stops==0 &&
+              NvConnection.connectionAllowed.availablePermits()==0,
+              "cancelling a permit waiter neither interrupts the owner nor manufactures a permit");
+        holder.stop(); join(waiter.startThread); join(waiterStop);
+        check(NvConnection.connectionAllowed.availablePermits()==1 && MoonBridge.starts==1,
+              "the cancelled waiter never starts native code after the owner stops");
+
         reset();
         NvConnection old=new NvConnection(); start(old); join(old.startThread); old.stop();
         NvConnection next=new NvConnection(); start(next); join(next.startThread);

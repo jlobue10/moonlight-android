@@ -40,7 +40,7 @@ for ok, name in (
     ('connecting = true;' in lam and lam.index('connecting = true;') < lam.index('conn.start('), 'Game marks itself connecting before it starts the connection'),
     ('connectionPermitHeld' in stop and stop.index('connectionPermitHeld') < stop.index('connectionAllowed.release()'), 'stop() releases the connection permit only when its start acquired it'),
     ('pendingStart.join();' in stop and 'join(10000)' not in stop, 'a non-owner stop waits for the launch request without a cap (the launch has no read timeout)'),
-    ('stopRequested' in start and start.rindex('if (stopRequested)') > start.index('connectionAllowed.acquire()') and start.rindex('if (stopRequested)') < start.index('MoonBridge.setupBridge('),
+    ('stopRequested' in start and start.rindex('if (stopRequested)') > start.index('connectionAllowed.tryAcquire(') and start.rindex('if (stopRequested)') < start.index('MoonBridge.setupBridge('),
      'the start thread re-checks a stop request after acquiring the permit and before the native start'),
     ('isDestroyed()' in started and started.index('isDestroyed()') < started.index('connected = true;'), 'connectionStarted() ignores a finishing/destroyed activity'),
 ):

@@ -8,7 +8,8 @@ boundaries. See each script for the exact boundary being replaced.
 
 - `test_connection_ownership.py`: production connection start/stop; cancelling HTTP
   setup, stale/repeated stops, native-start failure cleanup, and interruption of a
-  blocked native start without leaking the process-wide semaphore.
+  blocked native start without leaking the process-wide semaphore. Cancellation
+  while queued for another session's permit must finish without stopping its owner.
 - `test_pyrowave_recovery.py`: renderer rebuilds, cleanup/replacement during recovery,
   HDR restoration and the terminal error budget, with JNI calls recorded.
 - `test_depth_failure_cleanup.py`: failed-model cleanup blocked across stop; the GL
