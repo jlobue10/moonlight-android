@@ -94,7 +94,10 @@ surface replacement and verifies buffer/flag isolation and deferred model close.
 - `test_controller_removal_lifecycle.py`: production controller removal/stop
   methods and the actual NvConnection native-send wrapper. Checks normal and
   duplicate removals, late USB/BLE and Android callbacks after stop, and a native
-  removal send held across a concurrent stop. It verifies session isolation at
+  removal send held across a concurrent stop. Also runs VirtualController
+  retransmissions through production OSC state/aggregation and the native wrapper:
+  late callbacks cannot mutate retired state, and stop drains an admitted OSC send.
+  It verifies session isolation at
   fake native/device boundaries; reconnect behavior still needs hardware checks.
 
 - `test_controller_default_context_stop.py`: text gate that `ControllerHandler.stop()`

@@ -312,7 +312,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 return;
             }
 
-            // Wait for admitted removal callbacks, then suppress late ones before
+            // Wait for admitted removal/on-screen sends, then suppress late ones before
             // native teardown allows a replacement stream to use the same slots.
             stopped = true;
         }
@@ -3012,18 +3012,26 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                                short leftStickX, short leftStickY,
                                short rightStickX, short rightStickY,
                                byte leftTrigger, byte rightTrigger) {
-        defaultContext.leftStickX = leftStickX;
-        defaultContext.leftStickY = leftStickY;
+        synchronized (controllerMaskLock) {
+            // VirtualController schedules delayed retransmissions on its own Handler.
+            // Retiring defaultContext does not cancel those callbacks. Share the stop
+            // gate so neither a late callback nor an admitted send outlives this stream.
+            if (stopped) {
+                return;
+            }
+            defaultContext.leftStickX = leftStickX;
+            defaultContext.leftStickY = leftStickY;
 
-        defaultContext.rightStickX = rightStickX;
-        defaultContext.rightStickY = rightStickY;
+            defaultContext.rightStickX = rightStickX;
+            defaultContext.rightStickY = rightStickY;
 
-        defaultContext.leftTrigger = leftTrigger;
-        defaultContext.rightTrigger = rightTrigger;
+            defaultContext.leftTrigger = leftTrigger;
+            defaultContext.rightTrigger = rightTrigger;
 
-        defaultContext.inputMap = buttonFlags;
+            defaultContext.inputMap = buttonFlags;
 
-        sendControllerInputPacket(defaultContext);
+            sendControllerInputPacket(defaultContext);
+        }
     }
 
     // A driver-fed stick axis over the full signed range. Scaling by 0x7FFE left a

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Execute production controller stop/removal and native-send methods with fake devices.
 
-Exercises stale removals after stop and a removal paused at the native boundary.
+Exercises stale removals and on-screen retransmissions after stop, plus sends paused
+at the native boundary. Device discovery is stubbed; aggregation and native sends are real.
 --baseline reads HEAD. No Android device or controller hardware is used.
 """
 from pathlib import Path
@@ -15,6 +16,7 @@ def read(path):
             if '--baseline' in sys.argv else (ROOT/path).read_text())
 source=read('app/src/main/java/com/limelight/binding/input/ControllerHandler.java')
 connection=read('app/src/main/java/com/limelight/nvstream/NvConnection.java')
+virtual=read('app/src/main/java/com/limelight/binding/input/virtual_controller/VirtualController.java')
 def method(src,marker):
     start=src.index(marker);end=src.index('{',start);depth=1
     while depth:
@@ -26,7 +28,9 @@ public class RemovalLifecycle {
  static class LimeLog {static void info(String s){}}
  static class AbstractController {final int id;AbstractController(int id){this.id=id;}int getControllerId(){return id;}}
  static class GenericControllerContext {short controllerNumber;boolean reservedControllerNumber=true,assignedControllerNumber=true;
-  int destroys;void destroy(){++destroys;}}
+  int destroys,inputMap,mouseEmulationLastInputMap,mouseEmulationPixelMultiplier=1;
+  boolean mouseEmulationActive,mouseEmulationXDown;byte leftTrigger,rightTrigger;
+  short leftStickX,leftStickY,rightStickX,rightStickY;void destroy(){++destroys;}}
  static class InputDeviceContext extends GenericControllerContext {String name="test";}
  static class UsbDeviceContext extends InputDeviceContext {}
  static class SparseArray<T> {final Map<Integer,T> m=new LinkedHashMap<>();T get(int n){return m.get(n);}void put(int n,T t){m.put(n,t);}
@@ -44,7 +48,11 @@ public class RemovalLifecycle {
   }
   static void reset(){events.clear();session="old";block=false;entered=new CountDownLatch(1);resume=new CountDownLatch(1);}
  }
+ static class ControllerPacket {static final int A_FLAG=1,B_FLAG=2,X_FLAG=4,Y_FLAG=8,UP_FLAG=16,DOWN_FLAG=32,LEFT_FLAG=64,RIGHT_FLAG=128;}
+ static class MouseButtonPacket {static final byte BUTTON_LEFT=1,BUTTON_RIGHT=2;}
  static class NvConnection {boolean isMonkey;
+  void sendMouseButtonDown(byte n){throw new AssertionError();}void sendMouseButtonUp(byte n){throw new AssertionError();}
+  void sendMouseScroll(byte n){throw new AssertionError();}void sendMouseHScroll(byte n){throw new AssertionError();}
  SEND
  }
  STOPPED
@@ -54,7 +62,15 @@ public class RemovalLifecycle {
  final SparseArray<InputDeviceContext> inputDeviceContexts=new SparseArray<>();
  final InputDeviceContext defaultContext=new InputDeviceContext();
  final ConcurrentHashMap<Integer,UsbDeviceContext> usbDeviceContexts=new ConcurrentHashMap<>();
+ final GenericControllerContext[] inputDeviceContextSnapshot={};
+ void assignControllerNumberIfNeeded(GenericControllerContext c){}
  void refreshInputDeviceContextSnapshot(){}
+ static class VirtualController {
+  final RemovalLifecycle controllerHandler;final ControllerInputContext inputContext=new ControllerInputContext();
+  VirtualController(RemovalLifecycle h){controllerHandler=h;}
+  static void _DBG(String s){}
+  VIRTUAL
+ }
  static int checks,failures;
  static void check(boolean ok,String name){++checks;if(!ok)++failures;System.out.println((ok?"PASS ":"FAIL ")+name);}
 '''
@@ -88,14 +104,40 @@ suffix=r'''
   MoonBridge.resume.countDown();removal.join(2000);stop.join(2000);
   check(!removal.isAlive()&&!stop.isAlive()&&MoonBridge.events.equals(Arrays.asList("old:0:0")),
         "a removal racing stop completes against the original native session");
+  MoonBridge.reset();RemovalLifecycle osc=new RemovalLifecycle();VirtualController widget=new VirtualController(osc);
+  widget.inputContext.inputMap=1;widget.inputContext.leftStickX=1234;
+  widget.delayedRetransmitRunnable.run();
+  check(MoonBridge.events.equals(Arrays.asList("old:0:1"))&&osc.defaultContext.inputMap==1&&osc.defaultContext.leftStickX==1234,
+        "live on-screen retransmissions still forward button and stick state");
+  osc.stop();MoonBridge.events.clear();MoonBridge.session="replacement";
+  widget.inputContext.inputMap=2;widget.inputContext.leftStickX=3000;
+  for(int i=0;i<3;i++)widget.delayedRetransmitRunnable.run();
+  check(MoonBridge.events.isEmpty(),"the three queued on-screen retransmissions cannot affect a replacement session");
+  check(osc.defaultContext.inputMap==1&&osc.defaultContext.leftStickX==1234,"late on-screen input leaves the retired context unchanged");
+  MoonBridge.reset();RemovalLifecycle racingOsc=new RemovalLifecycle();VirtualController racingWidget=new VirtualController(racingOsc);
+  MoonBridge.block=true;Thread input=new Thread(racingWidget.delayedRetransmitRunnable);input.start();
+  check(MoonBridge.entered.await(2,TimeUnit.SECONDS),"on-screen input reaches the native send boundary");
+  CountDownLatch oscStopping=new CountDownLatch(1),oscStopped=new CountDownLatch(1);
+  Thread oscStop=new Thread(()->{oscStopping.countDown();racingOsc.stop();oscStopped.countDown();});oscStop.start();oscStopping.await();
+  boolean oscReturned=oscStopped.await(200,TimeUnit.MILLISECONDS);
+  check(!oscReturned,"stop waits for an admitted on-screen send");
+  if(oscReturned)MoonBridge.session="replacement";
+  MoonBridge.resume.countDown();input.join(2000);oscStop.join(2000);
+  check(!input.isAlive()&&!oscStop.isAlive()&&MoonBridge.events.equals(Arrays.asList("old:0:1")),
+        "an on-screen send racing stop finishes against the original session");
   System.out.println(checks+" checks, "+failures+" failures");System.exit(failures==0?0:1);
  }
 }
 '''
 methods=['    public void stop()', '    public void deviceRemoved(', '    public void onInputDeviceRemoved(',
-         '    private void releaseControllerNumber(', '    private short getActiveControllerMask(']
+         '    private void releaseControllerNumber(', '    private short getActiveControllerMask(',
+         '    public void reportOscState(', '    private void sendControllerInputPacket(',
+         '    private byte maxByMagnitude(', '    private short maxByMagnitude(']
 code=prefix.replace('SEND',method(connection,'    public void sendControllerInput('))
 code=code.replace('STOPPED',re.search(r'    private (?:volatile )?boolean stopped = false;',source).group())
+code=code.replace('VIRTUAL',method(virtual,'    public static class ControllerInputContext')+'\n'+
+                  method(virtual,'    private final Runnable delayedRetransmitRunnable')+';\n'+
+                  method(virtual,'    private void sendControllerInputContextInternal('))
 code+='\n'.join(method(source,m) for m in methods)+suffix
 with tempfile.TemporaryDirectory(prefix='controller-removal-') as temp:
     work=Path(temp);java=work/'RemovalLifecycle.java';java.write_text(code)
