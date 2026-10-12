@@ -10,6 +10,10 @@ boundaries. See each script for the exact boundary being replaced.
   HDR restoration and the terminal error budget, with JNI calls recorded.
 - `test_depth_failure_cleanup.py`: failed-model cleanup blocked across stop; the GL
   waiter exits while native cleanup remains on its owning executor.
+- `test_controller_arrival_lifecycle.py`: actual USB listener/puck replay and
+  controller slot allocation; duplicate arrivals retain the original host slot,
+  disconnect/reconnect releases and reuses it, and admitted arrivals finish
+  publishing before stop cleans up. `--baseline` reads HEAD.
 - `test_controller_motion.py`: actual motion rate handling; SensorManager cap, driver-fed
   250 Hz, burst-tolerant decimation with the production constants.
 - `test_steam_ble.py`: actual BLE driver; queue limits, stale callbacks,

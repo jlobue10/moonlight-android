@@ -3190,12 +3190,19 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @Override
     public void deviceAdded(AbstractController controller) {
-        if (stopped) {
-            return;
-        }
+        synchronized (controllerMaskLock) {
+            if (stopped || usbDeviceContexts.containsKey(controller.getControllerId())) {
+                return;
+            }
 
-        UsbDeviceContext context = createUsbDeviceContextForDevice(controller);
-        usbDeviceContexts.put(controller.getControllerId(), context);
+            // Publishing a listener and replaying the puck's attached slots can race
+            // its reader's live arrival. Keep the first context and its host slot;
+            // replacing it would strand that reservation and reset motion settings.
+            // The lifecycle lock also makes stop() wait for this publication before
+            // it destroys the contexts. A real removal permits a fresh arrival.
+            UsbDeviceContext context = createUsbDeviceContextForDevice(controller);
+            usbDeviceContexts.put(controller.getControllerId(), context);
+        }
     }
 
     class GenericControllerContext implements GameInputDevice{
