@@ -253,10 +253,14 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private static final int REQUEST_STEAM_CONTROLLER_BLUETOOTH = 0x5C;
     // Set when bindService() was issued, so onDestroy unbinds even if onServiceConnected never ran.
     private boolean usbDriverBindRequested;
+    // Kept so onDestroy can detach both listeners before unbinding: the service's own
+    // onDestroy clears them only after stop(), which still calls back into this activity.
+    private UsbDriverService.UsbDriverBinder usbDriverBinder;
     private ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
         @Override
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
             UsbDriverService.UsbDriverBinder binder = (UsbDriverService.UsbDriverBinder) iBinder;
+            usbDriverBinder = binder;
             binder.setListener(controllerHandler);
             binder.setStateListener(Game.this);
             binder.start();
@@ -266,6 +270,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         @Override
         public void onServiceDisconnected(ComponentName componentName) {
             connectedToUsbDriverService = false;
+            usbDriverBinder = null;
         }
     };
 
@@ -1399,6 +1404,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     public void updatePipAutoEnter() {
+        // The USB service balances still-open permission prompts through this listener
+        // while it stops, which can be after onDestroy: a PiP update on a finishing or
+        // destroyed activity throws on the main thread.
+        if (isFinishing() || isDestroyed()) {
+            return;
+        }
         if (!prefConfig.enablePip || isOnExternalDisplay()) {
             return;
         }
@@ -1833,6 +1844,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
         }
 
         if (usbDriverBindRequested) {
+            // Detach this activity before the service stops: its stop() still reports
+            // pending permission prompts to the state listener.
+            if (usbDriverBinder != null) {
+                usbDriverBinder.setStateListener(null);
+                usbDriverBinder.setListener(null);
+                usbDriverBinder = null;
+            }
             // Unbind from the discovery service; a bind whose onServiceConnected has not
             // arrived yet is cancelled by this as well.
             unbindService(usbDriverServiceConnection);

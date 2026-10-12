@@ -110,3 +110,7 @@ surface replacement and verifies buffer/flag isolation and deferred model close.
 - `test_decoder_csd_bounds.py`: text gate that host-supplied codec configuration fails
   through the decoder's diagnosed `RendererException` path (capacity-checked CSD appends,
   SPS parsed over the unit length, guarded SPS parser/writer).
+
+- `test_game_pip_after_destroy.py`: text gate that `Game.updatePipAutoEnter()` returns on a
+  finishing/destroyed activity and that `onDestroy` detaches both USB service listeners
+  before unbinding (the service's stop() still reports pending permission prompts).

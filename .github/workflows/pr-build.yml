@@ -29,6 +29,7 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
+          set -euo pipefail
           for regression in tools/regression/test_*.py; do
             python3 "$regression"
           done
