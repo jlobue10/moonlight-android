@@ -570,6 +570,34 @@ public class BleRegression {
          "an early MTU retry callback is processed before requestMtu returns; mtu="+retryMtu);
    check(!(boolean)get(d,"mtuRequested"),"a returning MTU request cannot resurrect a completed or retired negotiation");
    d.stop();}
+  // A44-01: a late loss of a different handle during the connect window must not erase this
+  // attempt's early CONNECTED.
+  {BluetoothDevice dev=new BluetoothDevice();SteamControllerBle drv=create(dev);final BluetoothGattCallback cb=(BluetoothGattCallback)get(drv,"gattCallback");
+   final BluetoothGatt stale=new BluetoothGatt();
+   dev.onConnect=()->{cb.onConnectionStateChange(dev.next,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
+    cb.onConnectionStateChange(stale,133,BluetoothProfile.STATE_DISCONNECTED);};
+   boolean startedEarly=drv.start();
+   check(startedEarly&&get(drv,"gatt")==dev.next&&dev.next.mtuRequests==1,"a late loss of another handle does not erase this attempt's early CONNECTED");
+   drv.stop();}
+  // A44-02: a write watchdog already dequeued when its write completes must not expire the
+  // next write; the same for a connect watchdog dequeued as its link is retired and replaced.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");set(d,"writeChar",command());Handler h=(Handler)get(d,"handler");
+   d.steamHaptic(click);d.steamHaptic(new byte[]{(byte)0x82,0,2,(byte)0xf2});
+   Runnable w1=(Runnable)get(d,"writeWatchdog");check(w1!=null&&h.delayed.contains(w1),"the first write arms its watchdog");
+   h.delayed.remove(w1);callback.onCharacteristicWrite(old,command(),0);
+   check(old.writes.size()==2&&(boolean)get(d,"writeBusy")&&get(d,"writeWatchdog")!=w1,"the completion dispatches the next write with its own watchdog");
+   w1.run();
+   check(get(d,"gatt")==old&&!old.closed,"a stale write watchdog does not recycle the link under the next write");
+   ((Runnable)get(d,"writeWatchdog")).run();
+   check(get(d,"gatt")==null&&old.closed,"the next write's own watchdog still expires it");
+   d.stop();}
+  {BluetoothDevice dev=new BluetoothDevice();SteamControllerBle drv=create(dev);final BluetoothGattCallback cb=(BluetoothGattCallback)get(drv,"gattCallback");
+   drv.start();BluetoothGatt first=dev.next;Handler h=(Handler)get(drv,"handler");Runnable w=(Runnable)get(drv,"connectWatchdog");
+   h.delayed.remove(w);cb.onConnectionStateChange(first,8,BluetoothProfile.STATE_DISCONNECTED);
+   dev.next=new BluetoothGatt();drv.start();
+   w.run();
+   check(get(drv,"gatt")==dev.next&&!dev.next.closed,"a stale connect watchdog does not recycle the replacement link");
+   drv.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
