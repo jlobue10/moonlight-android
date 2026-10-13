@@ -172,6 +172,7 @@ public class SteamControllerBle extends SteamControllerInput {
     private static final long HAPTIC_STATS_INTERVAL_MS = 10_000;
     private final ArrayDeque<Pending> writeQueue = new ArrayDeque<>();
     private boolean writeBusy;
+    private long writeAttempt;
     private long writeRejectedSinceMs = -1;
     // stop() in progress: the restore commands still go out, nothing else does.
     private volatile boolean closing;
@@ -588,6 +589,7 @@ public class SteamControllerBle extends SteamControllerInput {
             synchronized (SteamControllerBle.this) {
                 failed = inFlight;
                 inFlight = null;
+                writeRejectedSinceMs = -1;
                 withResponse = inFlightWithResponse;
                 if (failed != null && failed.output) {
                     index = failed.id() - OUTPUT_REPORT_FIRST;
@@ -1057,6 +1059,8 @@ public class SteamControllerBle extends SteamControllerInput {
         Pending p;
         byte[] value;
         boolean probe;
+        boolean noResponse;
+        long attempt;
         synchronized (this) {
             g = gatt;
             if (writeBusy || g == null || writeChar == null || (stopped && !closing)) {
@@ -1067,6 +1071,7 @@ public class SteamControllerBle extends SteamControllerInput {
                 return;
             }
             writeBusy = true;
+            attempt = ++writeAttempt;
             // An output report goes without its id, as the notifications arrive, unless the
             // firmware refused that framing on this link. Its first write on a link goes with
             // a response, so the firmware's verdict on the report reaches the log.
@@ -1080,18 +1085,21 @@ public class SteamControllerBle extends SteamControllerInput {
                 value = p.bytes;
                 probe = false;
             }
-        }
-        BluetoothGattCharacteristic ch = p.ch;
-        boolean accepted = false;
-        boolean noResponse = false;
-        try {
             // Haptics are fire-and-forget and frequent (40 ms rumble re-sends, Steam's click
             // pairs): without a response each costs no round trip on the link. The stack still
             // reports the write complete, so the one-at-a-time pacing holds either way.
             boolean haptic = p.output || p.bytes[0] == ID_TRIGGER_RUMBLE_CMD || p.bytes[0] == ID_TRIGGER_HAPTIC_CMD
                     || p.bytes[0] == ID_TRIGGER_HAPTIC_PULSE;
             noResponse = (haptic || forceNoResponse) && !probe
-                    && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
+                    && (p.ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
+            // Binder can complete the write before writeCharacteristic returns.
+            // Publish the report and its mode first so the callback owns both.
+            inFlight = p;
+            inFlightWithResponse = !noResponse;
+        }
+        BluetoothGattCharacteristic ch = p.ch;
+        boolean accepted = false;
+        try {
             ch.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                     : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
             ch.setValue(value);
@@ -1100,9 +1108,9 @@ public class SteamControllerBle extends SteamControllerInput {
         }
         if (accepted) {
             synchronized (this) {
-                if (g != gatt || writeChar == null) return;
-                inFlight = p;
-                inFlightWithResponse = !noResponse;
+                // The completion may already have drained this write and dispatched
+                // the next one. Do not overwrite or re-arm that newer operation.
+                if (g != gatt || writeChar == null || writeAttempt != attempt || inFlight != p) return;
                 writeRejectedSinceMs = -1;
                 handler.removeCallbacks(writeWatchdog);
                 handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
@@ -1115,7 +1123,8 @@ public class SteamControllerBle extends SteamControllerInput {
         synchronized (this) {
             // A failed write may race link loss. Never put its command into a
             // replacement connection's queue or clear that connection's busy flag.
-            if (g != gatt || writeChar == null || (stopped && !closing)) return;
+            if (g != gatt || writeChar == null || writeAttempt != attempt || inFlight != p || (stopped && !closing)) return;
+            inFlight = null;
             writeBusy = false;
             long now = SystemClock.uptimeMillis();
             if (writeRejectedSinceMs < 0) writeRejectedSinceMs = now;
