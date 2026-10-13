@@ -280,6 +280,28 @@ serial and start at defaults for the virtual unit); `host 0x81` present but `wri
 nothing felt means the firmware takes the report but does not act on it over BLE, and the
 report-id framing or the gain path is the next suspect.
 
+### fork.100: connection-attempt races and small MTUs
+
+An audit of the driver (round 42) found three lifecycle gaps, none of them seen on the Galaxy
+XR so far:
+
+1. A connection result delivered on the stack's binder thread before `connectGatt()` returned
+   was dropped (the handle was not published yet), and the dead handle was then stored as a
+   live link: nothing armed a watchdog, no reconnect was scheduled, and the manager refuses to
+   restart a driver whose link looks up, so the controller stayed silently unavailable for the
+   stream. The driver now keeps such an early result and acts on it once `connectGatt()`
+   returns (`the connection attempt failed before connectGatt returned` retires it; an early
+   CONNECTED goes on to negotiate), and a 40 s connect watchdog recycles an attempt that never
+   reports anything (`no connection result within 40000 ms; recycling the link`).
+2. Two retirements of one link (a DISCONNECTED on the binder thread and a watchdog on the
+   driver thread) could both run and spend two reconnect attempts. Retirement is now atomic:
+   the second caller finds the handle already gone.
+3. An MTU that stayed at 23 was only warned about; the link was announced to the host and
+   every 45-byte state report then arrived truncated. The driver asks once more
+   (`MTU 23 is too small for state reports; asking again`) and recycles a link that stays too
+   small (`MTU 23 stayed too small for state reports; recycling the link`) instead of
+   announcing a controller that never produces input.
+
 If input still fails, include the app build, controller firmware, Android device/version and
 logcat spanning stream start, several button presses, and stream stop. For example:
 `adb logcat -d -v threadtime > moonlight-bluetooth.txt`.

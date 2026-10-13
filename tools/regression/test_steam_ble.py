@@ -56,8 +56,8 @@ STUBS = {
  'android/bluetooth/BluetoothGatt.java': '''package android.bluetooth; import java.util.*; public class BluetoothGatt {
  public static final int GATT_SUCCESS=0, CONNECTION_PRIORITY_HIGH=1; public boolean acceptDescriptor=true, acceptWrite=true, closed;
  public BluetoothGattService service=new BluetoothGattService(); public List<byte[]> writes=new ArrayList<>();
- public boolean requestConnectionPriority(int p){return true;} public boolean requestMtu(int m){return true;}
- public boolean discoverServices(){return true;} public BluetoothGattService getService(UUID u){return service;}
+ public boolean requestConnectionPriority(int p){return true;} public int mtuRequests; public boolean discovered; public boolean requestMtu(int m){++mtuRequests;return true;}
+ public boolean discoverServices(){discovered=true;return true;} public BluetoothGattService getService(UUID u){return service;}
  public boolean setCharacteristicNotification(BluetoothGattCharacteristic c,boolean b){return true;}
  public boolean writeDescriptor(BluetoothGattDescriptor d){return acceptDescriptor;}
  public List<BluetoothGattCharacteristic> targets=new ArrayList<>();
@@ -507,6 +507,48 @@ public class BleRegression {
   {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
    callback.onConnectionStateChange(old,133,BluetoothProfile.STATE_CONNECTED);
    check(get(d,"gatt")==null&&old.closed,"CONNECTED with an error status is a lost link, not a half-open one");
+   d.stop();}
+  // Early connection results: the stack can deliver DISCONNECTED (client registration refused)
+  // or CONNECTED on its binder thread before connectGatt returns. Neither may be dropped.
+  {BluetoothDevice dev=new BluetoothDevice();SteamControllerBle drv=create(dev);final BluetoothGattCallback cb=(BluetoothGattCallback)get(drv,"gattCallback");
+   dev.onConnect=()->cb.onConnectionStateChange(dev.next,133,BluetoothProfile.STATE_DISCONNECTED);
+   boolean startedEarly=drv.start();
+   check(!startedEarly&&get(drv,"gatt")==null&&dev.next.closed&&!drv.isLinkUp(),"a DISCONNECTED delivered before connectGatt returns retires the attempt instead of publishing a dead link");
+   drv.stop();}
+  {BluetoothDevice dev=new BluetoothDevice();SteamControllerBle drv=create(dev);final BluetoothGattCallback cb=(BluetoothGattCallback)get(drv,"gattCallback");
+   dev.onConnect=()->cb.onConnectionStateChange(dev.next,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
+   boolean startedEarly=drv.start();Handler h=(Handler)get(drv,"handler");
+   check(startedEarly&&get(drv,"gatt")==dev.next&&h.delayed.contains(tryGet(drv,"setupWatchdog"))&&dev.next.mtuRequests==1,"a CONNECTED delivered before connectGatt returns still negotiates the link");
+   drv.stop();}
+  // Connect watchdog: an attempt that never reports anything cannot keep isLinkUp() true.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");Handler h=(Handler)get(d,"handler");Runnable watchdog=(Runnable)tryGet(d,"connectWatchdog");
+   check(watchdog!=null&&h.delayed.contains(watchdog),"start arms the connect watchdog");
+   if(watchdog!=null)watchdog.run();
+   check(get(d,"gatt")==null&&old.closed&&!d.isLinkUp(),"a connection attempt without any result is recycled");
+   d.stop();}
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");Handler h=(Handler)get(d,"handler");
+   callback.onConnectionStateChange(old,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
+   check(!h.delayed.contains(tryGet(d,"connectWatchdog")),"CONNECTED disarms the connect watchdog");
+   // Two retirements of one handle (binder DISCONNECTED and a watchdog) spend one reconnect attempt.
+   h.delayed.clear();
+   callback.onConnectionStateChange(old,8,BluetoothProfile.STATE_DISCONNECTED);
+   Method lost=null;for(Class<?> c=d.getClass();c!=null;c=c.getSuperclass()){try{lost=c.getDeclaredMethod("onLinkLost",BluetoothGatt.class);break;}catch(NoSuchMethodException ignored){}}
+   lost.setAccessible(true);lost.invoke(d,old);
+   check((int)get(d,"reconnectAttempts")==1&&h.delayed.size()==1,"a second retirement of the same handle is a no-op");
+   d.stop();}
+  // MTU: a link whose MTU stays too small for the 45-byte state reports is recycled, not announced.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   callback.onConnectionStateChange(old,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
+   int mtuBefore=old.mtuRequests;
+   callback.onMtuChanged(old,23,0);
+   check(old.mtuRequests==mtuBefore+1&&get(d,"gatt")==old&&!old.discovered,"a 23-byte MTU is asked for once more before anything else");
+   callback.onMtuChanged(old,23,0);
+   check(get(d,"gatt")==null&&old.closed,"an MTU that stays at 23 recycles the link");
+   d.stop();}
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   callback.onConnectionStateChange(old,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
+   callback.onMtuChanged(old,23,0);callback.onMtuChanged(old,100,0);
+   check(get(d,"gatt")==old&&old.discovered,"an MTU that grows on the second request goes on to service discovery");
    d.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
