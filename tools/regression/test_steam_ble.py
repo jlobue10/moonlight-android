@@ -104,7 +104,7 @@ public class BleRegression {
   },new Context(),device,false,false,0,0,0,false);return d;
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
- static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",8);}
+ static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",8);}
  public static void main(String[] args)throws Exception{
   SteamControllerBle d=make();set(d,"writeChar",command());set(d,"writeBusy",true);
   for(int i=0;i<1000;i++)d.steamHaptic(new byte[]{(byte)0x81,(byte)(i%2),0,0,0,0,0,0});
@@ -119,7 +119,7 @@ public class BleRegression {
   ((Runnable)get(d,"rumbleRefresh")).run();
   check(((Deque<?>)get(d,"writeQueue")).isEmpty(),"disconnected rumble does not enqueue old-session commands");
   d=make();old=(BluetoothGatt)get(d,"gatt");d.stop();int before=states;
-  BluetoothGattCharacteristic notify=new BluetoothGattCharacteristic("100f6c75-1735-4313-b402-38567131e5f3",16);notify.value=new byte[45];
+  BluetoothGattCharacteristic notify=new BluetoothGattCharacteristic("100f6c7a-1735-4313-b402-38567131e5f3",16);notify.value=new byte[45];
   ((BluetoothGattCallback)get(d,"gattCallback")).onCharacteristicChanged(old,notify);
   check(states==before,"late notifications after stop cannot resurrect controller input");
   d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(command());old.service.chars.add(notify);before=added;
@@ -138,11 +138,83 @@ public class BleRegression {
   callback.onDescriptorWrite(old,notify.descriptor,133);
   check(old.closed && added==before,"all failed notification subscriptions cannot announce a ready controller");
   d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(command());old.service.chars.add(notify);
-  BluetoothGattCharacteristic second=new BluetoothGattCharacteristic("100f6c76-1735-4313-b402-38567131e5f3",16);
+  BluetoothGattCharacteristic second=new BluetoothGattCharacteristic("100f6c78-1735-4313-b402-38567131e5f3",16);
   second.descriptor=new BluetoothGattDescriptor(second);old.service.chars.add(second);before=added;
   callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
-  callback.onDescriptorWrite(old,notify.descriptor,133);callback.onDescriptorWrite(old,second.descriptor,0);
+  callback.onDescriptorWrite(old,notify.descriptor,0);callback.onDescriptorWrite(old,second.descriptor,133);
   check(!old.closed && added==before+1,"an optional subscription failure still permits a working notification channel");
+  // Actual Valve service: B5 is rumble output, 34 is the feature-command endpoint.
+  d=make();old=(BluetoothGatt)get(d,"gatt");
+  BluetoothGattCharacteristic output=new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",8);
+  BluetoothGattCharacteristic feature=command();notify.descriptor=null;
+  old.service.chars.add(output);old.service.chars.add(feature);old.service.chars.add(notify);
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  check(get(d,"writeChar")==feature && output.value==null && feature.value!=null,
+        "setup uses feature characteristic 34 even when rumble output B5 appears first");
+  check(feature.value!=null && feature.value.length>=2 && feature.value[0]==(byte)0x81 && feature.value[1]==0,
+        "clear mappings includes the feature command and zero payload length without a HID report ID");
+  callback.onCharacteristicWrite(old,feature,0);
+  check(feature.value!=null && feature.value[0]==(byte)0x87 && feature.value[1]==9,
+        "lizard/watchdog/IMU settings use feature framing on characteristic 34");
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(output);old.service.chars.add(notify);before=added;
+  ((BluetoothGattCallback)get(d,"gattCallback")).onServicesDiscovered(old,0);
+  check(!old.closed && added==before+1 && get(d,"writeChar")==output,
+        "firmware without feature characteristic 34 falls back to the B5..BE command endpoint");
+  check(output.value!=null && output.value[0]==(byte)0x81,"fallback endpoint still receives the setup commands");
+  // Firmware exposing neither 7A nor 7C: full-size reports on the 75..7A range still decode
+  // (fork.92 behaviour), while battery/ping and short reports do not.
+  d=make();old=(BluetoothGatt)get(d,"gatt");
+  BluetoothGattCharacteristic legacy=new BluetoothGattCharacteristic("100f6c75-1735-4313-b402-38567131e5f3",16);
+  BluetoothGattCharacteristic legacy2=new BluetoothGattCharacteristic("100f6c76-1735-4313-b402-38567131e5f3",16);
+  old.service.chars.add(output);old.service.chars.add(legacy);old.service.chars.add(legacy2);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  check(!old.closed && added==before+1 && get(d,"stateChar")==null,"legacy notify range without 7A/7C still announces a controller");
+  before=states;legacy2.value=new byte[45];legacy2.value[1]=1;callback.onCharacteristicChanged(old,legacy2);
+  check(states==before+1,"legacy range decodes a full-size report from any notify characteristic");
+  legacy2.value=new byte[8];callback.onCharacteristicChanged(old,legacy2);
+  check(states==before+1,"legacy range ignores short acknowledgement reports");
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(output);before=added;
+  ((BluetoothGattCallback)get(d,"gattCallback")).onServicesDiscovered(old,0);
+  check(old.closed && added==before,"a service without any input characteristic cannot announce a controller");
+  // With 7A present the range is still subscribed (acks/pings stay visible) but only 7A decodes.
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(command());old.service.chars.add(legacy);old.service.chars.add(notify);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  check(!old.closed && added==before+1 && get(d,"stateChar")==notify,"7A is selected over the legacy range");
+  before=states;legacy.value=new byte[45];legacy.value[1]=1;callback.onCharacteristicChanged(old,legacy);
+  check(states==before,"a full-size report outside the selected state characteristic is not decoded");
+  notify.value=new byte[45];notify.value[1]=1;callback.onCharacteristicChanged(old,notify);
+  check(states==before+1,"the selected 7A characteristic decodes");
+
+  // Battery success cannot hide a failed state subscription.
+  d=make();old=(BluetoothGatt)get(d,"gatt");notify.descriptor=new BluetoothGattDescriptor(notify);
+  old.service.chars.add(command());old.service.chars.add(notify);old.service.chars.add(second);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  callback.onDescriptorWrite(old,notify.descriptor,133);callback.onDescriptorWrite(old,second.descriptor,0);
+  check(old.closed && added==before,"battery-only subscription cannot announce a working controller");
+
+  // New 0x47 input keeps a 45-byte payload but moves pads past a 16-bit timestamp.
+  d=make();old=(BluetoothGatt)get(d,"gatt");notify.descriptor=null;
+  BluetoothGattCharacteristic timestamped=new BluetoothGattCharacteristic("100f6c7c-1735-4313-b402-38567131e5f3",16);
+  timestamped.value=new byte[45];timestamped.value[1]=1;
+  old.service.chars.add(command());old.service.chars.add(notify);old.service.chars.add(timestamped);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  check(!old.closed && added==before+1,"new timestamped state characteristic completes setup");
+  before=states;callback.onCharacteristicChanged(old,timestamped);
+  check(states==before+1,"0x47 Bluetooth buttons reach the controller listener");
+  // Bit 25 is left pad touch; timestamp deliberately differs from pad X.
+  timestamped.value[4]=2;timestamped.value[17]=0x34;timestamped.value[18]=0x12;
+  timestamped.value[19]=0;timestamped.value[20]=0x40;timestamped.value[23]=(byte)0xff;timestamped.value[24]=0x7f;
+  callback.onCharacteristicChanged(old,timestamped);
+  check(Math.abs(((float[])get(d,"lastTouchX"))[0]-0.7500076f)<0.0001f,
+        "0x47 trackpad coordinate skips the sampling timestamp");
+  before=states;notify.value=new byte[45];callback.onCharacteristicChanged(old,notify);
+  output.value=new byte[45];callback.onCharacteristicChanged(old,output);
+  check(states==before,"old and unrelated long reports cannot overwrite selected 0x47 input");
+  timestamped.value=new byte[44];callback.onCharacteristicChanged(old,timestamped);
+  check(states==before,"truncated state report cannot produce input");
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(command());old.service.chars.add(timestamped);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  check(!old.closed && added==before+1,"firmware exposing only 0x47 input is supported");
   d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());old.acceptWrite=false;
   d.rumble((short)10000,(short)10000);
   for(int i=0;i<45;i++){SystemClock.now+=50;((Runnable)get(d,"retryFlush")).run();}
@@ -182,7 +254,7 @@ public class BleRegression {
   // Firmware may deliver a state before all subscriptions complete. The listener
   // has no controller context until onReady announces it, so that state is ignored.
   d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
-  notify=new BluetoothGattCharacteristic("100f6c75-1735-4313-b402-38567131e5f3",16);
+  notify=new BluetoothGattCharacteristic("100f6c7a-1735-4313-b402-38567131e5f3",16);
   notify.value=new byte[45];notify.value[1]=1; // A held
   callback.onCharacteristicChanged(old,notify);
   old.service.chars.add(command());old.service.chars.add(notify);
@@ -211,6 +283,9 @@ public class BleRegression {
   byte defaultMappings=(byte)get(d,"ID_SET_DEFAULT_DIGITAL_MAPPINGS"),loadDefaults=(byte)get(d,"ID_LOAD_DEFAULT_SETTINGS");
   check(old.writes.size()==3&&old.writes.get(1)[0]==defaultMappings&&old.writes.get(2)[0]==loadDefaults,
         "a write completing during stop still drains the motors-off and restore writes");
+  check(old.writes.size()==3&&old.writes.get(1).length==2&&old.writes.get(1)[1]==0
+        &&old.writes.get(2).length==2&&old.writes.get(2)[1]==0,
+        "restore feature commands carry zero payload lengths");
   // A completion landing while stop() is still running (here: from inside the stick-extent
   // save) used to see `closing` with an empty queue, close the link and null the GATT before
   // the restore commands were queued; the motors-off and restores never went out.

@@ -49,8 +49,16 @@ public class SteamControllerBle extends SteamControllerInput {
     // The same tail as the two halves of the 128-bit value: bits 31..0 of the MSB, and the LSB.
     private static final long VALVE_UUID_MSB_TAIL = 0x17354313L;
     private static final long VALVE_UUID_LSB = 0xb40238567131e5f3L;
+    // Feature commands and HID output reports have distinct BLE endpoints (SDL's
+    // HIDDeviceBLESteamController): 0x34 takes feature commands, B5 is output report 0x80
+    // (rumble), 7A/7C carry input reports 0x45/0x47. Firmware that does not expose those
+    // falls back to what the first hardware test used: the first writable characteristic in
+    // B5..BE and any full-size report on the 75..7A notify range.
+    private static final long FEATURE_SHORT = 0x100f6c34L;
+    private static final long STATE_45_SHORT = 0x100f6c7aL;
+    private static final long STATE_47_SHORT = 0x100f6c7cL;
     private static final long NOTIFY_SHORT_LOW = 0x100f6c75L;
-    private static final long NOTIFY_SHORT_HIGH = 0x100f6c7aL;
+    private static final long NOTIFY_SHORT_HIGH = 0x100f6c7cL;
     private static final long WRITE_SHORT_LOW = 0x100f6cb5L;
     private static final long WRITE_SHORT_HIGH = 0x100f6cbeL;
     private static final long BATTERY_SHORT = 0x100f6c78L;
@@ -131,7 +139,8 @@ public class SteamControllerBle extends SteamControllerInput {
     private volatile BluetoothGattCharacteristic writeChar;
     private BluetoothGattCharacteristic batteryChar;
     private final ArrayDeque<BluetoothGattCharacteristic> pendingSubscriptions = new ArrayDeque<>();
-    private int subscribedNotifications;
+    private volatile BluetoothGattCharacteristic stateChar;
+    private boolean stateSubscribed;
     private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<>();
     private boolean writeBusy;
     private long writeRejectedSinceMs = -1;
@@ -295,8 +304,8 @@ public class SteamControllerBle extends SteamControllerInput {
             if (restore) {
                 writeQueue.clear();
                 writeQueue.add(rumbleCommand(0, 0));
-                writeQueue.add(new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS});
-                writeQueue.add(new byte[]{ID_LOAD_DEFAULT_SETTINGS});
+                writeQueue.add(new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS, 0});
+                writeQueue.add(new byte[]{ID_LOAD_DEFAULT_SETTINGS, 0});
             }
         }
         handler.removeCallbacksAndMessages(null);
@@ -402,29 +411,73 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             synchronized (SteamControllerBle.this) {
                 pendingSubscriptions.clear();
-                subscribedNotifications = 0;
+                stateSubscribed = false;
+                stateChar = null;
                 writeChar = null;
                 batteryChar = null;
+                BluetoothGattCharacteristic legacyWrite = null;
+                BluetoothGattCharacteristic previousState = null;
+                ArrayDeque<BluetoothGattCharacteristic> otherNotify = new ArrayDeque<>();
                 for (BluetoothGattCharacteristic ch : service.getCharacteristics()) {
                     long shortId = shortUuid(ch.getUuid());
                     int props = ch.getProperties();
-                    if (shortId >= NOTIFY_SHORT_LOW && shortId <= NOTIFY_SHORT_HIGH
-                            && (props & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
-                        pendingSubscriptions.add(ch);
+                    boolean notify = (props & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0;
+                    boolean writable = (props & (BluetoothGattCharacteristic.PROPERTY_WRITE
+                            | BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0;
+                    if ((shortId == STATE_45_SHORT || shortId == STATE_47_SHORT) && notify
+                            && (stateChar == null || shortId == STATE_47_SHORT)) {
+                        // Prefer the timestamped layout, independently of discovery order.
+                        previousState = stateChar;
+                        stateChar = ch;
+                    } else if (notify && shortId >= NOTIFY_SHORT_LOW && shortId <= NOTIFY_SHORT_HIGH) {
+                        otherNotify.add(ch);
                     }
                     if (shortId == BATTERY_SHORT) {
                         batteryChar = ch;
                     }
-                    if (writeChar == null && shortId >= WRITE_SHORT_LOW && shortId <= WRITE_SHORT_HIGH
-                            && (props & (BluetoothGattCharacteristic.PROPERTY_WRITE
-                            | BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0) {
+                    if (shortId == FEATURE_SHORT && writable) {
                         writeChar = ch;
+                    } else if (legacyWrite == null && writable
+                            && shortId >= WRITE_SHORT_LOW && shortId <= WRITE_SHORT_HIGH) {
+                        legacyWrite = ch;
                     }
                 }
+                if (previousState != null) {
+                    otherNotify.add(previousState);
+                }
+                if (writeChar == null && legacyWrite != null) {
+                    LimeLog.warning("Steam Controller BLE: feature characteristic 0x" + Long.toHexString(FEATURE_SHORT)
+                            + " not offered; commands go to " + legacyWrite.getUuid());
+                    writeChar = legacyWrite;
+                }
+                if (stateChar == null && !otherNotify.isEmpty()) {
+                    LimeLog.warning("Steam Controller BLE: no 0x45/0x47 input characteristic; decoding full-size reports from any notify characteristic");
+                }
+                // The selected state source is subscribed first, then battery, then the rest of
+                // the range: the extra characteristics only carry acknowledgements/pings, which
+                // the short-report log keeps visible for hardware diagnostics.
+                if (stateChar != null) {
+                    pendingSubscriptions.add(stateChar);
+                }
+                if (batteryChar != null && (batteryChar.getProperties()
+                        & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
+                    otherNotify.remove(batteryChar);
+                    pendingSubscriptions.add(batteryChar);
+                }
+                pendingSubscriptions.addAll(otherNotify);
             }
             LimeLog.info("Steam Controller BLE: " + pendingSubscriptions.size() + " notify characteristics, command characteristic "
                     + (writeChar != null ? writeChar.getUuid() + " (properties 0x" + Integer.toHexString(writeChar.getProperties()) + ")" : "none"));
-            if (writeChar == null || pendingSubscriptions.isEmpty()) {
+            LimeLog.info("Steam Controller BLE: state characteristic "
+                    + (stateChar != null ? stateChar.getUuid() : "none (legacy range)"));
+            boolean anyStateSource;
+            synchronized (SteamControllerBle.this) {
+                anyStateSource = stateChar != null;
+                for (BluetoothGattCharacteristic ch : pendingSubscriptions) {
+                    anyStateSource |= carriesState(ch);
+                }
+            }
+            if (writeChar == null || !anyStateSource) {
                 onLinkLost(g);
                 return;
             }
@@ -439,12 +492,11 @@ public class SteamControllerBle extends SteamControllerInput {
                 return;
             }
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                // That characteristic stays unsubscribed; the state report is on another
-                // one, so carry on rather than drop the controller.
+                // Optional battery failure is harmless; onReady requires state success.
                 LimeLog.warning("Steam Controller BLE: subscribing to " + descriptor.getCharacteristic().getUuid()
                         + " failed, status " + status);
-            } else {
-                subscribedNotifications++;
+            } else if (carriesState(descriptor.getCharacteristic())) {
+                stateSubscribed = true;
             }
             if (!subscribeNext(g)) {
                 onReady(g);
@@ -524,11 +576,13 @@ public class SteamControllerBle extends SteamControllerInput {
                 handleBattery(data);
             } else if (shortId == PING_SHORT) {
                 // ack/ping-pong tied to our writes; nothing to do
-            } else if (data.length >= 45) {
-                handleState(data);
+            } else if (data.length >= 45 && carriesState(ch)) {
+                // Notifications omit the HID report ID. Both layouts are 45 bytes:
+                // 0x47 adds a pad timestamp and shortens the IMU timestamp by two bytes.
+                handleState(data, 0, shortId == STATE_47_SHORT);
             } else if (shortReportsLogged < 5) {
-                // Too short for a state report: an acknowledgement or error for one of our
-                // commands, or a truncated report. Log the first few with their source.
+                // Unexpected characteristic or truncated state. Log the first few
+                // reports with their source for hardware diagnostics.
                 shortReportsLogged++;
                 LimeLog.warning("Steam Controller BLE: " + data.length + "-byte report on 0x" + Long.toHexString(shortId)
                         + " dropped: " + hex(data));
@@ -552,7 +606,9 @@ public class SteamControllerBle extends SteamControllerInput {
         BluetoothGattDescriptor cccd = ch.getDescriptor(CCCD);
         if (cccd == null) {
             // Nothing to wait for; move on synchronously
-            subscribedNotifications++;
+            if (carriesState(ch)) {
+                stateSubscribed = true;
+            }
             return subscribeNext(g);
         }
         cccd.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
@@ -564,23 +620,36 @@ public class SteamControllerBle extends SteamControllerInput {
         return true;
     }
 
+    /**
+     * Whether input state is decoded from this characteristic: the selected 0x45/0x47 source
+     * when the firmware offers one, otherwise (legacy range) any notify characteristic other
+     * than battery and ping, as the first hardware test decoded it.
+     */
+    private boolean carriesState(BluetoothGattCharacteristic ch) {
+        BluetoothGattCharacteristic selected = stateChar;
+        if (selected != null) {
+            return ch == selected;
+        }
+        long shortId = shortUuid(ch.getUuid());
+        return shortId >= NOTIFY_SHORT_LOW && shortId <= NOTIFY_SHORT_HIGH
+                && shortId != BATTERY_SHORT && shortId != PING_SHORT;
+    }
+
     /** All notifications are on: take the controller out of lizard mode and announce it. */
     @SuppressLint("MissingPermission")
     private void onReady(BluetoothGatt g) {
         if (stopped || g != gatt) {
             return;
         }
-        if (subscribedNotifications == 0) {
-            // Optional characteristics may fail, but without any subscription
-            // this link cannot deliver input. Do not publish a ghost controller
-            // or reset the retry budget for a setup that never succeeded.
-            LimeLog.warning("Steam Controller BLE: no notification subscriptions succeeded");
+        if (!stateSubscribed) {
+            // A battery subscription alone cannot deliver gamepad input.
+            LimeLog.warning("Steam Controller BLE: state notification subscription failed");
             onLinkLost(g);
             return;
         }
         reconnectAttempts = 0;
         handler.removeCallbacks(setupWatchdog);
-        enqueueWrite(new byte[]{ID_CLEAR_DIGITAL_MAPPINGS});
+        enqueueWrite(new byte[]{ID_CLEAR_DIGITAL_MAPPINGS, 0});
         // All settings in one command: keep-alive deduplication must not discard the IMU setup.
         enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
                 SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0));
@@ -621,7 +690,8 @@ public class SteamControllerBle extends SteamControllerInput {
             writeChar = null;
             batteryChar = null;
             pendingSubscriptions.clear();
-            subscribedNotifications = 0;
+            stateSubscribed = false;
+            stateChar = null;
             rumbleActive = false;
             rumbleReport = null;
             shortReportsLogged = 0;
