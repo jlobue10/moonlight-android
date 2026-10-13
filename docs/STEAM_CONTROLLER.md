@@ -250,6 +250,36 @@ as a fallback. What to look for on the next device test:
 3. 0x44 acknowledgements now show as "n-byte report on 0x100f6c79" only when the short-report log
    is still within its first five lines; they are expected after each zero-repeat pulse.
 
+### fork.98: haptic diagnostics and per-report fallback
+
+fork.97 on the headset (stream_19, 2026-10-13): all ten output characteristics are offered
+(`0x80..0x89`, properties 0xe = read, write, write-without-response), no write fails, and
+something is felt, but weakly, and nothing while a finger slides over a pad. The USB capture of
+the wired unit (`libvirtualgamepad/captures/sc26-steam-interrupt.tsv`) shows what Steam sends for
+those two things: a finger sliding over a pad in Steam's UI produces bursts of single 400 µs pulses
+`81 <side> 90 01 00 00 01 00` (20 to 200 ms apart), and a pad click produces `82 <side> 02 f2`
+(click, −14 dB) runs; the firmware answers each zero-repeat `81 <side> 00..` stop with a
+`44 <actuator> 02 ..` report (actuator 4 = right pad, 3 = left pad). Haptic writes go without
+response, so a refused report could not show in the fork.97 log. fork.98 adds, per link:
+
+- the first write of each output report id goes with a response and its verdict is logged
+  (`output report 0x81 accepted by the controller without its report id`, or `refused (status n)`);
+  later writes of that id go without response as before;
+- the refusal ladder (retry with the report id, then the feature-command form) is per report id,
+  so a refused 0x82 cannot take 0x81 or 0x80 down with it;
+- the first 24 host haptic reports are logged one by one (`host haptic report #n at +t ms: ..`),
+  and every 10 s a summary: `haptics, last 10 s: host 0x81 x12 (4 stops, 0 ignored); written
+  0x81 x12; evicted 0; acks 4 (last 04 02 00 00 00)`. "host" counts what Steam sent through
+  the stream, "written" what completed on the link, "acks" the 0x44 reports on `0x100f6c79`.
+
+How to read the next log: no `host 0x81` entries while sliding a finger means Steam is not
+generating the detent pulses for the streamed controller (a host/Steam-side question: the pad
+data the virtual device reports, or Steam's per-controller haptic settings, which are keyed by
+serial and start at defaults for the virtual unit); `host 0x81` present but `written` short or
+`evicted` non-zero means the link cannot keep up; `written` matching `host` with no acks and
+nothing felt means the firmware takes the report but does not act on it over BLE, and the
+report-id framing or the gain path is the next suspect.
+
 If input still fails, include the app build, controller firmware, Android device/version and
 logcat spanning stream start, several button presses, and stream stop. For example:
 `adb logcat -d -v threadtime > moonlight-bluetooth.txt`.
