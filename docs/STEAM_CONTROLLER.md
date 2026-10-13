@@ -27,13 +27,17 @@ Controller (2026) over Bluetooth*, default on). It looks through bonded devices 
 later (ACL connected broadcast). Each driver:
 
 1. connects GATT (`TRANSPORT_LE`, high connection priority, MTU 100), discovers the Valve service,
-   subscribes to every notify characteristic in `0x100f6c75..7a`, uses the first writable one in
-   `0x100f6cb5..be` for commands;
+   uses feature characteristic `0x100f6c34` for commands, and subscribes to state characteristic
+   `0x100f6c7c` (report 0x47) or `0x100f6c7a` (report 0x45), plus battery `0x100f6c78` when available.
+   Report 0x47 is preferred when both exist. Setup requires a successful state subscription;
+   battery success alone does not announce a controller. The `0x100f6cb5` characteristic is
+   HID output report 0x80 (rumble), not the feature-command endpoint;
 2. sends `ID_CLEAR_DIGITAL_MAPPINGS` (0x81) and `ID_SET_SETTINGS_VALUES` (0x87) with
    `SETTING_LIZARD_MODE = 0` and `SETTING_STEAM_WATCHDOG_ENABLE = 0`, then `SETTING_IMU_MODE =
    RAW_ACCEL | RAW_GYRO` (0x18) when motion is enabled; re-sends lizard-off once a second;
-3. parses the 0x45 state report (BLE delivers it without the report-id byte, so every documented
-   USB offset is one less) into Moonlight's `ControllerPacket` flags, triggers, sticks, two
+3. parses the selected 0x45 or 0x47 state report (BLE delivers it without the report-id byte).
+   Both payloads are 45 bytes: 0x47 adds a two-byte timestamp before the pads and shortens the
+   IMU timestamp by two bytes. Only the selected state characteristic is decoded into Moonlight's `ControllerPacket` flags, triggers, sticks, two
    touchpads (`LiSendControllerTouchEvent2`, pads 0 and 1), gyro/accel and battery;
 4. announces itself as `LI_CTYPE_STEAM` with `ANALOG_TRIGGERS | RUMBLE | TOUCHPAD | DUAL_TOUCHPAD |
    BATTERY_STATE | GRIP_SENSE | STICK_TOUCH | STEAM_HAPTIC` (+ `GYRO | ACCEL`). Plain host rumble
@@ -174,3 +178,29 @@ visible in the stream log:
 Steam Controller BLE: stick extents (raw): left max 1.167 (|x| 0.83 |y| 0.84) in 16/16 sectors,
   peaks W 0.83 NW 1.17 N 0.84 ..., right ...; rim calibration on, extents left 0.830/0.840 right ...
 ```
+
+## Bluetooth hardware regression follow-up
+
+The fork.92 Galaxy XR test recorded successful MTU negotiation and notifications, but setup
+writes to `100f6cb5` failed with GATT status 7. Fork.93 added diagnostics and a write-type
+fallback; it still selected the rumble-output endpoint for feature commands. The endpoint
+and report mappings above follow SDL's Android Steam Controller implementation:
+[HIDDeviceBLESteamController.java](https://github.com/libsdl-org/SDL/blob/f6ffa69890a21921ad5199505fbd7dc4333cb6d0/android-project/app/src/main/java/org/libsdl/app/HIDDeviceBLESteamController.java).
+Feature writes start with command and payload-length bytes (including zero length for
+clear/restore commands), without a HID report ID or the older controller's `0xC0` prefix.
+
+Regression tests exercise the production BLE driver with a realistic service map, both state
+layouts, timestamped pad coordinates, failed state subscriptions, and unrelated reports.
+They cannot establish physical Bluetooth compatibility. Retest on the affected device:
+
+1. Confirm the log selects command characteristic `100f6c34` and state `100f6c7a` or `100f6c7c`.
+2. Confirm setup/keepalive writes complete without repeated errors, then test buttons,
+   sticks, triggers, both pads and motion in a stream.
+3. Disconnect/reconnect during streaming and verify input resumes; stop streaming and verify
+   default controller behavior returns.
+4. Test rumble/haptics separately. Existing feature-command haptic conversion remains in place;
+   physical haptic behavior is not established by the input-path fix.
+
+If input still fails, include the app build, controller firmware, Android device/version and
+logcat spanning stream start, several button presses, and stream stop. For example:
+`adb logcat -d -v threadtime > moonlight-bluetooth.txt`.
