@@ -156,8 +156,20 @@ public class SteamControllerBle extends SteamControllerInput {
     private boolean stateSubscribed;
     // The output report characteristics by (id - 0x80); guarded by this.
     private final BluetoothGattCharacteristic[] outputChars = new BluetoothGattCharacteristic[OUTPUT_REPORT_COUNT];
-    // Per link: how an output report is framed, learned from the first refusal.
-    private int outputFraming = OUTPUT_FRAMING_PAYLOAD;
+    // Per link and report id: how that output report is framed, learned from the first refusal.
+    private final int[] outputFraming = new int[OUTPUT_REPORT_COUNT];
+    // Per link and report id: the first write went with a response, so the firmware's verdict
+    // on that report is in the log (haptics otherwise go without response and cannot be refused).
+    private final boolean[] outputProbed = new boolean[OUTPUT_REPORT_COUNT];
+    // Haptic diagnostics for the 10 s summary line; guarded by this.
+    private final int[] hostReports = new int[OUTPUT_REPORT_COUNT];
+    private final int[] writtenReports = new int[OUTPUT_REPORT_COUNT];
+    private int hostStops, hostIgnored, evictedWrites, hapticAcks, hostSamplesLogged;
+    private byte[] lastAck;
+    private long firstHostReportMs;
+    /** How many of the host's haptic reports are logged one by one, for the record of what Steam sends. */
+    private static final int HOST_SAMPLES_LOGGED = 24;
+    private static final long HAPTIC_STATS_INTERVAL_MS = 10_000;
     private final ArrayDeque<Pending> writeQueue = new ArrayDeque<>();
     private boolean writeBusy;
     private long writeRejectedSinceMs = -1;
@@ -170,6 +182,7 @@ public class SteamControllerBle extends SteamControllerInput {
     /** Set after a with-response write was refused and the characteristic allows no-response. */
     private boolean forceNoResponse;
     private Pending inFlight;
+    private boolean inFlightWithResponse;
     private volatile boolean stopped;
 
     /**
@@ -454,7 +467,7 @@ public class SteamControllerBle extends SteamControllerInput {
                 writeChar = null;
                 batteryChar = null;
                 Arrays.fill(outputChars, null);
-                outputFraming = OUTPUT_FRAMING_PAYLOAD;
+                resetOutputState();
                 BluetoothGattCharacteristic legacyWrite = null;
                 BluetoothGattCharacteristic previousState = null;
                 ArrayDeque<BluetoothGattCharacteristic> otherNotify = new ArrayDeque<>();
@@ -570,12 +583,25 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             Pending failed;
             boolean withResponse;
-            int framing;
+            int framing = OUTPUT_FRAMING_PAYLOAD;
+            int index = -1;
             synchronized (SteamControllerBle.this) {
                 failed = inFlight;
                 inFlight = null;
-                withResponse = !forceNoResponse;
-                framing = outputFraming;
+                withResponse = inFlightWithResponse;
+                if (failed != null && failed.output) {
+                    index = failed.id() - OUTPUT_REPORT_FIRST;
+                    framing = outputFraming[index];
+                    if (withResponse && !outputProbed[index]) {
+                        outputProbed[index] = true;
+                        LimeLog.info("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
+                                + (status == BluetoothGatt.GATT_SUCCESS ? " accepted" : " refused (status " + status + ")")
+                                + " by the controller " + (framing == OUTPUT_FRAMING_PAYLOAD ? "without" : "with") + " its report id");
+                    }
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        writtenReports[index]++;
+                    }
+                }
             }
             boolean retryWithoutResponse = false;
             int newFraming = framing;
@@ -583,27 +609,29 @@ public class SteamControllerBle extends SteamControllerInput {
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 LimeLog.warning("Steam Controller BLE: write failed, status " + status + describeCommand(failed)
                         + (withResponse ? " (with response)" : " (without response)"));
-                // Some stacks/firmware refuse a write request on a characteristic that only
-                // really serves write-without-response: switch this link over and re-send.
-                if (withResponse && failed != null
-                        && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-                    LimeLog.warning("Steam Controller BLE: switching to write-without-response for this link");
-                    retryWithoutResponse = true;
-                } else if (failed != null && failed.output && status > 0 && status < 0x80) {
+                if (failed != null && failed.output && status > 0 && status < 0x80) {
                     // An ATT error from the controller itself (not a stack/link code): the
                     // firmware refused the report as framed. Try it once with its report id;
-                    // if that is refused too, the link goes back to the feature-command
-                    // conversion for the haptic reports it has one for.
+                    // if that is refused too, this report id goes back to the feature-command
+                    // conversion for the rest of the link (where one exists).
                     if (framing == OUTPUT_FRAMING_PAYLOAD) {
                         newFraming = OUTPUT_FRAMING_WITH_ID;
                         retry = failed;
-                        LimeLog.warning("Steam Controller BLE: output report refused without its id; retrying with the report id");
+                        LimeLog.warning("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
+                                + " refused without its id; retrying with the report id");
                     } else if (framing == OUTPUT_FRAMING_WITH_ID) {
                         newFraming = OUTPUT_FRAMING_UNUSABLE;
                         retry = featureFallback(failed.bytes);
-                        LimeLog.warning("Steam Controller BLE: output report refused with its id too; "
-                                + "haptics go as feature commands for this link");
+                        LimeLog.warning("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
+                                + " refused with its id too; it goes as a feature command for this link"
+                                + (retry == null ? " (none known: dropped)" : ""));
                     }
+                } else if (withResponse && failed != null
+                        && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                    // Some stacks/firmware refuse a write request on a characteristic that only
+                    // really serves write-without-response: switch this link over and re-send.
+                    LimeLog.warning("Steam Controller BLE: switching to write-without-response for this link");
+                    retryWithoutResponse = true;
                 }
             }
             handler.removeCallbacks(writeWatchdog);
@@ -615,12 +643,13 @@ public class SteamControllerBle extends SteamControllerInput {
                         forceNoResponse = true;
                         writeQueue.addFirst(failed);
                     } else if (newFraming != framing) {
-                        outputFraming = newFraming;
+                        outputFraming[index] = newFraming;
                         if (newFraming == OUTPUT_FRAMING_UNUSABLE) {
-                            // Reports queued for the output endpoints go the feature way too.
+                            // Reports of this id queued for the output endpoint go the feature way too.
+                            final int id = failed.id();
                             ArrayDeque<Pending> kept = new ArrayDeque<>();
                             for (Pending queued : writeQueue) {
-                                Pending replacement = queued.output ? featureFallback(queued.bytes) : queued;
+                                Pending replacement = queued.output && queued.id() == id ? featureFallback(queued.bytes) : queued;
                                 if (replacement != null) {
                                     kept.add(replacement);
                                 }
@@ -665,8 +694,12 @@ public class SteamControllerBle extends SteamControllerInput {
             if (shortId == BATTERY_SHORT) {
                 handleBattery(data);
             } else if (shortId == PING_SHORT) {
-                // Report 0x44: the firmware's acknowledgement of a haptic output report
-                // (one per zero-repeat pulse on the wired unit); nothing to do.
+                // Report 0x44: the firmware's haptic acknowledgement / flow control
+                // {actuator, flags, ...} (one per zero-repeat pulse on the wired unit).
+                synchronized (SteamControllerBle.this) {
+                    hapticAcks++;
+                    lastAck = data;
+                }
             } else if (data.length >= 45 && carriesState(ch)) {
                 // Notifications omit the HID report ID. Both layouts are 45 bytes:
                 // 0x47 adds a pad timestamp and shortens the IMU timestamp by two bytes.
@@ -753,6 +786,8 @@ public class SteamControllerBle extends SteamControllerInput {
         }
         handler.removeCallbacks(keepAlive);
         handler.postDelayed(keepAlive, KEEPALIVE_INTERVAL_MS);
+        handler.removeCallbacks(hapticStats);
+        handler.postDelayed(hapticStats, HAPTIC_STATS_INTERVAL_MS);
         if (!announced) {
             announced = true;
             LimeLog.info("Steam Controller BLE: ready, reporting as LI_CTYPE_STEAM");
@@ -769,6 +804,7 @@ public class SteamControllerBle extends SteamControllerInput {
             return;
         }
         handler.removeCallbacks(keepAlive);
+        handler.removeCallbacks(hapticStats);
         handler.removeCallbacks(rumbleRefresh);
         handler.removeCallbacks(retryFlush);
         handler.removeCallbacks(writeWatchdog);
@@ -784,7 +820,7 @@ public class SteamControllerBle extends SteamControllerInput {
             stateSubscribed = false;
             stateChar = null;
             Arrays.fill(outputChars, null);
-            outputFraming = OUTPUT_FRAMING_PAYLOAD;
+            resetOutputState();
             rumbleActive = false;
             rumbleReport = null;
             shortReportsLogged = 0;
@@ -922,7 +958,7 @@ public class SteamControllerBle extends SteamControllerInput {
     /** The output characteristic for a report id on this link, if offered and not refused. */
     private synchronized BluetoothGattCharacteristic outputChar(int id) {
         int index = id - OUTPUT_REPORT_FIRST;
-        if (outputFraming == OUTPUT_FRAMING_UNUSABLE || index < 0 || index >= outputChars.length) {
+        if (index < 0 || index >= outputChars.length || outputFraming[index] == OUTPUT_FRAMING_UNUSABLE) {
             return null;
         }
         return outputChars[index];
@@ -991,6 +1027,7 @@ public class SteamControllerBle extends SteamControllerInput {
                 }
                 if (victim != null) {
                     writeQueue.remove(victim);
+                    evictedWrites++;
                 } else {
                     return;
                 }
@@ -1019,6 +1056,7 @@ public class SteamControllerBle extends SteamControllerInput {
         BluetoothGatt g;
         Pending p;
         byte[] value;
+        boolean probe;
         synchronized (this) {
             g = gatt;
             if (writeBusy || g == null || writeChar == null || (stopped && !closing)) {
@@ -1030,19 +1068,29 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             writeBusy = true;
             // An output report goes without its id, as the notifications arrive, unless the
-            // firmware refused that framing on this link.
-            value = p.output && outputFraming == OUTPUT_FRAMING_PAYLOAD
-                    ? Arrays.copyOfRange(p.bytes, 1, p.bytes.length) : p.bytes;
+            // firmware refused that framing on this link. Its first write on a link goes with
+            // a response, so the firmware's verdict on the report reaches the log.
+            if (p.output) {
+                int index = p.id() - OUTPUT_REPORT_FIRST;
+                value = outputFraming[index] == OUTPUT_FRAMING_PAYLOAD
+                        ? Arrays.copyOfRange(p.bytes, 1, p.bytes.length) : p.bytes;
+                probe = !outputProbed[index]
+                        && (p.ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0;
+            } else {
+                value = p.bytes;
+                probe = false;
+            }
         }
         BluetoothGattCharacteristic ch = p.ch;
         boolean accepted = false;
+        boolean noResponse = false;
         try {
             // Haptics are fire-and-forget and frequent (40 ms rumble re-sends, Steam's click
             // pairs): without a response each costs no round trip on the link. The stack still
             // reports the write complete, so the one-at-a-time pacing holds either way.
             boolean haptic = p.output || p.bytes[0] == ID_TRIGGER_RUMBLE_CMD || p.bytes[0] == ID_TRIGGER_HAPTIC_CMD
                     || p.bytes[0] == ID_TRIGGER_HAPTIC_PULSE;
-            boolean noResponse = (haptic || forceNoResponse)
+            noResponse = (haptic || forceNoResponse) && !probe
                     && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
             ch.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                     : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
@@ -1054,6 +1102,7 @@ public class SteamControllerBle extends SteamControllerInput {
             synchronized (this) {
                 if (g != gatt || writeChar == null) return;
                 inFlight = p;
+                inFlightWithResponse = !noResponse;
                 writeRejectedSinceMs = -1;
                 handler.removeCallbacks(writeWatchdog);
                 handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
@@ -1214,11 +1263,11 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             int id = copy[0] & 0xFF;
             int size = outputSize(id);
-            if (size == 0 || copy.length < size) {
-                return;
-            }
             // Invalid side values must not consume the finite stop-priority queue.
-            if ((id == 0x81 || id == 0x82) && (copy[1] & 0xFF) > 2) {
+            boolean usable = size != 0 && copy.length >= size
+                    && !((id == 0x81 || id == 0x82) && (copy[1] & 0xFF) > 2);
+            noteHostReport(copy, usable);
+            if (!usable) {
                 return;
             }
             byte[] r = copy.length == size ? copy : Arrays.copyOf(copy, size);
@@ -1257,6 +1306,88 @@ public class SteamControllerBle extends SteamControllerInput {
             }
         });
     }
+
+    /** New link: every output report starts without its id and unprobed, and the counters restart. */
+    private synchronized void resetOutputState() {
+        Arrays.fill(outputFraming, OUTPUT_FRAMING_PAYLOAD);
+        Arrays.fill(outputProbed, false);
+        Arrays.fill(hostReports, 0);
+        Arrays.fill(writtenReports, 0);
+        hostStops = hostIgnored = evictedWrites = hapticAcks = 0;
+        lastAck = null;
+    }
+
+    /** Counts a host haptic report for the summary, and logs the first few one by one. */
+    private void noteHostReport(byte[] report, boolean usable) {
+        int id = report[0] & 0xFF;
+        int index = id - OUTPUT_REPORT_FIRST;
+        long now = SystemClock.uptimeMillis();
+        int sample = 0;
+        long sinceFirst;
+        synchronized (this) {
+            if (hostSamplesLogged == 0) {
+                firstHostReportMs = now;
+            }
+            sinceFirst = now - firstHostReportMs;
+            if (hostSamplesLogged < HOST_SAMPLES_LOGGED) {
+                sample = ++hostSamplesLogged;
+            }
+            if (!usable) {
+                hostIgnored++;
+            } else {
+                if (index >= 0 && index < hostReports.length) {
+                    hostReports[index]++;
+                }
+                if (stopKey(new Pending(null, report, true)) >= 0) {
+                    hostStops++;
+                }
+            }
+        }
+        if (sample != 0) {
+            LimeLog.info("Steam Controller BLE: host haptic report #" + sample + " at +" + sinceFirst
+                    + " ms: " + hex(report) + (usable ? "" : " (ignored)"));
+        }
+    }
+
+    /** Every 10 s while the link is up: what the host sent and what reached the controller. */
+    private final Runnable hapticStats = new Runnable() {
+        @Override
+        public void run() {
+            if (stopped || gatt == null) {
+                return;
+            }
+            StringBuilder host = new StringBuilder(), written = new StringBuilder();
+            int stops, ignored, evicted, acks;
+            byte[] ack;
+            synchronized (SteamControllerBle.this) {
+                for (int i = 0; i < hostReports.length; i++) {
+                    if (hostReports[i] != 0) {
+                        host.append(host.length() == 0 ? "" : ", ").append("0x")
+                                .append(Integer.toHexString(OUTPUT_REPORT_FIRST + i)).append(" x").append(hostReports[i]);
+                    }
+                    if (writtenReports[i] != 0) {
+                        written.append(written.length() == 0 ? "" : ", ").append("0x")
+                                .append(Integer.toHexString(OUTPUT_REPORT_FIRST + i)).append(" x").append(writtenReports[i]);
+                    }
+                }
+                stops = hostStops;
+                ignored = hostIgnored;
+                evicted = evictedWrites;
+                acks = hapticAcks;
+                ack = lastAck;
+                Arrays.fill(hostReports, 0);
+                Arrays.fill(writtenReports, 0);
+                hostStops = hostIgnored = evictedWrites = hapticAcks = 0;
+            }
+            if (host.length() != 0 || written.length() != 0 || ignored != 0 || acks != 0) {
+                LimeLog.info("Steam Controller BLE: haptics, last " + (HAPTIC_STATS_INTERVAL_MS / 1000) + " s: host "
+                        + (host.length() == 0 ? "none" : host) + " (" + stops + " stops, " + ignored + " ignored); written "
+                        + (written.length() == 0 ? "none" : written) + "; evicted " + evicted + "; acks " + acks
+                        + (ack != null ? " (last " + hex(ack) + ")" : ""));
+            }
+            handler.postDelayed(this, HAPTIC_STATS_INTERVAL_MS);
+        }
+    };
 
     /** Wire size, id included, of the haptic output reports the host forwards (sc26_usb.h); 0 for others. */
     private static int outputSize(int id) {
