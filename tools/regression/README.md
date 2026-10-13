@@ -26,6 +26,8 @@ boundaries. See each script for the exact boundary being replaced.
 - `test_jni_frame_buffer.py`: actual JNI setup, growth and cleanup methods with
   allocation failure injection; local/global reference ownership and retry after
   failed growth. Requires JDK JNI headers (`AUDIT_JNI_INCLUDE` can override them).
+- `test_nsd_discovery_lifecycle.py`: full Android NSD agent with delayed callbacks,
+  duplicate and failed registrations, bounded tracking, and idle worker retirement.
 - `test_ble_start_lifecycle.py`: actual activity driver-start method; late
   permission callbacks cannot start BLE or request permission during teardown.
 - `test_surface_handoff.py`: actual surface handoff methods; UI dispatch,
