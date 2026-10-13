@@ -129,6 +129,9 @@ public class SteamControllerBle extends SteamControllerInput {
     // connectGatt -> onReady: an accepted requestMtu/discoverServices/writeDescriptor whose
     // callback never arrives must not leave the link half-open for the rest of the stream.
     private static final long SETUP_WATCHDOG_MS = 10_000;
+    // connectGatt -> CONNECTED: with autoConnect off the stack reports status 133 after ~30 s.
+    // An attempt that never reports anything must not keep isLinkUp() true for the stream.
+    private static final long CONNECT_WATCHDOG_MS = 40_000;
     /** Retry delay after the stack refused a write (one operation outstanding at a time). */
     private static final long WRITE_RETRY_MS = 50;
     private static final int MAX_PENDING_WRITES = 32;
@@ -177,6 +180,16 @@ public class SteamControllerBle extends SteamControllerInput {
     // stop() in progress: the restore commands still go out, nothing else does.
     private volatile boolean closing;
     private boolean mtuRequested;
+    // One more MTU request per link before a link whose MTU stayed too small for the 45-byte
+    // state reports is recycled (a 23-byte MTU truncates every one of them).
+    private boolean mtuRetried;
+    // A connection attempt whose result reached the callback before connectGatt returned: the
+    // stack settles the client registration on its binder thread first. start() retires that
+    // handle (earlyLost) or finishes its CONNECTED handling (earlyConnected) instead of
+    // publishing it as a live link that nothing drives. Guarded by this.
+    private BluetoothGatt earlyLost, earlyConnected;
+    // The current link reached CONNECTED; cleared when it is retired. Guarded by this.
+    private boolean linkConnected;
     private boolean announced;
     // One warning per link when state reports arrive truncated (an MTU that stayed at 23).
     private int shortReportsLogged;
@@ -216,6 +229,18 @@ public class SteamControllerBle extends SteamControllerInput {
         BluetoothGatt g = gatt;
         if (g != null && !announced && !stopped) {
             LimeLog.warning("Steam Controller BLE: setup did not complete within " + SETUP_WATCHDOG_MS + " ms; recycling the link");
+            onLinkLost(g);
+        }
+    };
+    // Armed by start() around connectGatt, disarmed on CONNECTED and when the link is retired.
+    private final Runnable connectWatchdog = () -> {
+        BluetoothGatt g = gatt;
+        boolean pending;
+        synchronized (this) {
+            pending = g != null && !linkConnected && !stopped;
+        }
+        if (pending) {
+            LimeLog.warning("Steam Controller BLE: no connection result within " + CONNECT_WATCHDOG_MS + " ms; recycling the link");
             onLinkLost(g);
         }
     };
@@ -311,12 +336,40 @@ public class SteamControllerBle extends SteamControllerInput {
         } catch (SecurityException e) {
             LimeLog.warning("Steam Controller BLE: no Bluetooth permission: " + e.getMessage());
         }
+        BluetoothGatt lost = null, reached = null;
+        boolean published = false;
         synchronized (this) {
             connecting = false;
             if (!stopped) {
                 gatt = connected;
-                return connected != null;
+                published = true;
+                if (connected != null) {
+                    if (earlyLost == connected) {
+                        lost = connected;
+                    } else if (earlyConnected == connected) {
+                        reached = connected;
+                    } else {
+                        handler.removeCallbacks(connectWatchdog);
+                        handler.postDelayed(connectWatchdog, CONNECT_WATCHDOG_MS);
+                    }
+                }
+                earlyLost = null;
+                earlyConnected = null;
             }
+        }
+        if (published) {
+            if (lost != null) {
+                // The stack refused the attempt (client registration failed) before connectGatt
+                // returned: retire the handle the way the DISCONNECTED would have, instead of
+                // leaving it published as a link that nothing will ever drive.
+                LimeLog.warning("Steam Controller BLE: the connection attempt failed before connectGatt returned");
+                onLinkLost(lost);
+                return false;
+            }
+            if (reached != null) {
+                onConnected(reached);
+            }
+            return connected != null;
         }
         // stop() can retire the looper while connectGatt is inside the platform.
         // A late result must not publish a connection on that retired instance.
@@ -403,7 +456,24 @@ public class SteamControllerBle extends SteamControllerInput {
         @SuppressLint("MissingPermission")
         @Override
         public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
-            if (stopped || g != gatt) {
+            if (stopped) {
+                return;
+            }
+            if (g != gatt) {
+                // A result for an attempt connectGatt has not returned yet (the stack settles the
+                // client registration on its binder thread first): keep it for start() to act on
+                // once the handle is known, rather than dropping it. Anything else is a late
+                // callback of a retired connection.
+                synchronized (SteamControllerBle.this) {
+                    if (connecting && gatt == null) {
+                        if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+                            earlyConnected = g;
+                        } else {
+                            earlyLost = g;
+                            earlyConnected = null;
+                        }
+                    }
+                }
                 return;
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -414,16 +484,7 @@ public class SteamControllerBle extends SteamControllerInput {
                     onLinkLost(g);
                     return;
                 }
-                LimeLog.info("Steam Controller BLE: connected, negotiating");
-                everConnected = true;
-                mtuRequested = true;
-                handler.removeCallbacks(setupWatchdog);
-                handler.postDelayed(setupWatchdog, SETUP_WATCHDOG_MS);
-                g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
-                if (!g.requestMtu(DESIRED_MTU)) {
-                    mtuRequested = false;
-                    if (!g.discoverServices()) onLinkLost(g);
-                }
+                onConnected(g);
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 LimeLog.info("Steam Controller BLE: disconnected (status " + status + ")");
                 onLinkLost(g);
@@ -442,8 +503,21 @@ public class SteamControllerBle extends SteamControllerInput {
                 LimeLog.info("Steam Controller BLE: MTU " + mtu);
                 if (mtu < STATE_REPORT_MTU) {
                     // State reports are 45 bytes: a 23-byte MTU truncates every one of
-                    // them and the controller would look connected but stay silent.
-                    LimeLog.warning("Steam Controller BLE: MTU " + mtu + " is too small for state reports");
+                    // them and the controller would look connected but stay silent. Ask
+                    // once more; a link that stays this small is recycled rather than
+                    // announced to the host as a controller that never produces input.
+                    if (!mtuRetried) {
+                        mtuRetried = true;
+                        LimeLog.warning("Steam Controller BLE: MTU " + mtu + " is too small for state reports; asking again");
+                        if (g.requestMtu(DESIRED_MTU)) {
+                            mtuRequested = true;
+                            return;
+                        }
+                    } else {
+                        LimeLog.warning("Steam Controller BLE: MTU " + mtu + " stayed too small for state reports; recycling the link");
+                        onLinkLost(g);
+                        return;
+                    }
                 }
                 if (!g.discoverServices()) onLinkLost(g);
             }
@@ -800,19 +874,48 @@ public class SteamControllerBle extends SteamControllerInput {
         }
     }
 
+    /** CONNECTED with success: negotiate the link (MTU, then services). */
+    @SuppressLint("MissingPermission")
+    private void onConnected(BluetoothGatt g) {
+        LimeLog.info("Steam Controller BLE: connected, negotiating");
+        synchronized (this) {
+            everConnected = true;
+            linkConnected = true;
+            mtuRetried = false;
+        }
+        mtuRequested = true;
+        handler.removeCallbacks(connectWatchdog);
+        handler.removeCallbacks(setupWatchdog);
+        handler.postDelayed(setupWatchdog, SETUP_WATCHDOG_MS);
+        g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+        if (!g.requestMtu(DESIRED_MTU)) {
+            mtuRequested = false;
+            if (!g.discoverServices()) onLinkLost(g);
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private void onLinkLost(BluetoothGatt g) {
-        if (g != gatt) {
-            return;
-        }
-        handler.removeCallbacks(keepAlive);
-        handler.removeCallbacks(hapticStats);
-        handler.removeCallbacks(rumbleRefresh);
-        handler.removeCallbacks(retryFlush);
-        handler.removeCallbacks(writeWatchdog);
-        handler.removeCallbacks(batteryRead);
-        handler.removeCallbacks(setupWatchdog);
+        boolean wasAnnounced;
         synchronized (this) {
+            // Retire the handle first, under the lock: a DISCONNECTED on the binder thread and a
+            // watchdog on the handler thread can both arrive for one link, and only one of them
+            // may clear its state and spend a reconnect attempt.
+            if (g == null || g != gatt) {
+                return;
+            }
+            gatt = null;
+            linkConnected = false;
+            earlyLost = null;
+            earlyConnected = null;
+            handler.removeCallbacks(connectWatchdog);
+            handler.removeCallbacks(keepAlive);
+            handler.removeCallbacks(hapticStats);
+            handler.removeCallbacks(rumbleRefresh);
+            handler.removeCallbacks(retryFlush);
+            handler.removeCallbacks(writeWatchdog);
+            handler.removeCallbacks(batteryRead);
+            handler.removeCallbacks(setupWatchdog);
             writeQueue.clear();
             writeBusy = false;
             writeRejectedSinceMs = -1;
@@ -828,9 +931,10 @@ public class SteamControllerBle extends SteamControllerInput {
             shortReportsLogged = 0;
             forceNoResponse = false;
             inFlight = null;
-        }
-        if (announced) {
+            wasAnnounced = announced;
             announced = false;
+        }
+        if (wasAnnounced) {
             // Release any touches the host still thinks are down
             releaseTouches();
             notifyDeviceRemoved();
@@ -838,9 +942,6 @@ public class SteamControllerBle extends SteamControllerInput {
         try {
             g.close();
         } catch (SecurityException | IllegalStateException ignored) {
-        }
-        if (g == gatt) {
-            gatt = null;
         }
         if (!stopped && !everConnected) {
             // A bonded controller that is switched off or out of range: connectGatt() times out with
