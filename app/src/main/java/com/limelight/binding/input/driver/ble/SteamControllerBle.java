@@ -509,10 +509,15 @@ public class SteamControllerBle extends SteamControllerInput {
                     if (!mtuRetried) {
                         mtuRetried = true;
                         LimeLog.warning("Steam Controller BLE: MTU " + mtu + " is too small for state reports; asking again");
-                        if (g.requestMtu(DESIRED_MTU)) {
-                            mtuRequested = true;
-                            return;
+                        // Publish the retry before entering GATT: its callback can
+                        // arrive before requestMtu returns and must consume this flag.
+                        mtuRequested = true;
+                        if (!g.requestMtu(DESIRED_MTU)) {
+                            mtuRequested = false;
+                            LimeLog.warning("Steam Controller BLE: MTU retry refused; recycling the known-small link");
+                            onLinkLost(g);
                         }
+                        return;
                     } else {
                         LimeLog.warning("Steam Controller BLE: MTU " + mtu + " stayed too small for state reports; recycling the link");
                         onLinkLost(g);

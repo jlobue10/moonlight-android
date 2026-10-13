@@ -56,7 +56,8 @@ STUBS = {
  'android/bluetooth/BluetoothGatt.java': '''package android.bluetooth; import java.util.*; public class BluetoothGatt {
  public static final int GATT_SUCCESS=0, CONNECTION_PRIORITY_HIGH=1; public boolean acceptDescriptor=true, acceptWrite=true, closed;
  public BluetoothGattService service=new BluetoothGattService(); public List<byte[]> writes=new ArrayList<>();
- public boolean requestConnectionPriority(int p){return true;} public int mtuRequests; public boolean discovered; public boolean requestMtu(int m){++mtuRequests;return true;}
+ public boolean requestConnectionPriority(int p){return true;} public int mtuRequests; public boolean discovered,acceptMtu=true; public Runnable beforeMtuReturn;
+ public boolean requestMtu(int m){++mtuRequests;if(!acceptMtu)return false;if(beforeMtuReturn!=null){Runnable r=beforeMtuReturn;beforeMtuReturn=null;r.run();}return true;}
  public boolean discoverServices(){discovered=true;return true;} public BluetoothGattService getService(UUID u){return service;}
  public boolean setCharacteristicNotification(BluetoothGattCharacteristic c,boolean b){return true;}
  public boolean writeDescriptor(BluetoothGattDescriptor d){return acceptDescriptor;}
@@ -549,6 +550,25 @@ public class BleRegression {
    callback.onConnectionStateChange(old,BluetoothGatt.GATT_SUCCESS,BluetoothProfile.STATE_CONNECTED);
    callback.onMtuChanged(old,23,0);callback.onMtuChanged(old,100,0);
    check(get(d,"gatt")==old&&old.discovered,"an MTU that grows on the second request goes on to service discovery");
+   d.stop();}
+  // A refused retry cannot make a known-small link usable, and a retry callback can
+  // arrive on another thread before requestMtu returns to this callback.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   callback.onConnectionStateChange(old,0,BluetoothProfile.STATE_CONNECTED);
+   old.acceptMtu=false;callback.onMtuChanged(old,23,0);
+   check(get(d,"gatt")==null&&old.closed&&!old.discovered,"a synchronously refused MTU retry retires the known-small link before discovery");
+   d.stop();}
+  for(int retryMtu:new int[]{100,23}){
+   d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   callback.onConnectionStateChange(old,0,BluetoothProfile.STATE_CONNECTED);
+   final BluetoothGatt g=old;final BluetoothGattCallback cb=callback;
+   g.beforeMtuReturn=()->{Thread t=new Thread(()->cb.onMtuChanged(g,retryMtu,0));t.setDaemon(true);t.start();
+    try{t.join(3000);}catch(InterruptedException e){throw new AssertionError(e);}
+    if(t.isAlive())throw new AssertionError("MTU callback blocked behind requestMtu");};
+   callback.onMtuChanged(old,23,0);
+   check(retryMtu==100 ? get(d,"gatt")==old&&old.discovered : get(d,"gatt")==null&&old.closed&&!old.discovered,
+         "an early MTU retry callback is processed before requestMtu returns; mtu="+retryMtu);
+   check(!(boolean)get(d,"mtuRequested"),"a returning MTU request cannot resurrect a completed or retired negotiation");
    d.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
