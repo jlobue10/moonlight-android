@@ -140,7 +140,10 @@ public class SteamControllerBle extends SteamControllerInput {
     private boolean mtuRequested;
     private boolean announced;
     // One warning per link when state reports arrive truncated (an MTU that stayed at 23).
-    private boolean shortReportLogged;
+    private int shortReportsLogged;
+    /** Set after a with-response write was refused and the characteristic allows no-response. */
+    private boolean forceNoResponse;
+    private byte[] inFlightCmd;
     private volatile boolean stopped;
     private int reconnectAttempts;
     private boolean everConnected;
@@ -420,7 +423,7 @@ public class SteamControllerBle extends SteamControllerInput {
                 }
             }
             LimeLog.info("Steam Controller BLE: " + pendingSubscriptions.size() + " notify characteristics, command characteristic "
-                    + (writeChar != null ? writeChar.getUuid() : "none"));
+                    + (writeChar != null ? writeChar.getUuid() + " (properties 0x" + Integer.toHexString(writeChar.getProperties()) + ")" : "none"));
             if (writeChar == null || pendingSubscriptions.isEmpty()) {
                 onLinkLost(g);
                 return;
@@ -461,13 +464,33 @@ public class SteamControllerBle extends SteamControllerInput {
                 }
                 return;
             }
+            byte[] failed;
+            boolean withResponse;
+            synchronized (SteamControllerBle.this) {
+                failed = inFlightCmd;
+                inFlightCmd = null;
+                withResponse = !forceNoResponse;
+            }
+            boolean retryWithoutResponse = false;
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                LimeLog.warning("Steam Controller BLE: write failed, status " + status);
+                LimeLog.warning("Steam Controller BLE: write failed, status " + status + describeCommand(failed)
+                        + (withResponse ? " (with response)" : " (without response)"));
+                // Some stacks/firmware refuse a write request on a characteristic that only
+                // really serves write-without-response: switch this link over and re-send.
+                if (withResponse && failed != null
+                        && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                    LimeLog.warning("Steam Controller BLE: switching to write-without-response for this link");
+                    retryWithoutResponse = true;
+                }
             }
             handler.removeCallbacks(writeWatchdog);
             boolean drained;
             synchronized (SteamControllerBle.this) {
                 writeBusy = false;
+                if (retryWithoutResponse && g == gatt) {
+                    forceNoResponse = true;
+                    writeQueue.addFirst(failed);
+                }
                 drained = closing && writeQueue.isEmpty();
             }
             if (drained) {
@@ -503,9 +526,12 @@ public class SteamControllerBle extends SteamControllerInput {
                 // ack/ping-pong tied to our writes; nothing to do
             } else if (data.length >= 45) {
                 handleState(data);
-            } else if (!shortReportLogged) {
-                shortReportLogged = true;
-                LimeLog.warning("Steam Controller BLE: " + data.length + "-byte state report dropped (MTU too small?)");
+            } else if (shortReportsLogged < 5) {
+                // Too short for a state report: an acknowledgement or error for one of our
+                // commands, or a truncated report. Log the first few with their source.
+                shortReportsLogged++;
+                LimeLog.warning("Steam Controller BLE: " + data.length + "-byte report on 0x" + Long.toHexString(shortId)
+                        + " dropped: " + hex(data));
             }
         }
     };
@@ -598,7 +624,9 @@ public class SteamControllerBle extends SteamControllerInput {
             subscribedNotifications = 0;
             rumbleActive = false;
             rumbleReport = null;
-            shortReportLogged = false;
+            shortReportsLogged = 0;
+            forceNoResponse = false;
+            inFlightCmd = null;
         }
         if (announced) {
             announced = false;
@@ -633,6 +661,23 @@ public class SteamControllerBle extends SteamControllerInput {
     // ----- commands -----
 
     /** ID_SET_SETTINGS_VALUES: 0x87, len, then (id, lo, hi) triples. */
+    private static String describeCommand(byte[] cmd) {
+        if (cmd == null || cmd.length == 0) {
+            return "";
+        }
+        return " (cmd 0x" + Integer.toHexString(cmd[0] & 0xFF) + ", " + cmd.length + " bytes)";
+    }
+
+    private static String hex(byte[] data) {
+        StringBuilder sb = new StringBuilder(data.length * 3);
+        for (int i = 0; i < data.length && i < 32; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(Character.forDigit((data[i] >> 4) & 0xF, 16)).append(Character.forDigit(data[i] & 0xF, 16));
+        }
+        if (data.length > 32) sb.append(" ...");
+        return sb.toString();
+    }
+
     private static byte[] settings(int... idValuePairs) {
         int n = idValuePairs.length / 2;
         byte[] cmd = new byte[2 + 3 * n];
@@ -745,7 +790,7 @@ public class SteamControllerBle extends SteamControllerInput {
             // reports the write complete, so the one-at-a-time pacing holds either way.
             boolean haptic = cmd[0] == ID_TRIGGER_RUMBLE_CMD || cmd[0] == ID_TRIGGER_HAPTIC_CMD
                     || cmd[0] == ID_TRIGGER_HAPTIC_PULSE;
-            boolean noResponse = haptic
+            boolean noResponse = (haptic || forceNoResponse)
                     && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
             ch.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                     : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
@@ -756,6 +801,7 @@ public class SteamControllerBle extends SteamControllerInput {
         if (accepted) {
             synchronized (this) {
                 if (g != gatt || ch != writeChar) return;
+                inFlightCmd = cmd;
                 writeRejectedSinceMs = -1;
                 handler.removeCallbacks(writeWatchdog);
                 handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
