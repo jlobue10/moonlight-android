@@ -174,3 +174,10 @@ including on-screen retransmission and removal coverage; no hardware is used.
   read-error descriptor cleanup and a real buffered close/flush failure using
   Linux `/dev/full`. Android bitmap allocation is recorded by boundary stubs;
   device bitmap decoding/rendering still requires Android integration testing.
+
+- `test_asset_loader_lifecycle.py`: complete production `CachedAppAssetLoader`
+  with controlled Android animation/task dispatch. Late fade callbacks cannot
+  overwrite a rebound tile; normal disk/placeholder transitions still work.
+  Real JVM executors verify idle core-worker retirement, draining active/queued
+  work and reuse after retirement. Only the idle timeout is shortened in the
+  test; device rendering and Android task scheduling remain integration checks.

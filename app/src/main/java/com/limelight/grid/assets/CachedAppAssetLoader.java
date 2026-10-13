@@ -30,22 +30,23 @@ public class CachedAppAssetLoader {
     private static final int MAX_PENDING_CACHE_LOADS = 100;
     private static final int MAX_PENDING_NETWORK_LOADS = 40;
     private static final int MAX_PENDING_DISK_LOADS = 40;
+    private static final int IDLE_WORKER_TIMEOUT_SECONDS = 30;
 
     private final ThreadPoolExecutor cacheExecutor = new ThreadPoolExecutor(
             MAX_CONCURRENT_CACHE_LOADS, MAX_CONCURRENT_CACHE_LOADS,
-            Long.MAX_VALUE, TimeUnit.DAYS,
+            IDLE_WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS,
             new LinkedBlockingQueue<Runnable>(MAX_PENDING_CACHE_LOADS),
             new ThreadPoolExecutor.DiscardOldestPolicy());
 
     private final ThreadPoolExecutor foregroundExecutor = new ThreadPoolExecutor(
             MAX_CONCURRENT_DISK_LOADS, MAX_CONCURRENT_DISK_LOADS,
-            Long.MAX_VALUE, TimeUnit.DAYS,
+            IDLE_WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS,
             new LinkedBlockingQueue<Runnable>(MAX_PENDING_DISK_LOADS),
             new ThreadPoolExecutor.DiscardOldestPolicy());
 
     private final ThreadPoolExecutor networkExecutor = new ThreadPoolExecutor(
             MAX_CONCURRENT_NETWORK_LOADS, MAX_CONCURRENT_NETWORK_LOADS,
-            Long.MAX_VALUE, TimeUnit.DAYS,
+            IDLE_WORKER_TIMEOUT_SECONDS, TimeUnit.SECONDS,
             new LinkedBlockingQueue<Runnable>(MAX_PENDING_NETWORK_LOADS),
             new ThreadPoolExecutor.DiscardOldestPolicy());
 
@@ -60,6 +61,12 @@ public class CachedAppAssetLoader {
     public CachedAppAssetLoader(ComputerDetails computer, double scalingDivider,
                                 NetworkAssetLoader networkLoader, MemoryAssetLoader memoryLoader,
                                 DiskAssetLoader diskLoader, Bitmap noAppImageBitmap) {
+        // Adapters replace these loaders when layouts change or screens reopen.
+        // Retire idle core workers while keeping each executor reusable on resume.
+        cacheExecutor.allowCoreThreadTimeOut(true);
+        foregroundExecutor.allowCoreThreadTimeOut(true);
+        networkExecutor.allowCoreThreadTimeOut(true);
+
         this.computer = computer;
         this.scalingDivider = scalingDivider;
         this.networkLoader = networkLoader;
@@ -231,6 +238,11 @@ public class CachedAppAssetLoader {
 
                             @Override
                             public void onAnimationEnd(Animation animation) {
+                                // This view may have been rebound while the placeholder faded out.
+                                if (isCancelled() || getLoaderTask(imageView) != LoaderTask.this) {
+                                    return;
+                                }
+
                                 // Fade in the new box art
                                 imageView.setImageBitmap(bitmap.bitmap);
                                 imageView.startAnimation(AnimationUtils.loadAnimation(imageView.getContext(), R.anim.boxart_fadein));
