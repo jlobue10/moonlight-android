@@ -60,7 +60,8 @@ STUBS = {
  public boolean discoverServices(){return true;} public BluetoothGattService getService(UUID u){return service;}
  public boolean setCharacteristicNotification(BluetoothGattCharacteristic c,boolean b){return true;}
  public boolean writeDescriptor(BluetoothGattDescriptor d){return acceptDescriptor;}
- public boolean writeCharacteristic(BluetoothGattCharacteristic c){if(!acceptWrite)return false;writes.add(c.value.clone());return true;}
+ public List<BluetoothGattCharacteristic> targets=new ArrayList<>();
+ public boolean writeCharacteristic(BluetoothGattCharacteristic c){if(!acceptWrite)return false;writes.add(c.value.clone());targets.add(c);return true;}
  public boolean readCharacteristic(BluetoothGattCharacteristic c){return true;}
  public void close(){closed=true;} public void disconnect(){} }''',
  'android/bluetooth/BluetoothGattService.java': '''package android.bluetooth; import java.util.*; public class BluetoothGattService {
@@ -232,11 +233,92 @@ public class BleRegression {
   for(int i=0;i<1000;i++)d.steamHaptic(new byte[]{(byte)0x81,0,10,0,20,0,5,0});
   boolean silentPulse=false;
   for(Object item:(Deque<?>)get(d,"writeQueue")){
-   byte[] cmd=(byte[])item;
+   byte[] cmd=(byte[])get(item,"bytes");
    silentPulse |= (cmd[0]&255)==0x8f && cmd[2]==1 && cmd[3]==0 && cmd[4]==0;
   }
   check(silentPulse && ((Deque<?>)get(d,"writeQueue")).size()<=32,
         "zero-duration stop survives BLE effect overload with nonzero repeat count");
+  // Haptic output reports go to their own characteristics (B5 = 0x80, B6 = 0x81, B7 = 0x82)
+  // without the report id, as the USB transport writes them to the wired unit; Steam's
+  // trackpad clicks are 0x81/0x82 reports. The feature conversion (0xEB/0x8F/0xEA on 34),
+  // which the firmware refused with GATT status 4 for 0x8F and 0xEA (fork.96 stream log), is
+  // only for links without those endpoints or whose endpoints refuse the report.
+  byte[] click={(byte)0x81,1,(byte)0x90,1,0,0,1,0};
+  BluetoothGattCharacteristic outRumble=new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",8);
+  BluetoothGattCharacteristic outPulse=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",12);
+  BluetoothGattCharacteristic outCmd=new BluetoothGattCharacteristic("100f6cb7-1735-4313-b402-38567131e5f3",12);
+  {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();notify.descriptor=null;notify.value=new byte[45];
+   old.service.chars.add(outRumble);old.service.chars.add(outPulse);old.service.chars.add(outCmd);old.service.chars.add(feat);old.service.chars.add(notify);
+   callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+   check(get(d,"writeChar")==feat&&old.targets.get(0)==feat,"output characteristics do not displace the feature endpoint for setup commands");
+   callback.onCharacteristicWrite(old,feat,0);callback.onCharacteristicWrite(old,feat,0);
+   check(!(boolean)get(d,"writeBusy")&&old.writes.size()==2,"setup writes drained");
+   d.steamHaptic(click);int w=old.writes.size()-1;
+   check(w==2&&old.targets.get(w)==outPulse&&Arrays.equals(old.writes.get(w),new byte[]{1,(byte)0x90,1,0,0,1,0}),
+         "a 0x81 pulse is written to B6 without its report id");
+   callback.onCharacteristicWrite(old,outPulse,0);
+   d.steamHaptic(new byte[]{(byte)0x82,0,2,(byte)0xf2});w=old.writes.size()-1;
+   check(w==3&&old.targets.get(w)==outCmd&&Arrays.equals(old.writes.get(w),new byte[]{0,2,(byte)0xf2}),
+         "a 0x82 command is written to B7 without its report id");
+   callback.onCharacteristicWrite(old,outCmd,0);
+   d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0x10,0x27,0,0x10,0x27,0});w=old.writes.size()-1;
+   check(w==4&&old.targets.get(w)==outRumble&&Arrays.equals(old.writes.get(w),new byte[]{0,0,0,0x10,0x27,0,0x10,0x27,0})&&(boolean)get(d,"rumbleActive"),
+         "a 0x80 rumble is written to B5 without its report id and keeps the re-send chain");
+   callback.onCharacteristicWrite(old,outRumble,0);
+   d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0,0,0,0,0,0});w=old.writes.size()-1;
+   check(w==5&&old.targets.get(w)==outRumble&&Arrays.equals(old.writes.get(w),new byte[9])&&!(boolean)get(d,"rumbleActive"),
+         "the host's zero 0x80 stops the chain with a zero report on B5");
+   callback.onCharacteristicWrite(old,outRumble,0);
+   d.rumble((short)20000,(short)0);w=old.writes.size()-1;
+   check(w==6&&old.targets.get(w)==outRumble&&old.writes.get(w)[3]==0x20&&old.writes.get(w)[4]==0x4e&&old.writes.get(w)[6]==0,
+         "plain host rumble is a 0x80 report on B5");
+   callback.onCharacteristicWrite(old,outRumble,0);
+   d.steamHaptic(new byte[]{(byte)0x83,1,2,3,4,5,6,7,8,9});
+   check(old.writes.size()==7,"a report with neither an offered characteristic nor a feature form is dropped");
+   d.stop();w=old.writes.size()-1;
+   check(w==7&&old.targets.get(w)==outRumble&&Arrays.equals(old.writes.get(w),new byte[9]),"stop() sends its motors-off as a zero 0x80 on B5");}
+  // A refusal from the controller (an ATT error, status < 0x80) re-frames the report with its
+  // id once, then falls back to the feature commands; a stack/link status does neither.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
+   old.service.chars.add(outPulse);old.service.chars.add(feat);old.service.chars.add(notify);
+   callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+   callback.onCharacteristicWrite(old,feat,0);callback.onCharacteristicWrite(old,feat,0);
+   d.steamHaptic(click);callback.onCharacteristicWrite(old,outPulse,133);int w=old.writes.size()-1;
+   check(w==3&&old.targets.get(w)==outPulse&&old.writes.get(w).length==7&&(int)get(d,"outputFraming")==0&&(boolean)get(d,"forceNoResponse"),
+         "a link-level write status re-sends without response and leaves the output framing alone");
+   d.steamHaptic(click); // queued behind the in-flight re-send
+   callback.onCharacteristicWrite(old,outPulse,4);w=old.writes.size()-1;
+   check(w==4&&old.targets.get(w)==outPulse&&Arrays.equals(old.writes.get(w),click),"a refused output report is retried with its report id");
+   callback.onCharacteristicWrite(old,outPulse,4);w=old.writes.size()-1;
+   check(w==5&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f&&old.writes.get(w).length==10,
+         "a report refused with its id too is replayed as the feature pulse");
+   callback.onCharacteristicWrite(old,feat,0);w=old.writes.size()-1;
+   check(w==6&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f,"a report queued for the output endpoint goes the feature way after the switch");
+   callback.onCharacteristicWrite(old,feat,0);
+   d.steamHaptic(click);w=old.writes.size()-1;
+   check(w==7&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f,"later reports on that link go as feature commands");
+   callback.onCharacteristicWrite(old,feat,0);
+   d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0x10,0x27,0,0x10,0x27,0});w=old.writes.size()-1;
+   check(w==8&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0xeb,"rumble on that link goes as the feature rumble command");
+   d.stop();}
+  // No output characteristics at all: the fork.27 feature conversion as before.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
+   old.service.chars.add(feat);old.service.chars.add(notify);
+   callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+   callback.onCharacteristicWrite(old,feat,0);callback.onCharacteristicWrite(old,feat,0);
+   d.steamHaptic(click);int w=old.writes.size()-1;
+   check(w==2&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f&&old.writes.get(w)[2]==1,"links without output endpoints replay pulses as feature commands");
+   callback.onCharacteristicWrite(old,feat,0);d.stop();w=old.writes.size()-1;
+   check(old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0xeb,"stop() on such a link sends the feature motors-off");}
+  // Output stops coalesce per side and survive a stalled link; the newest 0x80 supersedes older ones.
+  {d=make();set(d,"writeChar",command());((BluetoothGattCharacteristic[])get(d,"outputChars"))[0]=outRumble;((BluetoothGattCharacteristic[])get(d,"outputChars"))[1]=outPulse;set(d,"writeBusy",true);
+   for(int i=0;i<1000;i++)d.steamHaptic(new byte[]{(byte)0x81,(byte)(i%2),10,0,20,0,(byte)(i%3==0?0:5),0});
+   int stops=0;for(Object item:(Deque<?>)get(d,"writeQueue")){byte[] b=(byte[])get(item,"bytes");if((b[0]&255)==0x81&&b[6]==0&&b[7]==0)stops++;}
+   check(((Deque<?>)get(d,"writeQueue")).size()<=32&&stops==2,"output pulse stops are coalesced per side and kept under overload");
+   for(int i=0;i<10;i++)d.steamHaptic(new byte[]{(byte)0x80,0,0,0,(byte)(i+1),0,0,(byte)(i+1),0,0});
+   int rumbles=0;for(Object item:(Deque<?>)get(d,"writeQueue")){byte[] b=(byte[])get(item,"bytes");if((b[0]&255)==0x80)rumbles++;}
+   check(rumbles==1,"only the newest 0x80 state stays queued");
+   d.stop();}
 
   d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onConnectionStateChange(old,0,0);
   before=HandlerThread.quits;d.stop();check(HandlerThread.quits==before+1,"stop after disconnect quits the handler thread even without GATT");

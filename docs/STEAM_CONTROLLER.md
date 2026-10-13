@@ -32,10 +32,14 @@ later (ACL connected broadcast). Each driver:
    Report 0x47 is preferred when both exist. Every notify characteristic in `0x100f6c75..7c` is
    subscribed so command acknowledgements stay visible in the log, but only the selected state
    characteristic is decoded. Setup requires a successful state subscription; battery success
-   alone does not announce a controller. The `0x100f6cb5` characteristic is HID output report
-   0x80 (rumble), not the feature-command endpoint. Firmware that does not expose these endpoints
-   gets the earlier behaviour (logged as a warning): the first writable characteristic in
-   `0x100f6cb5..be` takes commands and any 45-byte report on the notify range is decoded as 0x45;
+   alone does not announce a controller. The HID output reports 0x80..0x89 each have their own
+   writable characteristic at `0x100f6cb5` + (id − 0x80) (B5 = 0x80 rumble, B6 = 0x81 pulse,
+   B7 = 0x82 haptic command, ...), mirroring the input reports on `0x100f6c75` + (id − 0x40)
+   (78 = 0x43 battery, 79 = 0x44 haptic acknowledgement); none of them is a feature-command
+   endpoint. The driver logs which output characteristics the firmware offers, with their
+   properties. Firmware that does not expose these endpoints gets the earlier behaviour (logged
+   as a warning): the first writable characteristic in `0x100f6cb5..be` takes commands and any
+   45-byte report on the notify range is decoded as 0x45;
 2. sends `ID_CLEAR_DIGITAL_MAPPINGS` (0x81) and `ID_SET_SETTINGS_VALUES` (0x87) with
    `SETTING_LIZARD_MODE = 0` and `SETTING_STEAM_WATCHDOG_ENABLE = 0`, then `SETTING_IMU_MODE =
    RAW_ACCEL | RAW_GYRO` (0x18) when motion is enabled; re-sends lizard-off once a second;
@@ -44,18 +48,23 @@ later (ACL connected broadcast). Each driver:
    IMU timestamp by two bytes. Only the selected state characteristic is decoded into Moonlight's `ControllerPacket` flags, triggers, sticks, two
    touchpads (`LiSendControllerTouchEvent2`, pads 0 and 1), gyro/accel and battery;
 4. announces itself as `LI_CTYPE_STEAM` with `ANALOG_TRIGGERS | RUMBLE | TOUCHPAD | DUAL_TOUCHPAD |
-   BATTERY_STATE | GRIP_SENSE | STICK_TOUCH | STEAM_HAPTIC` (+ `GYRO | ACCEL`). Plain host rumble
-   is driven with `ID_TRIGGER_RUMBLE_CMD` (0xEB, the firmware's motor drive, re-sent every 40 ms
-   against its ~50 ms safety timeout) or, with the "Rumble method" setting, with
-   `ID_TRIGGER_HAPTIC_PULSE` (0x8F) pulse trains (~160 Hz, magnitude as duty cycle; firmware side
-   1 = left/low, 0 = right/high) re-issued every 100 ms. A Vibepollo host presenting the Steam
-   Controller profile sends Steam's own haptic output reports instead (fork.27, `LI_CCAP_STEAM_HAPTIC`,
-   control packet 0x5504): 0x80 rumble is replayed as 0xEB, 0x81 pulses as 0x8F
-   (`MsgFireHapticPulse`: pad, duration, interval, count, gain, priority) and 0x82 commands as
-   `ID_TRIGGER_HAPTIC_CMD` (0xEA, `MsgTriggerHaptic`: side mask, command, intensity, gain). Before
-   fork.27 the pulse message was sent without its length byte, so the firmware never parsed it;
-   fork.28 frames it exactly as the Linux `hid-steam` driver does ({0x8F, 8, pad, duration,
-   interval, count, gain u8}). Writes go one at a time (the stack takes one GATT operation);
+   BATTERY_STATE | GRIP_SENSE | STICK_TOUCH | STEAM_HAPTIC` (+ `GYRO | ACCEL`). A Vibepollo host
+   presenting the Steam Controller profile sends Steam's own haptic output reports
+   (`LI_CCAP_STEAM_HAPTIC`, control packet 0x5504): 0x80 rumble, 0x81 pulse, 0x82 command, 0x83
+   LFO tone, 0x84 log sweep, 0x85 script. Since fork.97 each is written as-is, minus its report
+   id, to that report's own output characteristic (B5 = 0x80, B6 = 0x81, ...), the way the USB
+   transport writes it to the wired unit; Steam's trackpad clicks are 0x81 pulse pairs and 0x82
+   commands. A 0x80 is re-sent every 40 ms against the firmware's ~50 ms safety timeout until the
+   host's zero or the hold limit. Plain host rumble becomes a 0x80 report (or, with the "Rumble
+   method" setting, 0x81 pulse trains at ~160 Hz with the magnitude as duty cycle; side 1 = left/low,
+   0 = right/high, re-issued every 100 ms). Fork.27/28 instead converted the reports into the
+   firmware's feature messages on the command characteristic (0x80 → `ID_TRIGGER_RUMBLE_CMD`
+   0xEB, 0x81 → `ID_TRIGGER_HAPTIC_PULSE` 0x8F framed as hid-steam does, 0x82 →
+   `ID_TRIGGER_HAPTIC_CMD` 0xEA); the Ibex firmware refuses 0x8F and 0xEA over BLE (see the
+   follow-up section), so that conversion is now only the fallback for a link without the output
+   characteristics, or whose output characteristics refuse the report (first retried once with
+   the report id, then the feature form for the rest of the link; each switch is logged). Writes
+   go one at a time (the stack takes one GATT operation);
    a refused write is retried after 50 ms, a completion that never comes is cleared after 2 s,
    haptic commands go without response, a stall never evicts a motors-off, the keep-alive
    re-sends the whole settings triple, and `stop()` restores lizard mode through the same queue
@@ -204,6 +213,42 @@ They cannot establish physical Bluetooth compatibility. Retest on the affected d
    default controller behavior returns.
 4. Test rumble/haptics separately. Existing feature-command haptic conversion remains in place;
    physical haptic behavior is not established by the input-path fix.
+
+### fork.97: haptics over the output characteristics
+
+The fork.96 Galaxy XR test (stream_18, 2026-10-13) had every input working but no haptics at
+all: no trackpad clicks and nothing during Steam's controller test. The stream log shows why.
+Every replayed Steam haptic report was refused by the controller on the feature characteristic:
+
+```
+Steam Controller BLE: write failed, status 4 (cmd 0x8f, 10 bytes) (with response)
+Steam Controller BLE: write failed, status 4 (cmd 0xea, 21 bytes) (with response)
+```
+
+GATT status 4 is the ATT "invalid PDU" error from the peer: the Ibex firmware does not accept
+`ID_TRIGGER_HAPTIC_PULSE` (0x8F) or `ID_TRIGGER_HAPTIC_CMD` (0xEA) as feature commands over
+BLE (they are Deck-era haptic-engine messages; the setup commands 0x81/0x87 on the same
+characteristic are accepted). Steam's trackpad click is exactly those two reports (an 0x81
+pulse pair plus an 0x82 command, `libvirtualgamepad/docs/SC26_USB_COMPATIBILITY.md`), so the
+conversion could never have produced a click.
+
+The wired unit takes Steam's reports as HID output reports, and the Valve service has one
+writable characteristic per output report id, `0x100f6cb5` + (id − 0x80), just as it has one
+notify characteristic per input report id, `0x100f6c75` + (id − 0x40) (7A = 0x45, 7C = 0x47,
+78 = 0x43 battery, 79 = 0x44 haptic acknowledgement). Fork.97 therefore writes each report to
+its own characteristic, without the report id (the notifications omit theirs, and SDL's BLE
+driver for the first controller strips it the same way), and keeps the feature conversion only
+as a fallback. What to look for on the next device test:
+
+1. At connect: `Steam Controller BLE: output report characteristics (properties): 0x80 (0x..),
+   0x81 (0x..), ...`. Properties 0xc = write and write-without-response, 0x8 = write only.
+2. Touching a pad in Steam's UI should click, and the log should stay free of `write failed`
+   lines. A `output report refused without its id; retrying with the report id` line means the
+   firmware wants the id byte on the air (the driver switches for the rest of the link; report
+   it, and the default can change); a second refusal falls back to the feature commands, which
+   we know do not work, so haptics would stay silent.
+3. 0x44 acknowledgements now show as "n-byte report on 0x100f6c79" only when the short-report log
+   is still within its first five lines; they are expected after each zero-repeat pulse.
 
 If input still fails, include the app build, controller firmware, Android device/version and
 logcat spanning stream start, several button presses, and stream stop. For example:

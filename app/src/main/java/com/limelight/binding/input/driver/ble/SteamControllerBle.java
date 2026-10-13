@@ -21,6 +21,7 @@ import com.limelight.binding.input.driver.UsbDriverListener;
 import com.limelight.nvstream.jni.MoonBridge;
 
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.UUID;
 
 /**
@@ -49,11 +50,14 @@ public class SteamControllerBle extends SteamControllerInput {
     // The same tail as the two halves of the 128-bit value: bits 31..0 of the MSB, and the LSB.
     private static final long VALVE_UUID_MSB_TAIL = 0x17354313L;
     private static final long VALVE_UUID_LSB = 0xb40238567131e5f3L;
-    // Feature commands and HID output reports have distinct BLE endpoints (SDL's
-    // HIDDeviceBLESteamController): 0x34 takes feature commands, B5 is output report 0x80
-    // (rumble), 7A/7C carry input reports 0x45/0x47. Firmware that does not expose those
-    // falls back to what the first hardware test used: the first writable characteristic in
-    // B5..BE and any full-size report on the 75..7A notify range.
+    // Feature commands and HID reports have distinct BLE endpoints (SDL's
+    // HIDDeviceBLESteamController): 0x34 takes feature commands, each input report has its own
+    // notify characteristic at 0x75 + (id - 0x40) (7A = 0x45 state, 7C = 0x47 state, 78 = 0x43
+    // battery, 79 = 0x44 haptic acknowledgement), and each HID output report its own writable
+    // characteristic at 0xB5 + (id - 0x80) (B5 = 0x80 rumble, B6 = 0x81 pulse, B7 = 0x82 haptic
+    // command, ... BE = 0x89), without the report id, as the notifications omit theirs. Firmware
+    // that does not expose those falls back to what the first hardware test used: the first
+    // writable characteristic in B5..BE and any full-size report on the 75..7A notify range.
     private static final long FEATURE_SHORT = 0x100f6c34L;
     private static final long STATE_45_SHORT = 0x100f6c7aL;
     private static final long STATE_47_SHORT = 0x100f6c7cL;
@@ -63,6 +67,15 @@ public class SteamControllerBle extends SteamControllerInput {
     private static final long WRITE_SHORT_HIGH = 0x100f6cbeL;
     private static final long BATTERY_SHORT = 0x100f6c78L;
     private static final long PING_SHORT = 0x100f6c79L;
+    /** HID output reports 0x80..0x89, one characteristic each from WRITE_SHORT_LOW up. */
+    private static final int OUTPUT_REPORT_FIRST = 0x80;
+    private static final int OUTPUT_REPORT_COUNT = (int) (WRITE_SHORT_HIGH - WRITE_SHORT_LOW + 1);
+    private static final byte REPORT_RUMBLE = (byte) 0x80;
+    private static final byte REPORT_PULSE = (byte) 0x81;
+    /** Output report framing on the air: payload only (as the notifications), or with the id. */
+    private static final int OUTPUT_FRAMING_PAYLOAD = 0;
+    private static final int OUTPUT_FRAMING_WITH_ID = 1;
+    private static final int OUTPUT_FRAMING_UNUSABLE = 2;
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     private static final int DESIRED_MTU = 100;
     /** Below this the 45-byte state report cannot fit one notification. */
@@ -141,7 +154,11 @@ public class SteamControllerBle extends SteamControllerInput {
     private final ArrayDeque<BluetoothGattCharacteristic> pendingSubscriptions = new ArrayDeque<>();
     private volatile BluetoothGattCharacteristic stateChar;
     private boolean stateSubscribed;
-    private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<>();
+    // The output report characteristics by (id - 0x80); guarded by this.
+    private final BluetoothGattCharacteristic[] outputChars = new BluetoothGattCharacteristic[OUTPUT_REPORT_COUNT];
+    // Per link: how an output report is framed, learned from the first refusal.
+    private int outputFraming = OUTPUT_FRAMING_PAYLOAD;
+    private final ArrayDeque<Pending> writeQueue = new ArrayDeque<>();
     private boolean writeBusy;
     private long writeRejectedSinceMs = -1;
     // stop() in progress: the restore commands still go out, nothing else does.
@@ -152,8 +169,29 @@ public class SteamControllerBle extends SteamControllerInput {
     private int shortReportsLogged;
     /** Set after a with-response write was refused and the characteristic allows no-response. */
     private boolean forceNoResponse;
-    private byte[] inFlightCmd;
+    private Pending inFlight;
     private volatile boolean stopped;
+
+    /**
+     * One queued GATT write: a feature command {id, length, payload...} for the command
+     * characteristic, or a HID output report (id first, 0x80..0x89) for that report's own
+     * characteristic. The report keeps its id so it can be re-framed if the firmware refuses it.
+     */
+    private static final class Pending {
+        final BluetoothGattCharacteristic ch;
+        final byte[] bytes;
+        final boolean output;
+
+        Pending(BluetoothGattCharacteristic ch, byte[] bytes, boolean output) {
+            this.ch = ch;
+            this.bytes = bytes;
+            this.output = output;
+        }
+
+        int id() {
+            return bytes[0] & 0xFF;
+        }
+    }
     private int reconnectAttempts;
     private boolean everConnected;
 
@@ -303,9 +341,9 @@ public class SteamControllerBle extends SteamControllerInput {
             closing = restore;
             if (restore) {
                 writeQueue.clear();
-                writeQueue.add(rumbleCommand(0, 0));
-                writeQueue.add(new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS, 0});
-                writeQueue.add(new byte[]{ID_LOAD_DEFAULT_SETTINGS, 0});
+                writeQueue.add(motorsOff());
+                writeQueue.add(new Pending(writeChar, new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS, 0}, false));
+                writeQueue.add(new Pending(writeChar, new byte[]{ID_LOAD_DEFAULT_SETTINGS, 0}, false));
             }
         }
         handler.removeCallbacksAndMessages(null);
@@ -415,6 +453,8 @@ public class SteamControllerBle extends SteamControllerInput {
                 stateChar = null;
                 writeChar = null;
                 batteryChar = null;
+                Arrays.fill(outputChars, null);
+                outputFraming = OUTPUT_FRAMING_PAYLOAD;
                 BluetoothGattCharacteristic legacyWrite = null;
                 BluetoothGattCharacteristic previousState = null;
                 ArrayDeque<BluetoothGattCharacteristic> otherNotify = new ArrayDeque<>();
@@ -437,11 +477,23 @@ public class SteamControllerBle extends SteamControllerInput {
                     }
                     if (shortId == FEATURE_SHORT && writable) {
                         writeChar = ch;
-                    } else if (legacyWrite == null && writable
-                            && shortId >= WRITE_SHORT_LOW && shortId <= WRITE_SHORT_HIGH) {
-                        legacyWrite = ch;
+                    } else if (writable && shortId >= WRITE_SHORT_LOW && shortId <= WRITE_SHORT_HIGH) {
+                        outputChars[(int) (shortId - WRITE_SHORT_LOW)] = ch;
+                        if (legacyWrite == null) {
+                            legacyWrite = ch;
+                        }
                     }
                 }
+                StringBuilder outputs = new StringBuilder();
+                for (int i = 0; i < outputChars.length; i++) {
+                    if (outputChars[i] != null) {
+                        outputs.append(outputs.length() == 0 ? "" : ", ").append("0x")
+                                .append(Integer.toHexString(OUTPUT_REPORT_FIRST + i))
+                                .append(" (0x").append(Integer.toHexString(outputChars[i].getProperties())).append(')');
+                    }
+                }
+                LimeLog.info("Steam Controller BLE: output report characteristics (properties): "
+                        + (outputs.length() == 0 ? "none; haptics go as feature commands" : outputs));
                 if (previousState != null) {
                     otherNotify.add(previousState);
                 }
@@ -516,14 +568,18 @@ public class SteamControllerBle extends SteamControllerInput {
                 }
                 return;
             }
-            byte[] failed;
+            Pending failed;
             boolean withResponse;
+            int framing;
             synchronized (SteamControllerBle.this) {
-                failed = inFlightCmd;
-                inFlightCmd = null;
+                failed = inFlight;
+                inFlight = null;
                 withResponse = !forceNoResponse;
+                framing = outputFraming;
             }
             boolean retryWithoutResponse = false;
+            int newFraming = framing;
+            Pending retry = null;
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 LimeLog.warning("Steam Controller BLE: write failed, status " + status + describeCommand(failed)
                         + (withResponse ? " (with response)" : " (without response)"));
@@ -533,15 +589,49 @@ public class SteamControllerBle extends SteamControllerInput {
                         && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
                     LimeLog.warning("Steam Controller BLE: switching to write-without-response for this link");
                     retryWithoutResponse = true;
+                } else if (failed != null && failed.output && status > 0 && status < 0x80) {
+                    // An ATT error from the controller itself (not a stack/link code): the
+                    // firmware refused the report as framed. Try it once with its report id;
+                    // if that is refused too, the link goes back to the feature-command
+                    // conversion for the haptic reports it has one for.
+                    if (framing == OUTPUT_FRAMING_PAYLOAD) {
+                        newFraming = OUTPUT_FRAMING_WITH_ID;
+                        retry = failed;
+                        LimeLog.warning("Steam Controller BLE: output report refused without its id; retrying with the report id");
+                    } else if (framing == OUTPUT_FRAMING_WITH_ID) {
+                        newFraming = OUTPUT_FRAMING_UNUSABLE;
+                        retry = featureFallback(failed.bytes);
+                        LimeLog.warning("Steam Controller BLE: output report refused with its id too; "
+                                + "haptics go as feature commands for this link");
+                    }
                 }
             }
             handler.removeCallbacks(writeWatchdog);
             boolean drained;
             synchronized (SteamControllerBle.this) {
                 writeBusy = false;
-                if (retryWithoutResponse && g == gatt) {
-                    forceNoResponse = true;
-                    writeQueue.addFirst(failed);
+                if (g == gatt) {
+                    if (retryWithoutResponse) {
+                        forceNoResponse = true;
+                        writeQueue.addFirst(failed);
+                    } else if (newFraming != framing) {
+                        outputFraming = newFraming;
+                        if (newFraming == OUTPUT_FRAMING_UNUSABLE) {
+                            // Reports queued for the output endpoints go the feature way too.
+                            ArrayDeque<Pending> kept = new ArrayDeque<>();
+                            for (Pending queued : writeQueue) {
+                                Pending replacement = queued.output ? featureFallback(queued.bytes) : queued;
+                                if (replacement != null) {
+                                    kept.add(replacement);
+                                }
+                            }
+                            writeQueue.clear();
+                            writeQueue.addAll(kept);
+                        }
+                        if (retry != null) {
+                            writeQueue.addFirst(retry);
+                        }
+                    }
                 }
                 drained = closing && writeQueue.isEmpty();
             }
@@ -575,7 +665,8 @@ public class SteamControllerBle extends SteamControllerInput {
             if (shortId == BATTERY_SHORT) {
                 handleBattery(data);
             } else if (shortId == PING_SHORT) {
-                // ack/ping-pong tied to our writes; nothing to do
+                // Report 0x44: the firmware's acknowledgement of a haptic output report
+                // (one per zero-repeat pulse on the wired unit); nothing to do.
             } else if (data.length >= 45 && carriesState(ch)) {
                 // Notifications omit the HID report ID. Both layouts are 45 bytes:
                 // 0x47 adds a pad timestamp and shortens the IMU timestamp by two bytes.
@@ -692,11 +783,13 @@ public class SteamControllerBle extends SteamControllerInput {
             pendingSubscriptions.clear();
             stateSubscribed = false;
             stateChar = null;
+            Arrays.fill(outputChars, null);
+            outputFraming = OUTPUT_FRAMING_PAYLOAD;
             rumbleActive = false;
             rumbleReport = null;
             shortReportsLogged = 0;
             forceNoResponse = false;
-            inFlightCmd = null;
+            inFlight = null;
         }
         if (announced) {
             announced = false;
@@ -730,12 +823,12 @@ public class SteamControllerBle extends SteamControllerInput {
 
     // ----- commands -----
 
-    /** ID_SET_SETTINGS_VALUES: 0x87, len, then (id, lo, hi) triples. */
-    private static String describeCommand(byte[] cmd) {
-        if (cmd == null || cmd.length == 0) {
+    private static String describeCommand(Pending p) {
+        if (p == null || p.bytes.length == 0) {
             return "";
         }
-        return " (cmd 0x" + Integer.toHexString(cmd[0] & 0xFF) + ", " + cmd.length + " bytes)";
+        return (p.output ? " (output report 0x" : " (cmd 0x") + Integer.toHexString(p.id()) + ", "
+                + p.bytes.length + (p.output ? " bytes with id)" : " bytes)");
     }
 
     private static String hex(byte[] data) {
@@ -748,6 +841,7 @@ public class SteamControllerBle extends SteamControllerInput {
         return sb.toString();
     }
 
+    /** ID_SET_SETTINGS_VALUES: 0x87, len, then (id, lo, hi) triples. */
     private static byte[] settings(int... idValuePairs) {
         int n = idValuePairs.length / 2;
         byte[] cmd = new byte[2 + 3 * n];
@@ -762,41 +856,125 @@ public class SteamControllerBle extends SteamControllerInput {
         return cmd;
     }
 
-    /** A motors-off: a zero rumble command or a zero-count pulse. Never evicted from the queue. */
-    private static boolean isStop(byte[] cmd) {
-        if (cmd.length >= 9 && cmd[0] == ID_TRIGGER_RUMBLE_CMD) {
-            return cmd[5] == 0 && cmd[6] == 0 && cmd[7] == 0 && cmd[8] == 0;
+    /**
+     * The actuator a motors-off addresses, or -1 for an effect: a zero rumble (output 0x80 or
+     * feature 0xEB), a zero-count or zero-duration pulse per side (0x81 / 0x8F), or an "off"
+     * haptic command per side (0x82 / 0xEA). A stop is never evicted from the queue, and the
+     * newest stop for an actuator supersedes the older ones still queued.
+     */
+    private static int stopKey(Pending p) {
+        byte[] b = p.bytes;
+        if (p.output) {
+            switch (p.id()) {
+                case 0x80:
+                    return b.length >= 10 && b[4] == 0 && b[5] == 0 && b[7] == 0 && b[8] == 0 ? 0x8000 : -1;
+                case 0x81:
+                    // A zero on-duration is also silent, even when the repeat count is nonzero.
+                    return b.length >= 8 && ((b[2] == 0 && b[3] == 0) || (b[6] == 0 && b[7] == 0))
+                            ? (0x8100 | (b[1] & 0xFF)) : -1;
+                case 0x82:
+                    return b.length >= 4 && b[2] == 0 ? (0x8200 | (b[1] & 0xFF)) : -1;
+                default:
+                    return -1;
+            }
         }
-        if (cmd.length >= 9 && cmd[0] == ID_TRIGGER_HAPTIC_PULSE) {
-            // A zero on-duration is also silent, even when the repeat count is nonzero.
+        if (b.length >= 9 && b[0] == ID_TRIGGER_RUMBLE_CMD) {
+            return b[5] == 0 && b[6] == 0 && b[7] == 0 && b[8] == 0 ? 0xEB00 : -1;
+        }
+        if (b.length >= 9 && b[0] == ID_TRIGGER_HAPTIC_PULSE) {
             // Keep the same stop semantics as the driver, host and native callback queue.
-            return (cmd[3] == 0 && cmd[4] == 0) || (cmd[7] == 0 && cmd[8] == 0);
+            return (b[3] == 0 && b[4] == 0) || (b[7] == 0 && b[8] == 0) ? (0x8F00 | (b[2] & 0xFF)) : -1;
         }
-        if (cmd.length >= 4 && cmd[0] == ID_TRIGGER_HAPTIC_CMD) {
-            return cmd[3] == 0;
+        if (b.length >= 4 && b[0] == ID_TRIGGER_HAPTIC_CMD) {
+            return b[3] == 0 ? (0xEA00 | (b[2] & 0xFF)) : -1;
         }
-        return false;
+        return -1;
     }
 
-    private static boolean sameStopTarget(byte[] a, byte[] b) {
-        return a[0] == b[0] && (a[0] == ID_TRIGGER_RUMBLE_CMD || a[2] == b[2]);
-    }
-
+    /** Queues a feature command on the command characteristic. */
     private void enqueueWrite(byte[] cmd) {
+        BluetoothGattCharacteristic ch = writeChar;
+        if (ch == null) {
+            return;
+        }
+        enqueue(new Pending(ch, cmd, false));
+    }
+
+    /**
+     * Queues a HID output report (id first) on that report's own characteristic. False when
+     * this link offers none for it, or its output endpoints refused the framing (then the
+     * caller falls back to the feature-command form, where one exists).
+     */
+    private boolean enqueueOutput(byte[] report) {
+        Pending p = outputPending(report);
+        if (p == null) {
+            return false;
+        }
+        enqueue(p);
+        return true;
+    }
+
+    private Pending outputPending(byte[] report) {
+        BluetoothGattCharacteristic ch = outputChar(report[0] & 0xFF);
+        return ch == null ? null : new Pending(ch, report, true);
+    }
+
+    /** The output characteristic for a report id on this link, if offered and not refused. */
+    private synchronized BluetoothGattCharacteristic outputChar(int id) {
+        int index = id - OUTPUT_REPORT_FIRST;
+        if (outputFraming == OUTPUT_FRAMING_UNUSABLE || index < 0 || index >= outputChars.length) {
+            return null;
+        }
+        return outputChars[index];
+    }
+
+    /** Motors off: a zero 0x80 report when the firmware offers that endpoint, else the zero rumble command. */
+    private Pending motorsOff() {
+        Pending p = outputPending(plainRumbleReport(0, 0));
+        return p != null ? p : new Pending(writeChar, rumbleCommand(0, 0), false);
+    }
+
+    /**
+     * The feature-command form of a haptic output report, for a link whose output endpoints
+     * refuse writes: 0x80 as ID_TRIGGER_RUMBLE_CMD, 0x81 as ID_TRIGGER_HAPTIC_PULSE, 0x82 as
+     * ID_TRIGGER_HAPTIC_CMD. The LFO tone, log sweep and script reports have none known here.
+     */
+    private Pending featureFallback(byte[] r) {
+        BluetoothGattCharacteristic ch = writeChar;
+        if (ch == null) {
+            return null;
+        }
+        switch (r[0] & 0xFF) {
+            case 0x80:
+                return r.length >= 10 ? new Pending(ch, rumbleCommandFromReport(r), false) : null;
+            case 0x81:
+                return r.length >= 8 ? new Pending(ch, firePulse(r[1], u16(r, 2), u16(r, 4), u16(r, 6)), false) : null;
+            case 0x82:
+                return r.length >= 4 ? new Pending(ch, triggerHaptic(r[1], r[2], r[3]), false) : null;
+            default:
+                return null;
+        }
+    }
+
+    private void enqueue(Pending p) {
         synchronized (this) {
             if (closing || stopped || gatt == null || writeChar == null) {
                 return;
             }
-            if (isStop(cmd)) {
+            int stop = stopKey(p);
+            if (stop >= 0) {
                 // The newest stop supersedes older stops for the same actuator, and
                 // stays after any intervening effects. Never accumulate an unbounded
                 // queue of "protected" stop commands while GATT is stalled.
-                writeQueue.removeIf(queued -> isStop(queued) && sameStopTarget(queued, cmd));
+                writeQueue.removeIf(queued -> stopKey(queued) == stop);
+            } else if (p.output && p.id() == 0x80) {
+                // Latest rumble state wins; an older queued 0x80, stop or not, is obsolete.
+                writeQueue.removeIf(queued -> queued.output && queued.id() == 0x80);
             }
-            if (cmd[0] == ID_SET_SETTINGS_VALUES) {
+            if (!p.output && p.bytes[0] == ID_SET_SETTINGS_VALUES) {
                 // One keep-alive waiting is enough; a stalled link must not fill up with them.
-                for (byte[] queued : writeQueue) {
-                    if (queued[0] == ID_SET_SETTINGS_VALUES) {
+                for (Pending queued : writeQueue) {
+                    if (!queued.output && queued.bytes[0] == ID_SET_SETTINGS_VALUES) {
                         return;
                     }
                 }
@@ -804,9 +982,9 @@ public class SteamControllerBle extends SteamControllerInput {
             if (writeQueue.size() >= MAX_PENDING_WRITES) {
                 // Drop the oldest command that is not a motors-off, so a stall cannot
                 // leave a pad buzzing by evicting the stop and keeping the start.
-                byte[] victim = null;
-                for (byte[] queued : writeQueue) {
-                    if (!isStop(queued)) {
+                Pending victim = null;
+                for (Pending queued : writeQueue) {
+                    if (stopKey(queued) < 0) {
                         victim = queued;
                         break;
                     }
@@ -817,7 +995,7 @@ public class SteamControllerBle extends SteamControllerInput {
                     return;
                 }
             }
-            writeQueue.add(cmd);
+            writeQueue.add(p);
         }
         flushWrites();
     }
@@ -839,39 +1017,43 @@ public class SteamControllerBle extends SteamControllerInput {
     @SuppressLint("MissingPermission")
     private void flushWrites() {
         BluetoothGatt g;
-        BluetoothGattCharacteristic ch;
-        byte[] cmd;
+        Pending p;
+        byte[] value;
         synchronized (this) {
             g = gatt;
-            ch = writeChar;
-            if (writeBusy || g == null || ch == null || (stopped && !closing)) {
+            if (writeBusy || g == null || writeChar == null || (stopped && !closing)) {
                 return;
             }
-            cmd = writeQueue.poll();
-            if (cmd == null) {
+            p = writeQueue.poll();
+            if (p == null) {
                 return;
             }
             writeBusy = true;
+            // An output report goes without its id, as the notifications arrive, unless the
+            // firmware refused that framing on this link.
+            value = p.output && outputFraming == OUTPUT_FRAMING_PAYLOAD
+                    ? Arrays.copyOfRange(p.bytes, 1, p.bytes.length) : p.bytes;
         }
+        BluetoothGattCharacteristic ch = p.ch;
         boolean accepted = false;
         try {
-            // Haptics are fire-and-forget and frequent (40 ms rumble re-sends, 100 ms clicks):
-            // without a response each costs no round trip on the link. The stack still
+            // Haptics are fire-and-forget and frequent (40 ms rumble re-sends, Steam's click
+            // pairs): without a response each costs no round trip on the link. The stack still
             // reports the write complete, so the one-at-a-time pacing holds either way.
-            boolean haptic = cmd[0] == ID_TRIGGER_RUMBLE_CMD || cmd[0] == ID_TRIGGER_HAPTIC_CMD
-                    || cmd[0] == ID_TRIGGER_HAPTIC_PULSE;
+            boolean haptic = p.output || p.bytes[0] == ID_TRIGGER_RUMBLE_CMD || p.bytes[0] == ID_TRIGGER_HAPTIC_CMD
+                    || p.bytes[0] == ID_TRIGGER_HAPTIC_PULSE;
             boolean noResponse = (haptic || forceNoResponse)
                     && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
             ch.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                     : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
-            ch.setValue(cmd);
+            ch.setValue(value);
             accepted = g.writeCharacteristic(ch);
         } catch (SecurityException | IllegalStateException ignored) {
         }
         if (accepted) {
             synchronized (this) {
-                if (g != gatt || ch != writeChar) return;
-                inFlightCmd = cmd;
+                if (g != gatt || writeChar == null) return;
+                inFlight = p;
                 writeRejectedSinceMs = -1;
                 handler.removeCallbacks(writeWatchdog);
                 handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
@@ -884,12 +1066,12 @@ public class SteamControllerBle extends SteamControllerInput {
         synchronized (this) {
             // A failed write may race link loss. Never put its command into a
             // replacement connection's queue or clear that connection's busy flag.
-            if (g != gatt || ch != writeChar || (stopped && !closing)) return;
+            if (g != gatt || writeChar == null || (stopped && !closing)) return;
             writeBusy = false;
             long now = SystemClock.uptimeMillis();
             if (writeRejectedSinceMs < 0) writeRejectedSinceMs = now;
             expired = now - writeRejectedSinceMs >= WRITE_WATCHDOG_MS;
-            writeQueue.addFirst(cmd);
+            writeQueue.addFirst(p);
         }
         handler.removeCallbacks(retryFlush);
         if (expired) {
@@ -953,39 +1135,72 @@ public class SteamControllerBle extends SteamControllerInput {
                 // A host rumble report, re-issued the way Steam and SDL keep the firmware's
                 // ~50 ms safety timeout from cutting it off.
                 lastRumbleWriteMs = now;
-                enqueueWrite(rumbleCommandFromReport(rumbleReport));
+                sendRumble(rumbleReport);
                 handler.postDelayed(this, Math.min(RUMBLE_CMD_RESEND_MS, remaining));
             } else if (rumbleMethod == RUMBLE_METHOD_PULSES) {
                 // Bound the train to the hold window so the last one ends on time by itself.
                 int trainMs = (int) Math.min(RUMBLE_TRAIN_MS, remaining);
                 int repeat = Math.max(1, trainMs * 1000 / RUMBLE_PERIOD_US);
-                enqueueWrite(hapticPulse(SIDE_LEFT, rumbleLow, repeat));
-                enqueueWrite(hapticPulse(SIDE_RIGHT, rumbleHigh, repeat));
+                sendPulseTrain(SIDE_LEFT, rumbleLow, repeat);
+                sendPulseTrain(SIDE_RIGHT, rumbleHigh, repeat);
                 handler.postDelayed(this, Math.min(RUMBLE_REFRESH_MS, remaining));
             } else {
                 lastRumbleWriteMs = now;
-                enqueueWrite(rumbleCommand(rumbleLowRaw, rumbleHighRaw));
+                sendRumble(plainRumbleReport(rumbleLowRaw, rumbleHighRaw));
                 handler.postDelayed(this, Math.min(RUMBLE_CMD_RESEND_MS, remaining));
             }
         }
     };
 
-    /** Motors off, whichever way they were driven (a zero rumble command is also a stop). */
+    /** Motors off, whichever way they were driven (a zero rumble is also a stop). */
     private void stopRumble() {
         if (rumbleMethod == RUMBLE_METHOD_PULSES && rumbleReport == null) {
-            enqueueWrite(hapticPulse(SIDE_LEFT, 0f, 0));
-            enqueueWrite(hapticPulse(SIDE_RIGHT, 0f, 0));
+            sendPulse(SIDE_LEFT, 0, 0, 0);
+            sendPulse(SIDE_RIGHT, 0, 0, 0);
         } else {
-            enqueueWrite(rumbleCommand(0, 0));
+            sendRumble(plainRumbleReport(0, 0));
         }
         rumbleReport = null;
     }
 
+    /** A 0x80 rumble report on its output characteristic, or the same values as ID_TRIGGER_RUMBLE_CMD. */
+    private void sendRumble(byte[] report) {
+        if (!enqueueOutput(report)) {
+            enqueueWrite(rumbleCommandFromReport(report));
+        }
+    }
+
+    /** A 0x81 pulse on its output characteristic, or as ID_TRIGGER_HAPTIC_PULSE (repeat 0 = stop that side). */
+    private void sendPulse(byte side, int onUs, int offUs, int repeat) {
+        byte[] report = {REPORT_PULSE, side,
+                (byte) onUs, (byte) (onUs >> 8),
+                (byte) offUs, (byte) (offUs >> 8),
+                (byte) repeat, (byte) (repeat >> 8)};
+        if (!enqueueOutput(report)) {
+            enqueueWrite(firePulse(side, onUs, offUs, repeat));
+        }
+    }
+
+    /** A pulse train of the given duty cycle on one pad (repeat 0 = stop the running train). */
+    private void sendPulseTrain(byte side, float magnitude, int repeat) {
+        int onUs = 0, offUs = 0;
+        if (magnitude > 0.01f && repeat > 0) {
+            float duty = 0.25f + 0.72f * Math.min(1f, magnitude);
+            onUs = (int) (RUMBLE_PERIOD_US * duty);
+            offUs = RUMBLE_PERIOD_US - onUs;
+        } else {
+            repeat = 0;
+        }
+        sendPulse(side, onUs, offUs, repeat);
+    }
+
     /**
-     * A host's Steam Controller haptic output report, replayed with the firmware's feature
-     * messages: 0x80 rumble as ID_TRIGGER_RUMBLE_CMD (re-sent until the host's zero or the hold
-     * limit), 0x81 pulse as ID_TRIGGER_HAPTIC_PULSE, 0x82 command as ID_TRIGGER_HAPTIC_CMD. The
-     * LFO tone, log sweep and script reports have no feature-message form known to this driver.
+     * A host's Steam Controller haptic output report (0x80 rumble, 0x81 pulse, 0x82 command,
+     * 0x83 LFO tone, 0x84 log sweep, 0x85 script), written as-is to that report's own
+     * characteristic, the way the USB transport writes it to the wired unit: Steam's trackpad
+     * clicks are 0x81 pulse pairs and 0x82 commands. A 0x80 is re-sent until the host's zero or
+     * the hold limit. Links without the output endpoints replay 0x80..0x82 as the firmware's
+     * feature messages instead.
      */
     @Override
     public void steamHaptic(byte[] report) {
@@ -997,56 +1212,73 @@ public class SteamControllerBle extends SteamControllerInput {
             if (stopped || gatt == null || writeChar == null) {
                 return;
             }
-            switch (copy[0] & 0xFF) {
-                case 0x80: {
-                    if (copy.length < 10) {
-                        return;
+            int id = copy[0] & 0xFF;
+            int size = outputSize(id);
+            if (size == 0 || copy.length < size) {
+                return;
+            }
+            // Invalid side values must not consume the finite stop-priority queue.
+            if ((id == 0x81 || id == 0x82) && (copy[1] & 0xFF) > 2) {
+                return;
+            }
+            byte[] r = copy.length == size ? copy : Arrays.copyOf(copy, size);
+            if (id != 0x80) {
+                if (!enqueueOutput(r)) {
+                    Pending fallback = featureFallback(r);
+                    if (fallback != null) {
+                        enqueue(fallback);
                     }
-                    handler.removeCallbacks(rumbleRefresh);
-                    boolean silent = u16(copy, 4) == 0 && u16(copy, 7) == 0;
-                    if (silent) {
-                        if (rumbleActive) {
-                            rumbleActive = false;
-                            stopRumble();
-                        }
-                        rumbleReport = null;
-                        return;
-                    }
-                    long now = SystemClock.uptimeMillis();
-                    boolean chainRunning = rumbleActive && rumbleReport != null;
-                    rumbleReport = copy;
-                    rumbleDeadline = rumbleHoldMs == RUMBLE_HOLD_UNLIMITED
-                            ? Long.MAX_VALUE : now + rumbleHoldMs;
-                    rumbleActive = true;
-                    if (chainRunning && now - lastRumbleWriteMs < RUMBLE_CMD_MIN_GAP_MS) {
-                        // Steam re-sends every 40-50 ms itself; writing on every one of those
-                        // on top of our own 40 ms chain would double the link traffic. The
-                        // chain picks the new values up on its next write.
-                        handler.postDelayed(rumbleRefresh, Math.max(1, RUMBLE_CMD_RESEND_MS - (now - lastRumbleWriteMs)));
-                    } else {
-                        rumbleRefresh.run();
-                    }
-                    break;
                 }
-                case 0x81: {
-                    if (copy.length < 8 || (copy[1] & 0xFF) > 2) {
-                        return;
-                    }
-                    // side, on_us, off_us, repeat; a zero-repeat pulse is Steam's stop for that side
-                    enqueueWrite(firePulse(copy[1], u16(copy, 2), u16(copy, 4), u16(copy, 6)));
-                    break;
+                return;
+            }
+            handler.removeCallbacks(rumbleRefresh);
+            boolean silent = u16(r, 4) == 0 && u16(r, 7) == 0;
+            if (silent) {
+                if (rumbleActive) {
+                    rumbleActive = false;
+                    stopRumble();
                 }
-                case 0x82: {
-                    if (copy.length < 4 || (copy[1] & 0xFF) > 2) {
-                        return;
-                    }
-                    enqueueWrite(triggerHaptic(copy[1], copy[2], copy[3]));
-                    break;
-                }
-                default:
-                    break;
+                rumbleReport = null;
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            boolean chainRunning = rumbleActive && rumbleReport != null;
+            rumbleReport = r;
+            rumbleDeadline = rumbleHoldMs == RUMBLE_HOLD_UNLIMITED
+                    ? Long.MAX_VALUE : now + rumbleHoldMs;
+            rumbleActive = true;
+            if (chainRunning && now - lastRumbleWriteMs < RUMBLE_CMD_MIN_GAP_MS) {
+                // Steam re-sends every 40-50 ms itself; writing on every one of those
+                // on top of our own 40 ms chain would double the link traffic. The
+                // chain picks the new values up on its next write.
+                handler.postDelayed(rumbleRefresh, Math.max(1, RUMBLE_CMD_RESEND_MS - (now - lastRumbleWriteMs)));
+            } else {
+                rumbleRefresh.run();
             }
         });
+    }
+
+    /** Wire size, id included, of the haptic output reports the host forwards (sc26_usb.h); 0 for others. */
+    private static int outputSize(int id) {
+        switch (id) {
+            case 0x80: return 10;
+            case 0x81: return 8;
+            case 0x82: return 4;
+            case 0x83: return 10;
+            case 0x84: return 9;
+            case 0x85: return 4;
+            default: return 0;
+        }
+    }
+
+    /** A 0x80 rumble report {type, intensity, left{speed, gain}, right{speed, gain}} from plain motor values. */
+    private static byte[] plainRumbleReport(int leftSpeed, int rightSpeed) {
+        return new byte[]{
+                REPORT_RUMBLE,
+                0,                                  // type
+                0, 0,                               // intensity
+                (byte) leftSpeed, (byte) (leftSpeed >> 8), 0,
+                (byte) rightSpeed, (byte) (rightSpeed >> 8), 0};
     }
 
     /** ID_TRIGGER_RUMBLE_CMD: MsgSimpleRumbleCmd {type, intensity, left speed, right speed, left gain, right gain}. */
@@ -1104,19 +1336,6 @@ public class SteamControllerBle extends SteamControllerInput {
     /** Pulse side ids; the firmware numbers them the other way round from the kernel's pad ids. */
     private static final byte SIDE_RIGHT = 0;
     private static final byte SIDE_LEFT = 1;
-
-    /** A pulse train of the given duty cycle on one pad (repeat 0 = stop the running train). */
-    private static byte[] hapticPulse(byte side, float magnitude, int repeat) {
-        int onUs = 0, offUs = 0;
-        if (magnitude > 0.01f && repeat > 0) {
-            float duty = 0.25f + 0.72f * Math.min(1f, magnitude);
-            onUs = (int) (RUMBLE_PERIOD_US * duty);
-            offUs = RUMBLE_PERIOD_US - onUs;
-        } else {
-            repeat = 0;
-        }
-        return firePulse(side, onUs, offUs, repeat);
-    }
 
     @Override
     public void rumbleTriggers(short leftTrigger, short rightTrigger) {
