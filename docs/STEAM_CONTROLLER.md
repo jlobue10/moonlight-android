@@ -27,11 +27,15 @@ Controller (2026) over Bluetooth*, default on). It looks through bonded devices 
 later (ACL connected broadcast). Each driver:
 
 1. connects GATT (`TRANSPORT_LE`, high connection priority, MTU 100), discovers the Valve service,
-   uses feature characteristic `0x100f6c34` for commands, and subscribes to state characteristic
+   uses feature characteristic `0x100f6c34` for commands, and decodes state from characteristic
    `0x100f6c7c` (report 0x47) or `0x100f6c7a` (report 0x45), plus battery `0x100f6c78` when available.
-   Report 0x47 is preferred when both exist. Setup requires a successful state subscription;
-   battery success alone does not announce a controller. The `0x100f6cb5` characteristic is
-   HID output report 0x80 (rumble), not the feature-command endpoint;
+   Report 0x47 is preferred when both exist. Every notify characteristic in `0x100f6c75..7c` is
+   subscribed so command acknowledgements stay visible in the log, but only the selected state
+   characteristic is decoded. Setup requires a successful state subscription; battery success
+   alone does not announce a controller. The `0x100f6cb5` characteristic is HID output report
+   0x80 (rumble), not the feature-command endpoint. Firmware that does not expose these endpoints
+   gets the earlier behaviour (logged as a warning): the first writable characteristic in
+   `0x100f6cb5..be` takes commands and any 45-byte report on the notify range is decoded as 0x45;
 2. sends `ID_CLEAR_DIGITAL_MAPPINGS` (0x81) and `ID_SET_SETTINGS_VALUES` (0x87) with
    `SETTING_LIZARD_MODE = 0` and `SETTING_STEAM_WATCHDOG_ENABLE = 0`, then `SETTING_IMU_MODE =
    RAW_ACCEL | RAW_GYRO` (0x18) when motion is enabled; re-sends lizard-off once a second;

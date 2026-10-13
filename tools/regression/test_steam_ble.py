@@ -158,7 +158,32 @@ public class BleRegression {
         "lizard/watchdog/IMU settings use feature framing on characteristic 34");
   d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(output);old.service.chars.add(notify);before=added;
   ((BluetoothGattCallback)get(d,"gattCallback")).onServicesDiscovered(old,0);
-  check(old.closed && added==before,"output-only service cannot masquerade as a feature-command service");
+  check(!old.closed && added==before+1 && get(d,"writeChar")==output,
+        "firmware without feature characteristic 34 falls back to the B5..BE command endpoint");
+  check(output.value!=null && output.value[0]==(byte)0x81,"fallback endpoint still receives the setup commands");
+  // Firmware exposing neither 7A nor 7C: full-size reports on the 75..7A range still decode
+  // (fork.92 behaviour), while battery/ping and short reports do not.
+  d=make();old=(BluetoothGatt)get(d,"gatt");
+  BluetoothGattCharacteristic legacy=new BluetoothGattCharacteristic("100f6c75-1735-4313-b402-38567131e5f3",16);
+  BluetoothGattCharacteristic legacy2=new BluetoothGattCharacteristic("100f6c76-1735-4313-b402-38567131e5f3",16);
+  old.service.chars.add(output);old.service.chars.add(legacy);old.service.chars.add(legacy2);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  check(!old.closed && added==before+1 && get(d,"stateChar")==null,"legacy notify range without 7A/7C still announces a controller");
+  before=states;legacy2.value=new byte[45];legacy2.value[1]=1;callback.onCharacteristicChanged(old,legacy2);
+  check(states==before+1,"legacy range decodes a full-size report from any notify characteristic");
+  legacy2.value=new byte[8];callback.onCharacteristicChanged(old,legacy2);
+  check(states==before+1,"legacy range ignores short acknowledgement reports");
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(output);before=added;
+  ((BluetoothGattCallback)get(d,"gattCallback")).onServicesDiscovered(old,0);
+  check(old.closed && added==before,"a service without any input characteristic cannot announce a controller");
+  // With 7A present the range is still subscribed (acks/pings stay visible) but only 7A decodes.
+  d=make();old=(BluetoothGatt)get(d,"gatt");old.service.chars.add(command());old.service.chars.add(legacy);old.service.chars.add(notify);before=added;
+  callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+  check(!old.closed && added==before+1 && get(d,"stateChar")==notify,"7A is selected over the legacy range");
+  before=states;legacy.value=new byte[45];legacy.value[1]=1;callback.onCharacteristicChanged(old,legacy);
+  check(states==before,"a full-size report outside the selected state characteristic is not decoded");
+  notify.value=new byte[45];notify.value[1]=1;callback.onCharacteristicChanged(old,notify);
+  check(states==before+1,"the selected 7A characteristic decodes");
 
   // Battery success cannot hide a failed state subscription.
   d=make();old=(BluetoothGatt)get(d,"gatt");notify.descriptor=new BluetoothGattDescriptor(notify);
