@@ -179,7 +179,9 @@ public class SteamControllerBle extends SteamControllerInput {
     private long writeRejectedSinceMs = -1;
     // stop() in progress: the restore commands still go out, nothing else does.
     private volatile boolean closing;
-    private boolean mtuRequested;
+    // Written on whichever thread negotiates (binder, or start()'s caller for an early
+    // CONNECTED), read on the binder thread: volatile so the flag is never stale.
+    private volatile boolean mtuRequested;
     // One more MTU request per link before a link whose MTU stayed too small for the 45-byte
     // state reports is recycled (a 23-byte MTU truncates every one of them).
     private boolean mtuRetried;
@@ -225,25 +227,56 @@ public class SteamControllerBle extends SteamControllerInput {
     // Armed on CONNECTED, disarmed by onReady/onLinkLost. A setup that stalls after an accepted
     // GATT operation used to keep `gatt` set forever, which also disarmed the manager's ACL
     // restart (it only restarts a driver whose link is down). Recycle the link instead.
-    private final Runnable setupWatchdog = () -> {
-        BluetoothGatt g = gatt;
-        if (g != null && !announced && !stopped) {
-            LimeLog.warning("Steam Controller BLE: setup did not complete within " + SETUP_WATCHDOG_MS + " ms; recycling the link");
-            onLinkLost(g);
-        }
-    };
+    // Each watchdog is armed for one link (or one write, below) and carries that identity: a
+    // runnable the handler has already dequeued when its target completes would otherwise run
+    // against the successor and recycle a healthy link (A44-02). The fields hold the armed
+    // instance so it can be disarmed; disarming keeps the reference (harmless to re-remove).
+    private Runnable setupWatchdog, connectWatchdog;
+
+    private Runnable setupWatchdogFor(final BluetoothGatt armed) {
+        return () -> {
+            BluetoothGatt g = gatt;
+            if (g == armed && g != null && !announced && !stopped) {
+                LimeLog.warning("Steam Controller BLE: setup did not complete within " + SETUP_WATCHDOG_MS + " ms; recycling the link");
+                onLinkLost(g);
+            }
+        };
+    }
+
     // Armed by start() around connectGatt, disarmed on CONNECTED and when the link is retired.
-    private final Runnable connectWatchdog = () -> {
-        BluetoothGatt g = gatt;
-        boolean pending;
-        synchronized (this) {
-            pending = g != null && !linkConnected && !stopped;
-        }
-        if (pending) {
-            LimeLog.warning("Steam Controller BLE: no connection result within " + CONNECT_WATCHDOG_MS + " ms; recycling the link");
-            onLinkLost(g);
-        }
-    };
+    private Runnable connectWatchdogFor(final BluetoothGatt armed) {
+        return () -> {
+            BluetoothGatt g = gatt;
+            boolean pending;
+            synchronized (this) {
+                pending = g == armed && g != null && !linkConnected && !stopped;
+            }
+            if (pending) {
+                LimeLog.warning("Steam Controller BLE: no connection result within " + CONNECT_WATCHDOG_MS + " ms; recycling the link");
+                onLinkLost(g);
+            }
+        };
+    }
+
+    private void armSetupWatchdog(BluetoothGatt g) {
+        disarmSetupWatchdog();
+        setupWatchdog = setupWatchdogFor(g);
+        handler.postDelayed(setupWatchdog, SETUP_WATCHDOG_MS);
+    }
+
+    private void disarmSetupWatchdog() {
+        if (setupWatchdog != null) handler.removeCallbacks(setupWatchdog);
+    }
+
+    private void armConnectWatchdog(BluetoothGatt g) {
+        disarmConnectWatchdog();
+        connectWatchdog = connectWatchdogFor(g);
+        handler.postDelayed(connectWatchdog, CONNECT_WATCHDOG_MS);
+    }
+
+    private void disarmConnectWatchdog() {
+        if (connectWatchdog != null) handler.removeCallbacks(connectWatchdog);
+    }
     // Rumble state; only touched on the handler thread.
     private float rumbleLow, rumbleHigh;
     private int rumbleLowRaw, rumbleHighRaw;
@@ -349,8 +382,7 @@ public class SteamControllerBle extends SteamControllerInput {
                     } else if (earlyConnected == connected) {
                         reached = connected;
                     } else {
-                        handler.removeCallbacks(connectWatchdog);
-                        handler.postDelayed(connectWatchdog, CONNECT_WATCHDOG_MS);
+                        armConnectWatchdog(connected);
                     }
                 }
                 earlyLost = null;
@@ -470,7 +502,8 @@ public class SteamControllerBle extends SteamControllerInput {
                             earlyConnected = g;
                         } else {
                             earlyLost = g;
-                            earlyConnected = null;
+                            // A late loss of a different handle says nothing about this attempt.
+                            if (earlyConnected == g) earlyConnected = null;
                         }
                     }
                 }
@@ -715,7 +748,7 @@ public class SteamControllerBle extends SteamControllerInput {
                     retryWithoutResponse = true;
                 }
             }
-            handler.removeCallbacks(writeWatchdog);
+            disarmWriteWatchdog();
             boolean drained;
             synchronized (SteamControllerBle.this) {
                 writeBusy = false;
@@ -853,7 +886,7 @@ public class SteamControllerBle extends SteamControllerInput {
             return;
         }
         reconnectAttempts = 0;
-        handler.removeCallbacks(setupWatchdog);
+        disarmSetupWatchdog();
         enqueueWrite(new byte[]{ID_CLEAR_DIGITAL_MAPPINGS, 0});
         // All settings in one command: keep-alive deduplication must not discard the IMU setup.
         enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
@@ -882,16 +915,21 @@ public class SteamControllerBle extends SteamControllerInput {
     /** CONNECTED with success: negotiate the link (MTU, then services). */
     @SuppressLint("MissingPermission")
     private void onConnected(BluetoothGatt g) {
-        LimeLog.info("Steam Controller BLE: connected, negotiating");
         synchronized (this) {
+            // The unlocked g == gatt check on the way in can be stale: a watchdog may have
+            // retired this handle meanwhile, and marking a retired link connected would leave
+            // linkConnected true for the next link's connect watchdog.
+            if (g != gatt) {
+                return;
+            }
             everConnected = true;
             linkConnected = true;
             mtuRetried = false;
+            mtuRequested = true;
+            disarmConnectWatchdog();
+            armSetupWatchdog(g);
         }
-        mtuRequested = true;
-        handler.removeCallbacks(connectWatchdog);
-        handler.removeCallbacks(setupWatchdog);
-        handler.postDelayed(setupWatchdog, SETUP_WATCHDOG_MS);
+        LimeLog.info("Steam Controller BLE: connected, negotiating");
         g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
         if (!g.requestMtu(DESIRED_MTU)) {
             mtuRequested = false;
@@ -913,14 +951,14 @@ public class SteamControllerBle extends SteamControllerInput {
             linkConnected = false;
             earlyLost = null;
             earlyConnected = null;
-            handler.removeCallbacks(connectWatchdog);
+            disarmConnectWatchdog();
             handler.removeCallbacks(keepAlive);
             handler.removeCallbacks(hapticStats);
             handler.removeCallbacks(rumbleRefresh);
             handler.removeCallbacks(retryFlush);
-            handler.removeCallbacks(writeWatchdog);
+            disarmWriteWatchdog();
             handler.removeCallbacks(batteryRead);
-            handler.removeCallbacks(setupWatchdog);
+            disarmSetupWatchdog();
             writeQueue.clear();
             writeBusy = false;
             writeRejectedSinceMs = -1;
@@ -1146,18 +1184,35 @@ public class SteamControllerBle extends SteamControllerInput {
     }
 
     /** A timed-out operation cannot be distinguished from a later write's callback. */
-    private final Runnable writeWatchdog = () -> {
-        BluetoothGatt expired;
-        synchronized (this) {
-            if (!writeBusy) {
-                return;
+    private Runnable writeWatchdog = writeWatchdogFor(0);   // never posted; replaced per write
+
+    private Runnable writeWatchdogFor(final long attempt) {
+        return () -> {
+            BluetoothGatt expired;
+            synchronized (this) {
+                // Only the write this watchdog was armed for can expire it: a completion that
+                // dequeued this runnable and dispatched the next write must not be charged.
+                if (!writeBusy || writeAttempt != attempt) {
+                    return;
+                }
+                expired = gatt;
             }
-            expired = gatt;
-        }
-        LimeLog.warning("Steam Controller BLE: a write never completed; recycling the link");
-        if (closing) closeLink.run();
-        else if (expired != null) onLinkLost(expired);
-    };
+            LimeLog.warning("Steam Controller BLE: a write never completed; recycling the link");
+            if (closing) closeLink.run();
+            else if (expired != null) onLinkLost(expired);
+        };
+    }
+
+    /** Called with the lock held, for the write attempt just handed to the stack. */
+    private void armWriteWatchdog(long attempt) {
+        disarmWriteWatchdog();
+        writeWatchdog = writeWatchdogFor(attempt);
+        handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
+    }
+
+    private void disarmWriteWatchdog() {
+        if (writeWatchdog != null) handler.removeCallbacks(writeWatchdog);
+    }
 
     @SuppressLint("MissingPermission")
     private void flushWrites() {
@@ -1218,8 +1273,7 @@ public class SteamControllerBle extends SteamControllerInput {
                 // the next one. Do not overwrite or re-arm that newer operation.
                 if (g != gatt || writeChar == null || writeAttempt != attempt || inFlight != p) return;
                 writeRejectedSinceMs = -1;
-                handler.removeCallbacks(writeWatchdog);
-                handler.postDelayed(writeWatchdog, WRITE_WATCHDOG_MS);
+                armWriteWatchdog(attempt);
             }
             return;
         }
