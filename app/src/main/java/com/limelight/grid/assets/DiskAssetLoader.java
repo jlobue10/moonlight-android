@@ -196,6 +196,9 @@ public class DiskAssetLoader {
                 if (staging != null) {
                     staging.delete();
                 }
+                // A failed refresh invalidates the entry, as it always did, so the next
+                // load fetches again instead of serving a stale cover.
+                CacheHelper.deleteCacheFile(cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png");
             }
         }
     }

@@ -159,13 +159,16 @@ public class AssetCacheRegression {
   check(!borrowed.closed,"writer leaves borrowed network input to its caller");
   loader.populateCacheWithStream(tuple,new InputStream(){public int read()throws IOException{throw new IOException("broken network input");}});
   check(!Files.exists(cached),"input failure removes incomplete cache file");
-  // A real buffered FileOutputStream write succeeds, then close/flush fails.
-  // This is a symlink only inside the temporary test directory; /dev/full is
-  // neither modified nor deleted by the cache-file cleanup.
-  if(!Files.exists(Paths.get("/dev/full")))throw new IllegalStateException("Linux /dev/full is required");
-  Files.createSymbolicLink(cached,Paths.get("/dev/full"));
-  loader.populateCacheWithStream(tuple,new ByteArrayInputStream(data));
-  check(!Files.exists(cached,LinkOption.NOFOLLOW_LINKS),"close-time flush failure removes incomplete cache entry");
+  // The write is staged next to the target: when the staging file cannot even be created
+  // (directory not writable) nothing is committed and the existing entry is not torn.
+  Files.write(cached,data);
+  java.util.Set<java.nio.file.attribute.PosixFilePermission> perms=Files.getPosixFilePermissions(cached.getParent());
+  Files.setPosixFilePermissions(cached.getParent(),java.util.EnumSet.of(
+   java.nio.file.attribute.PosixFilePermission.OWNER_READ,java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
+  loader.populateCacheWithStream(tuple,new ByteArrayInputStream("replacement".getBytes(StandardCharsets.UTF_8)));
+  Files.setPosixFilePermissions(cached.getParent(),perms);
+  check(Arrays.equals(Files.readAllBytes(cached),data),"a staging failure leaves the existing entry untouched");
+  try(var entries=Files.list(cached.getParent())){check(entries.count()==1,"a staging failure leaves no partial file");}
   Files.deleteIfExists(cached);
   loader.populateCacheWithStream(tuple,new ByteArrayInputStream(new byte[5*1024*1024+1]));
   check(!Files.exists(cached),"oversized download removes incomplete cache file");
