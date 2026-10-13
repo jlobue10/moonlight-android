@@ -12,6 +12,9 @@ public abstract class MdnsDiscoveryAgent {
     protected MdnsDiscoveryListener listener;
 
     protected HashSet<MdnsComputer> computers = new HashSet<>();
+    // Every distinct advertisement is kept for de-duplication; bound it so a rogue
+    // advertiser cannot grow the set without limit.
+    protected static final int MAX_TRACKED_SERVICES = 256;
 
     public MdnsDiscoveryAgent(MdnsDiscoveryListener listener) {
         this.listener = listener;
@@ -31,7 +34,9 @@ public abstract class MdnsDiscoveryAgent {
         for (Inet4Address v4Addr : v4Addrs) {
             synchronized (computers) {
                 MdnsComputer computer = new MdnsComputer(name, v4Addr, v6GlobalAddr, port);
-                if (computers.add(computer)) {
+                if (computers.size() >= MAX_TRACKED_SERVICES && !computers.contains(computer)) {
+                    LimeLog.warning("mDNS: ignoring a new service, the tracking limit is reached");
+                } else if (computers.add(computer)) {
                     // This was a new entry
                     listener.notifyComputerAdded(computer);
                 }
@@ -44,7 +49,9 @@ public abstract class MdnsDiscoveryAgent {
 
             if (v6LocalAddr != null || v6GlobalAddr != null) {
                 MdnsComputer computer = new MdnsComputer(name, v6LocalAddr, v6GlobalAddr, port);
-                if (computers.add(computer)) {
+                if (computers.size() >= MAX_TRACKED_SERVICES && !computers.contains(computer)) {
+                    LimeLog.warning("mDNS: ignoring a new service, the tracking limit is reached");
+                } else if (computers.add(computer)) {
                     // This was a new entry
                     listener.notifyComputerAdded(computer);
                 }

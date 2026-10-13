@@ -169,6 +169,33 @@ public class AssetCacheRegression {
   Files.deleteIfExists(cached);
   loader.populateCacheWithStream(tuple,new ByteArrayInputStream(new byte[5*1024*1024+1]));
   check(!Files.exists(cached),"oversized download removes incomplete cache file");
+  // A32-02: a writer that is still copying never exposes a partial file; the finished file is
+  // complete and the directory holds exactly one entry.
+  {
+   final java.util.concurrent.CountDownLatch gate=new java.util.concurrent.CountDownLatch(1);
+   final byte[] whole=Files.readAllBytes(root.resolve("normal.png"));
+   InputStream latched=new InputStream(){
+    int pos; public int read()throws IOException{
+     if(pos==whole.length/2){try{gate.await();}catch(InterruptedException e){throw new IOException(e);}}
+     return pos<whole.length?(whole[pos++]&255):-1;}
+   };
+   Thread writer=new Thread(()->loader.populateCacheWithStream(tuple,latched));
+   writer.start();
+   long until=System.nanoTime()+2_000_000_000L; while(System.nanoTime()<until && writer.getState()!=Thread.State.WAITING){Thread.sleep(10);}
+   check(!Files.exists(cached),"a partially written asset is not visible at the cache path");
+   gate.countDown(); writer.join(10000);
+   check(Arrays.equals(Files.readAllBytes(cached),whole),"the committed asset is complete");
+   try(var entries=Files.list(cached.getParent())){check(entries.count()==1,"no staging file is left behind");}
+  }
+  // A32-03: a trickling stream is cut off at the read budget and leaves nothing behind.
+  {
+   final int[] reads={0};
+   InputStream slow=new InputStream(){public int read()throws IOException{++reads[0];try{Thread.sleep(200);}catch(InterruptedException e){throw new IOException(e);}return 'x';}};
+   Files.deleteIfExists(cached);
+   loader.populateCacheWithStream(tuple,slow,1000);
+   check(!Files.exists(cached) && reads[0]<=4096*2,"a trickling download is cut off at the time budget");
+   try(var entries=Files.list(cached.getParent())){check(entries.count()==0,"a cut-off download leaves no staging file");}
+  }
   System.out.println(checks+" asset/cache checks, "+failures+" failures");
   if(failures!=0)System.exit(1);
  }

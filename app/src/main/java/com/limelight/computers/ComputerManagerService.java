@@ -50,6 +50,9 @@ public class ComputerManagerService extends Service {
     private static final int OFFLINE_POLL_TRIES = 3;
     private static final int INITIAL_POLL_TRIES = 2;
     private static final int EMPTY_LIST_THRESHOLD = 3;
+    // Auto-discovered PCs are persisted and polled for the life of the service; a rogue
+    // advertiser must not register an unbounded number. Pairing or deleting one frees a slot.
+    private static final int MAX_UNPAIRED_DISCOVERED_PCS = 16;
     private static final int POLL_DATA_TTL_MS = 30000;
 
     private final ComputerManagerBinder binder = new ComputerManagerBinder();
@@ -400,6 +403,19 @@ public class ComputerManagerService extends Service {
                 if (computer.getPort() <= 0 || computer.getPort() > 65535) {
                     LimeLog.warning("Ignoring mDNS advertisement with invalid port: "+computer.getPort());
                     return;
+                }
+
+                synchronized (pollingTuples) {
+                    int unpaired = 0;
+                    for (PollingTuple tuple : pollingTuples) {
+                        if (tuple.computer.serverCert == null) {
+                            unpaired++;
+                        }
+                    }
+                    if (unpaired >= MAX_UNPAIRED_DISCOVERED_PCS) {
+                        LimeLog.warning("Ignoring mDNS advertisement: too many unpaired PCs already tracked");
+                        return;
+                    }
                 }
 
                 ComputerDetails details = new ComputerDetails();
@@ -919,11 +935,9 @@ public class ComputerManagerService extends Service {
                             }
                             if (!appList.isEmpty() &&
                                     (!list.isEmpty() || emptyAppListResponses >= EMPTY_LIST_THRESHOLD)) {
-                                // Open the cache file
-                                try (final OutputStream cacheOut = CacheHelper.openCacheFileForOutput(
-                                        getCacheDir(), "applist", computer.uuid)
-                                ) {
-                                    CacheHelper.writeStringToOutputStream(cacheOut, appList);
+                                // Staged and renamed so a concurrent reader never sees a torn list
+                                try {
+                                    CacheHelper.writeStringToCacheFileAtomically(getCacheDir(), appList, "applist", computer.uuid);
                                 } catch (IOException e) {
                                     e.printStackTrace();
                                 }

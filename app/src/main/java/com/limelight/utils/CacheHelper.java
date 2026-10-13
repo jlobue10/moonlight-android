@@ -62,16 +62,55 @@ public class CacheHelper {
         return new BufferedOutputStream(new FileOutputStream(openPath(true, root, path)));
     }
 
+    // A staging file next to the target: writers fill it and rename it over the target so a
+    // concurrent reader only ever sees a complete file (two loaders can race for one asset).
+    public static File openCacheFileForStaging(File root, String... path) throws IOException {
+        File target = openPath(true, root, path);
+        return File.createTempFile(target.getName(), ".part", target.getParentFile());
+    }
+
+    public static void commitStagedCacheFile(File staging, File root, String... path) throws IOException {
+        File target = openPath(false, root, path);
+        if (!staging.renameTo(target)) {
+            throw new IOException("Unable to replace " + target);
+        }
+    }
+
     public static void writeInputStreamToOutputStream(InputStream in, OutputStream out, long maxLength) throws IOException {
+        writeInputStreamToOutputStream(in, out, maxLength, Long.MAX_VALUE);
+    }
+
+    // The per-read socket timeout bounds silence, not a trickle: a deadline (System.nanoTime
+    // based) bounds the whole copy.
+    public static void writeInputStreamToOutputStream(InputStream in, OutputStream out, long maxLength, long deadlineNanos) throws IOException {
         byte[] buf = new byte[4096];
         int bytesRead;
 
         while ((bytesRead = in.read(buf)) != -1) {
+            if (System.nanoTime() - deadlineNanos >= 0) {
+                throw new IOException("Stream exceeded time budget");
+            }
             maxLength -= bytesRead;
             if (maxLength <= 0) {
                 throw new IOException("Stream exceeded max size");
             }
             out.write(buf, 0, bytesRead);
+        }
+    }
+
+    public static void writeStringToCacheFileAtomically(File root, String str, String... path) throws IOException {
+        File staging = openCacheFileForStaging(root, path);
+        boolean committed = false;
+        try {
+            try (OutputStream out = new BufferedOutputStream(new FileOutputStream(staging))) {
+                writeStringToOutputStream(out, str);
+            }
+            commitStagedCacheFile(staging, root, path);
+            committed = true;
+        } finally {
+            if (!committed) {
+                staging.delete();
+            }
         }
     }
 
