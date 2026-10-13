@@ -10,7 +10,9 @@ import android.os.Build;
 import com.limelight.LimeLog;
 import com.limelight.utils.CacheHelper;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -22,6 +24,9 @@ public class DiskAssetLoader {
     // The compressed-file limit does not bound bitmap memory or texture size.
     // Keep ordinary cover scaling, but cap either axis for extreme aspect ratios.
     private static final int MAX_DECODED_DIMENSION = 2048;
+
+    // The per-read socket timeout bounds silence only; the whole download gets this budget.
+    private static final long ASSET_READ_BUDGET_MS = 30000;
 
     // Standard box art is 300x400
     private static final int STANDARD_ASSET_WIDTH = 300;
@@ -166,19 +171,33 @@ public class DiskAssetLoader {
     }
 
     public void populateCacheWithStream(CachedAppAssetLoader.LoaderTuple tuple, InputStream input) {
+        populateCacheWithStream(tuple, input, ASSET_READ_BUDGET_MS);
+    }
+
+    public void populateCacheWithStream(CachedAppAssetLoader.LoaderTuple tuple, InputStream input, long budgetMs) {
+        // Staged and renamed: a concurrent loader for the same asset, or a reader, never sees
+        // a partially written file. Buffered output can fail only when close flushes its
+        // final bytes, so success is decided after the stream closed.
         boolean success = false;
+        File staging = null;
         try {
-            try (final OutputStream out = CacheHelper.openCacheFileForOutput(
-                    cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png")) {
-                CacheHelper.writeInputStreamToOutputStream(input, out, MAX_ASSET_SIZE);
+            staging = CacheHelper.openCacheFileForStaging(cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png");
+            try (final OutputStream out = new BufferedOutputStream(new FileOutputStream(staging))) {
+                CacheHelper.writeInputStreamToOutputStream(input, out, MAX_ASSET_SIZE,
+                        System.nanoTime() + budgetMs * 1_000_000L);
             }
-            // Buffered output can fail only when close flushes its final bytes.
+            CacheHelper.commitStagedCacheFile(staging, cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png");
             success = true;
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
             if (!success) {
                 LimeLog.warning("Unable to populate cache with tuple: "+tuple);
+                if (staging != null) {
+                    staging.delete();
+                }
+                // A failed refresh invalidates the entry, as it always did, so the next
+                // load fetches again instead of serving a stale cover.
                 CacheHelper.deleteCacheFile(cacheDir, "boxart", tuple.computer.uuid, tuple.app.getAppId() + ".png");
             }
         }

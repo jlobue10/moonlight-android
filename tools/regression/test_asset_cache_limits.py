@@ -159,16 +159,51 @@ public class AssetCacheRegression {
   check(!borrowed.closed,"writer leaves borrowed network input to its caller");
   loader.populateCacheWithStream(tuple,new InputStream(){public int read()throws IOException{throw new IOException("broken network input");}});
   check(!Files.exists(cached),"input failure removes incomplete cache file");
-  // A real buffered FileOutputStream write succeeds, then close/flush fails.
-  // This is a symlink only inside the temporary test directory; /dev/full is
-  // neither modified nor deleted by the cache-file cleanup.
-  if(!Files.exists(Paths.get("/dev/full")))throw new IllegalStateException("Linux /dev/full is required");
-  Files.createSymbolicLink(cached,Paths.get("/dev/full"));
-  loader.populateCacheWithStream(tuple,new ByteArrayInputStream(data));
-  check(!Files.exists(cached,LinkOption.NOFOLLOW_LINKS),"close-time flush failure removes incomplete cache entry");
+  // The write is staged next to the target: when the staging file cannot even be created
+  // (directory not writable) nothing is committed and the existing entry is not torn.
+  Files.write(cached,data);
+  java.util.Set<java.nio.file.attribute.PosixFilePermission> perms=Files.getPosixFilePermissions(cached.getParent());
+  Files.setPosixFilePermissions(cached.getParent(),java.util.EnumSet.of(
+   java.nio.file.attribute.PosixFilePermission.OWNER_READ,java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
+  loader.populateCacheWithStream(tuple,new ByteArrayInputStream("replacement".getBytes(StandardCharsets.UTF_8)));
+  Files.setPosixFilePermissions(cached.getParent(),perms);
+  check(Arrays.equals(Files.readAllBytes(cached),data),"a staging failure leaves the existing entry untouched");
+  try(var entries=Files.list(cached.getParent())){check(entries.count()==1,"a staging failure leaves no partial file");}
   Files.deleteIfExists(cached);
   loader.populateCacheWithStream(tuple,new ByteArrayInputStream(new byte[5*1024*1024+1]));
   check(!Files.exists(cached),"oversized download removes incomplete cache file");
+  // A32-02: a writer that is still copying never exposes a partial file; the finished file is
+  // complete and the directory holds exactly one entry.
+  {
+   final java.util.concurrent.CountDownLatch gate=new java.util.concurrent.CountDownLatch(1);
+   final byte[] whole=Files.readAllBytes(root.resolve("normal.png"));
+   InputStream latched=new InputStream(){
+    int pos; public int read()throws IOException{
+     if(pos==whole.length/2){try{gate.await();}catch(InterruptedException e){throw new IOException(e);}}
+     return pos<whole.length?(whole[pos++]&255):-1;}
+   };
+   Thread writer=new Thread(()->loader.populateCacheWithStream(tuple,latched));
+   writer.start();
+   long until=System.nanoTime()+2_000_000_000L; while(System.nanoTime()<until && writer.getState()!=Thread.State.WAITING){Thread.sleep(10);}
+   check(!Files.exists(cached),"a partially written asset is not visible at the cache path");
+   gate.countDown(); writer.join(10000);
+   check(Arrays.equals(Files.readAllBytes(cached),whole),"the committed asset is complete");
+   try(var entries=Files.list(cached.getParent())){check(entries.count()==1,"no staging file is left behind");}
+  }
+  // A32-03: a trickling stream is cut off at the read budget and leaves nothing behind.
+  {
+   final int[] reads={0};
+   // One byte per call on the array overload too: the default array read loops the
+   // single-byte read until the buffer is full, which would defer the budget check.
+   InputStream slow=new InputStream(){
+    public int read()throws IOException{++reads[0];try{Thread.sleep(100);}catch(InterruptedException e){throw new IOException(e);}return 'x';}
+    public int read(byte[] b,int off,int len)throws IOException{if(len==0)return 0;b[off]=(byte)read();return 1;}
+   };
+   Files.deleteIfExists(cached);
+   loader.populateCacheWithStream(tuple,slow,1000);
+   check(!Files.exists(cached) && reads[0]<=20,"a trickling download is cut off at the time budget");
+   try(var entries=Files.list(cached.getParent())){check(entries.count()==0,"a cut-off download leaves no staging file");}
+  }
   System.out.println(checks+" asset/cache checks, "+failures+" failures");
   if(failures!=0)System.exit(1);
  }
