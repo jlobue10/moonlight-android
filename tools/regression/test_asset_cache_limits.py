@@ -193,10 +193,15 @@ public class AssetCacheRegression {
   // A32-03: a trickling stream is cut off at the read budget and leaves nothing behind.
   {
    final int[] reads={0};
-   InputStream slow=new InputStream(){public int read()throws IOException{++reads[0];try{Thread.sleep(200);}catch(InterruptedException e){throw new IOException(e);}return 'x';}};
+   // One byte per call on the array overload too: the default array read loops the
+   // single-byte read until the buffer is full, which would defer the budget check.
+   InputStream slow=new InputStream(){
+    public int read()throws IOException{++reads[0];try{Thread.sleep(100);}catch(InterruptedException e){throw new IOException(e);}return 'x';}
+    public int read(byte[] b,int off,int len)throws IOException{if(len==0)return 0;b[off]=(byte)read();return 1;}
+   };
    Files.deleteIfExists(cached);
    loader.populateCacheWithStream(tuple,slow,1000);
-   check(!Files.exists(cached) && reads[0]<=4096*2,"a trickling download is cut off at the time budget");
+   check(!Files.exists(cached) && reads[0]<=20,"a trickling download is cut off at the time budget");
    try(var entries=Files.list(cached.getParent())){check(entries.count()==0,"a cut-off download leaves no staging file");}
   }
   System.out.println(checks+" asset/cache checks, "+failures+" failures");
