@@ -61,7 +61,9 @@ STUBS = {
  public boolean setCharacteristicNotification(BluetoothGattCharacteristic c,boolean b){return true;}
  public boolean writeDescriptor(BluetoothGattDescriptor d){return acceptDescriptor;}
  public List<BluetoothGattCharacteristic> targets=new ArrayList<>();
- public boolean writeCharacteristic(BluetoothGattCharacteristic c){if(!acceptWrite)return false;writes.add(c.value.clone());targets.add(c);return true;}
+ public Runnable beforeWriteReturn;
+ public boolean writeCharacteristic(BluetoothGattCharacteristic c){if(!acceptWrite)return false;writes.add(c.value.clone());targets.add(c);
+  if(beforeWriteReturn!=null){Runnable r=beforeWriteReturn;beforeWriteReturn=null;r.run();}return true;}
  public boolean readCharacteristic(BluetoothGattCharacteristic c){return true;}
  public void close(){closed=true;} public void disconnect(){} }''',
  'android/bluetooth/BluetoothGattService.java': '''package android.bluetooth; import java.util.*; public class BluetoothGattService {
@@ -107,6 +109,11 @@ public class BleRegression {
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
  static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",8);}
+ static void completeOnWorker(BluetoothGattCallback cb,BluetoothGatt g,BluetoothGattCharacteristic ch,int status){
+  Thread t=new Thread(()->cb.onCharacteristicWrite(g,ch,status));t.setDaemon(true);t.start();
+  try{t.join(3000);}catch(InterruptedException e){throw new AssertionError(e);}
+  if(t.isAlive())throw new AssertionError("write completion blocked behind the GATT call");
+ }
  public static void main(String[] args)throws Exception{
   SteamControllerBle d=make();set(d,"writeChar",command());set(d,"writeBusy",true);
   for(int i=0;i<1000;i++)d.steamHaptic(new byte[]{(byte)0x81,(byte)(i%2),0,0,0,0,0,0});
@@ -350,6 +357,44 @@ public class BleRegression {
    for(int i=0;i<10;i++)d.steamHaptic(new byte[]{(byte)0x80,0,0,0,(byte)(i+1),0,0,(byte)(i+1),0,0});
    int rumbles=0;for(Object item:(Deque<?>)get(d,"writeQueue")){byte[] b=(byte[])get(item,"bytes");if((b[0]&255)==0x80)rumbles++;}
    check(rumbles==1,"only the newest 0x80 state stays queued");
+   d.stop();}
+
+  // Binder may deliver the completion before writeCharacteristic returns to its caller.
+  // A refusal must still find its report and a returning older write cannot replace the
+  // next report already dispatched by that completion.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());
+   BluetoothGattCharacteristic pulse=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",8);
+   ((BluetoothGattCharacteristic[])get(d,"outputChars"))[1]=pulse;
+   final BluetoothGatt g=old;final BluetoothGattCallback cb=(BluetoothGattCallback)get(d,"gattCallback");
+   g.beforeWriteReturn=()->completeOnWorker(cb,g,pulse,4);
+   d.steamHaptic(click);
+   check(g.writes.size()==2&&Arrays.equals(g.writes.get(1),click),"an early failed completion retries the correct report with its id");
+   check(((boolean[])get(d,"outputProbed"))[1],"an early completion records the actual with-response probe mode");
+   cb.onCharacteristicWrite(g,pulse,0);
+   check(get(d,"inFlight")==null&&!(boolean)get(d,"writeBusy"),"the early-completion retry drains without retaining the original write");
+   d.stop();}
+  {d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());
+   BluetoothGattCharacteristic pulse=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",8);
+   BluetoothGattCharacteristic cmd=new BluetoothGattCharacteristic("100f6cb7-1735-4313-b402-38567131e5f3",8);
+   ((BluetoothGattCharacteristic[])get(d,"outputChars"))[1]=pulse;((BluetoothGattCharacteristic[])get(d,"outputChars"))[2]=cmd;
+   final SteamControllerBle driver=d;final BluetoothGatt g=old;final BluetoothGattCallback cb=(BluetoothGattCallback)get(d,"gattCallback");
+   final byte[] next=new byte[]{(byte)0x82,0,2,(byte)0xf2};
+   g.beforeWriteReturn=()->{driver.steamHaptic(next);completeOnWorker(cb,g,pulse,0);};
+   d.steamHaptic(click);
+   check(g.writes.size()==2&&g.targets.get(1)==cmd,"an early completion dispatches the next queued report");
+   cb.onCharacteristicWrite(g,cmd,4);
+   check(g.writes.size()==3&&g.targets.get(2)==cmd&&Arrays.equals(g.writes.get(2),next),
+         "the earlier call returning cannot overwrite the next report's retry identity");
+   cb.onCharacteristicWrite(g,cmd,0);d.stop();}
+  {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();set(d,"writeChar",feat);
+   final BluetoothGatt g=old;final BluetoothGattCallback cb=(BluetoothGattCallback)get(d,"gattCallback");
+   set(d,"writeRejectedSinceMs",SystemClock.uptimeMillis()-10000L);
+   g.beforeWriteReturn=()->completeOnWorker(cb,g,feat,0);
+   d.steamHaptic(click);
+   check(get(d,"inFlight")==null&&!((Handler)get(d,"handler")).delayed.contains(get(d,"writeWatchdog")),
+         "an already completed write cannot leave a stale report or watchdog behind");
+   g.acceptWrite=false;d.steamHaptic(click);
+   check(!g.closed&&get(d,"gatt")==g,"an early completion resets the previous synchronous rejection window");
    d.stop();}
 
   d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onConnectionStateChange(old,0,0);
