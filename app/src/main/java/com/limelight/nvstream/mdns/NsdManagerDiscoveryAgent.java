@@ -2,6 +2,7 @@ package com.limelight.nvstream.mdns;
 
 import android.annotation.TargetApi;
 import android.content.Context;
+import android.net.Network;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.os.Build;
@@ -13,6 +14,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -24,8 +26,32 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
     private final Object listenerLock = new Object();
     private NsdManager.DiscoveryListener pendingListener;
     private NsdManager.DiscoveryListener activeListener;
-    private final HashMap<String, NsdManager.ServiceInfoCallback> serviceCallbacks = new HashMap<>();
-    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
+    private final HashMap<ServiceKey, NsdManager.ServiceInfoCallback> serviceCallbacks = new HashMap<>();
+    private final ThreadPoolExecutor executor = new ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
+
+    // A host can appear on more than one network. Losing one route must not
+    // unregister another network's identically named service.
+    private static final class ServiceKey {
+        private final String name;
+        private final Network network;
+
+        ServiceKey(NsdServiceInfo info) {
+            name = info.getServiceName();
+            network = info.getNetwork();
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (!(other instanceof ServiceKey)) return false;
+            ServiceKey key = (ServiceKey) other;
+            return Objects.equals(name, key.name) && Objects.equals(network, key.network);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(name, network);
+        }
+    }
 
     private NsdManager.DiscoveryListener createDiscoveryListener() {
         return new NsdManager.DiscoveryListener() {
@@ -56,6 +82,7 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
                     }
 
                     activeListener = null;
+                    unregisterServiceCallbacks();
                 }
             }
 
@@ -85,6 +112,7 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
                     }
 
                     activeListener = null;
+                    unregisterServiceCallbacks();
                 }
             }
 
@@ -97,17 +125,43 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
                         return;
                     }
 
-                    LimeLog.info("NSD: Machine appeared: " + nsdServiceInfo.getServiceName());
+                    final String serviceName = nsdServiceInfo.getServiceName();
+                    final ServiceKey serviceKey = new ServiceKey(nsdServiceInfo);
+                    // Repeated found events must not replace the only handle capable of
+                    // unregistering an existing callback. Bound the platform registrations,
+                    // not just the resolved-computer set in the base class.
+                    if (serviceCallbacks.containsKey(serviceKey) || serviceCallbacks.size() >= MAX_TRACKED_SERVICES) {
+                        return;
+                    }
+                    final NsdManager.DiscoveryListener owner = this;
+                    LimeLog.info("NSD: Machine appeared: " + serviceName);
 
                     NsdManager.ServiceInfoCallback serviceInfoCallback = new NsdManager.ServiceInfoCallback() {
                         @Override
                         public void onServiceInfoCallbackRegistrationFailed(int errorCode) {
-                            LimeLog.severe("NSD: Service info callback registration failed: " + errorCode);
-                            listener.notifyDiscoveryFailure(new RuntimeException("onServiceInfoCallbackRegistrationFailed(): " + errorCode));
+                            synchronized (listenerLock) {
+                                if (activeListener != owner || serviceCallbacks.get(serviceKey) != this) {
+                                    return;
+                                }
+                                // Failed registrations are already removed by NsdManager.
+                                serviceCallbacks.remove(serviceKey);
+                                LimeLog.severe("NSD: Service info callback registration failed: " + errorCode);
+                                listener.notifyDiscoveryFailure(new RuntimeException("onServiceInfoCallbackRegistrationFailed(): " + errorCode));
+                            }
                         }
 
                         @Override
                         public void onServiceUpdated(NsdServiceInfo nsdServiceInfo) {
+                            synchronized (listenerLock) {
+                                // Unregister does not retract tasks already queued on the
+                                // executor. Both the discovery and service must still own us.
+                                if (activeListener != owner || serviceCallbacks.get(serviceKey) != this) {
+                                    return;
+                                }
+                            }
+                            // The consumer performs blocking server-info requests. Do not
+                            // hold the lifecycle lock while an admitted callback runs: stop
+                            // must remain responsive on the UI thread.
                             LimeLog.info("NSD: Machine resolved: " + nsdServiceInfo.getServiceName());
                             reportNewComputer(nsdServiceInfo.getServiceName(), nsdServiceInfo.getPort(),
                                     getV4Addrs(nsdServiceInfo.getHostAddresses()),
@@ -120,11 +174,21 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
 
                         @Override
                         public void onServiceInfoCallbackUnregistered() {
+                            synchronized (listenerLock) {
+                                if (serviceCallbacks.get(serviceKey) == this) {
+                                    serviceCallbacks.remove(serviceKey);
+                                }
+                            }
                         }
                     };
 
-                    nsdManager.registerServiceInfoCallback(nsdServiceInfo, executor, serviceInfoCallback);
-                    serviceCallbacks.put(nsdServiceInfo.getServiceName(), serviceInfoCallback);
+                    serviceCallbacks.put(serviceKey, serviceInfoCallback);
+                    try {
+                        nsdManager.registerServiceInfoCallback(nsdServiceInfo, executor, serviceInfoCallback);
+                    } catch (IllegalArgumentException | IllegalStateException e) {
+                        serviceCallbacks.remove(serviceKey);
+                        listener.notifyDiscoveryFailure(e);
+                    }
                 }
             }
 
@@ -139,9 +203,9 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
 
                     LimeLog.info("NSD: Machine lost: " + nsdServiceInfo.getServiceName());
 
-                    NsdManager.ServiceInfoCallback serviceInfoCallback = serviceCallbacks.remove(nsdServiceInfo.getServiceName());
+                    NsdManager.ServiceInfoCallback serviceInfoCallback = serviceCallbacks.remove(new ServiceKey(nsdServiceInfo));
                     if (serviceInfoCallback != null) {
-                        nsdManager.unregisterServiceInfoCallback(serviceInfoCallback);
+                        unregisterServiceCallback(serviceInfoCallback);
                     }
                 }
             }
@@ -151,6 +215,9 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
     public NsdManagerDiscoveryAgent(Context context, MdnsDiscoveryListener listener) {
         super(listener);
         this.nsdManager = context.getSystemService(NsdManager.class);
+        // The agent can be stopped and reused, so leave the executor available while
+        // allowing its sole worker to retire after discovery becomes idle.
+        executor.allowCoreThreadTimeOut(true);
     }
 
     @Override
@@ -174,21 +241,37 @@ public class NsdManagerDiscoveryAgent extends MdnsDiscoveryAgent {
 
             // Unregister the service discovery listener
             if (activeListener != null) {
-                nsdManager.stopServiceDiscovery(activeListener);
-
-                // Even though listener stoppage is asynchronous, the listener is gone as far as
-                // we're concerned. We null this right now to ensure pending callbacks know it's
-                // stopped and startDiscovery() can immediately create a new listener. If we left
-                // it until onDiscoveryStopped() was called, startDiscovery() would get confused
-                // and assume a listener was already running, even though it's stopping.
+                NsdManager.DiscoveryListener stoppedListener = activeListener;
                 activeListener = null;
+                try {
+                    nsdManager.stopServiceDiscovery(stoppedListener);
+                } catch (IllegalArgumentException e) {
+                    // The platform may have already removed this listener. Still release
+                    // the separately registered service callbacks below.
+                    LimeLog.warning("NSD: Discovery already stopped: " + e);
+                }
             }
 
-            // Unregister all service info callbacks
-            for (NsdManager.ServiceInfoCallback callback : serviceCallbacks.values()) {
-                nsdManager.unregisterServiceInfoCallback(callback);
-            }
-            serviceCallbacks.clear();
+            unregisterServiceCallbacks();
+        }
+    }
+
+    // Called with listenerLock held. Retire ownership before asynchronous unregistration.
+    private void unregisterServiceCallbacks() {
+        NsdManager.ServiceInfoCallback[] callbacks = serviceCallbacks.values().toArray(new NsdManager.ServiceInfoCallback[0]);
+        serviceCallbacks.clear();
+        for (NsdManager.ServiceInfoCallback callback : callbacks) {
+            unregisterServiceCallback(callback);
+        }
+    }
+
+    private void unregisterServiceCallback(NsdManager.ServiceInfoCallback callback) {
+        try {
+            nsdManager.unregisterServiceInfoCallback(callback);
+        } catch (IllegalArgumentException e) {
+            // A queued registration-failure callback may not have reached our executor
+            // yet, even though the platform has already removed the registration.
+            LimeLog.warning("NSD: Service callback already unregistered: " + e);
         }
     }
 
