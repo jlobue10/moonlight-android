@@ -388,8 +388,9 @@ public class BleRegression {
    g.beforeWriteReturn=()->completeOnWorker(cb,g,pulse,4);
    d.steamHaptic(click);
    check(g.writes.size()==2&&Arrays.equals(g.writes.get(1),click),"an early failed completion retries the correct report with its id");
-   check(((boolean[])get(d,"outputProbed"))[1],"an early completion records the actual with-response probe mode");
+   check(!((boolean[])get(d,"outputProbed"))[1],"the framing change makes the early-refused report's retry a probe again (A33-01)");
    cb.onCharacteristicWrite(g,pulse,0);
+   check(((boolean[])get(d,"outputProbed"))[1],"the retry's completion records the actual with-response probe mode");
    check(get(d,"inFlight")==null&&!(boolean)get(d,"writeBusy"),"the early-completion retry drains without retaining the original write");
    d.stop();}
   {d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());
