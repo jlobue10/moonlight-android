@@ -48,12 +48,16 @@ public abstract class MdnsDiscoveryAgent {
             Inet6Address v6LocalAddr = getLocalAddress(v6Addrs);
 
             if (v6LocalAddr != null || v6GlobalAddr != null) {
-                MdnsComputer computer = new MdnsComputer(name, v6LocalAddr, v6GlobalAddr, port);
-                if (computers.size() >= MAX_TRACKED_SERVICES && !computers.contains(computer)) {
-                    LimeLog.warning("mDNS: ignoring a new service, the tracking limit is reached");
-                } else if (computers.add(computer)) {
-                    // This was a new entry
-                    listener.notifyComputerAdded(computer);
+                // Use the same monitor as IPv4 publication and getComputerSet().
+                // Discovery callbacks can overlap a snapshot or another callback.
+                synchronized (computers) {
+                    MdnsComputer computer = new MdnsComputer(name, v6LocalAddr, v6GlobalAddr, port);
+                    if (computers.size() >= MAX_TRACKED_SERVICES && !computers.contains(computer)) {
+                        LimeLog.warning("mDNS: ignoring a new service, the tracking limit is reached");
+                    } else if (computers.add(computer)) {
+                        // This was a new entry
+                        listener.notifyComputerAdded(computer);
+                    }
                 }
             }
         }
