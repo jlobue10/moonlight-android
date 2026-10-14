@@ -4085,6 +4085,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public void steamSettings(short controllerNumber, byte command, byte[] triples) {
+        // Not gated on "Enable Rumble": the writes carry pad modes and LED brightness as well
+        // as the haptic gains, and the driver keeps the ids that matter to the link to itself.
+        controllerHandler.handleSteamSettings(controllerNumber, command, triples);
+    }
+
+    @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         if (!surfaceCreated) {
             throw new IllegalStateException("Surface changed before creation!");

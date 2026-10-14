@@ -734,6 +734,36 @@ public class BleRegression {
    worker.join(3000);if(worker.isAlive())throw new AssertionError("onReady did not finish after stop");
    check(added==addedBefore&&!(boolean)get(drv,"announced"),"a setup completing during stop() does not announce a closing driver");
    ((Runnable)get(drv,"closeLink")).run();}
+  // Host settings writes (Steam's 0x87/0x8E forwarded over the stream) go to the command
+  // characteristic with their report id, minus the ids this link owns or that would change its
+  // wire format; they are never deduplicated against the keep-alive; load-defaults is followed
+  // by this link's own setup; a stopped driver ignores them.
+  {SteamControllerBle hs=make();BluetoothGatt hg=(BluetoothGatt)get(hs,"gatt");BluetoothGattCharacteristic hfeat=command();set(hs,"writeChar",hfeat);
+   int hBefore=hg.writes.size();
+   hs.steamSettings((byte)0x87,new byte[]{48,0x18,0, 9,1,0, 7,7,0, 49,2,0, 52,(byte)0xff,(byte)0xff, 45,100,0, 71,1,0, 53,(byte)0xff,(byte)0xff});
+   int hw=hg.writes.size()-1;
+   check(hw==hBefore&&hg.targets.get(hw)==hfeat&&Arrays.equals(hg.writes.get(hw),new byte[]{(byte)0x87,6,7,7,0,45,100,0}),
+         "a host settings write reaches characteristic 34 with its id, minus the link's own and wire-format ids");
+   check(hfeat.writeTypes.get(hfeat.writeTypes.size()-1)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,"host settings go as a write request, like the link's own setup");
+   BluetoothGattCallback hcb=(BluetoothGattCallback)get(hs,"gattCallback");hcb.onCharacteristicWrite(hg,hfeat,0);
+   hs.steamSettings((byte)0x87,new byte[]{9,0,0,71,0,0});
+   check(hg.writes.size()==hw+1,"a host write with only reserved ids writes nothing");
+   set(hs,"writeBusy",true);
+   ((Runnable)get(hs,"keepAlive")).run();hs.steamSettings((byte)0x87,new byte[]{34,100,0});hs.steamSettings((byte)0x87,new byte[]{35,80,0});((Runnable)get(hs,"keepAlive")).run();
+   int hostWrites=0,keepAlives=0;
+   for(Object item:(Deque<?>)get(hs,"writeQueue")){byte[] b=(byte[])get(item,"bytes");if((b[0]&255)!=0x87)continue;if((boolean)get(item,"hostSettings"))hostWrites++;else keepAlives++;}
+   check(hostWrites==2&&keepAlives==1,"host settings writes are never deduplicated and leave the single keep-alive in place");
+   hs.stop();
+   hs=make();hg=(BluetoothGatt)get(hs,"gatt");hfeat=command();set(hs,"writeChar",hfeat);set(hs,"writeBusy",true);
+   hs.steamSettings((byte)0x8E,new byte[0]);
+   List<byte[]> hq=new ArrayList<>();for(Object item:(Deque<?>)get(hs,"writeQueue"))hq.add((byte[])get(item,"bytes"));
+   check(hq.size()==2&&(hq.get(0)[0]&255)==0x8E&&hq.get(0)[1]==0&&(hq.get(1)[0]&255)==0x87&&hq.get(1)[2]==9&&hq.get(1)[3]==0&&hq.get(1)[5]==71,
+         "load-defaults from the host is followed by this link's lizard/watchdog/IMU setup");
+   hs.stop();int hQueued=((Deque<?>)get(hs,"writeQueue")).size();hs.steamSettings((byte)0x87,new byte[]{45,100,0});
+   check(((Deque<?>)get(hs,"writeQueue")).size()==hQueued&&hg.writes.isEmpty(),"a stopped driver ignores host settings");
+   hs=make();hg=(BluetoothGatt)get(hs,"gatt");hfeat=command();set(hs,"writeChar",hfeat);
+   hs.steamSettings((byte)0x89,new byte[]{45,100,0});
+   check(hg.writes.isEmpty(),"an unknown host settings command is ignored");hs.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''

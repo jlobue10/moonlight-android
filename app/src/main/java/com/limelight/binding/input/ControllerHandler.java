@@ -2346,6 +2346,21 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
+    /**
+     * A Steam Controller (2026) settings write from the host, for the driver-fed controller that
+     * advertised LI_CCAP_STEAM_SETTINGS. The in-app Bluetooth driver applies it to the real unit.
+     */
+    public void handleSteamSettings(short controllerNumber, byte command, byte[] triples) {
+        if (stopped || triples == null) {
+            return;
+        }
+        for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
+            if (deviceContext.controllerNumber == controllerNumber) {
+                deviceContext.device.steamSettings(command, triples);
+            }
+        }
+    }
+
     private SensorEventListener createSensorListener(final short controllerNumber, final byte motionType, final boolean needsDeviceOrientationCorrection) {
         return new SensorEventListener() {
             private float[] lastValues = new float[3];
