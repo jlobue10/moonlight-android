@@ -308,7 +308,8 @@ public class BleRegression {
   // to refuse a Write Command, which no peer can do.
   {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
    BluetoothGattCharacteristic pulse3=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",14);
-   old.service.chars.add(pulse3);old.service.chars.add(feat);old.service.chars.add(notify);
+   BluetoothGattCharacteristic rumble3=new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",14);
+   old.service.chars.add(rumble3);old.service.chars.add(pulse3);old.service.chars.add(feat);old.service.chars.add(notify);
    callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
    callback.onCharacteristicWrite(old,feat,0);callback.onCharacteristicWrite(old,feat,0);
    d.steamHaptic(click);refuse(callback,old,pulse3,4);int w=old.writes.size()-1;
@@ -325,8 +326,12 @@ public class BleRegression {
    d.steamHaptic(click);w=old.writes.size()-1;
    check(w==6&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f,"later reports on that link go as feature commands");
    callback.onCharacteristicWrite(old,feat,0);
+   // The fallback is per report id: 0x80 is still probed on B5 after 0x81 fell back.
    d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0x10,0x27,0,0x10,0x27,0});w=old.writes.size()-1;
-   check(w==7&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0xeb,"rumble on that link goes as the feature rumble command");
+   check(w==7&&old.targets.get(w)==rumble3&&old.writes.get(w).length==9&&((int[])get(d,"outputFraming"))[1]==2&&((int[])get(d,"outputFraming"))[0]==0
+         &&rumble3.writeTypes.size()==1&&rumble3.writeTypes.get(0)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+         "a refused 0x81 falls back to the feature pulse for 0x81 only; 0x80 still goes to B5");
+   callback.onCharacteristicWrite(old,rumble3,0);
    d.stop();}
   // No output characteristics at all: the fork.27 feature conversion as before.
   {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
@@ -354,13 +359,8 @@ public class BleRegression {
    d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0x10,0x27,0,0x10,0x27,0});
    check(rumble2.writeTypes.size()==1&&rumble2.writeTypes.get(0)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,"each report id is probed with a response once");
    callback.onCharacteristicWrite(old,rumble2,0);d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0,0,0,0,0,0});callback.onCharacteristicWrite(old,rumble2,0);
-   d.steamHaptic(click);refuse(callback,old,pulse2,4);refuse(callback,old,pulse2,4);int w=old.writes.size()-1;
-   check(old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f&&((int[])get(d,"outputFraming"))[1]==2&&((int[])get(d,"outputFraming"))[0]==0,
-         "a refused 0x81 falls back to the feature pulse for 0x81 only");
-   callback.onCharacteristicWrite(old,feat,0);
-   d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0x10,0x27,0,0x10,0x27,0});w=old.writes.size()-1;
-   check(old.targets.get(w)==rumble2&&old.writes.get(w).length==9,"0x80 still goes to B5 after 0x81 fell back");
-   callback.onCharacteristicWrite(old,rumble2,0);
+   // (A refusal of an already-probed report is a Write Command the peer cannot refuse: the
+   // per-id fallback is pinned in the ladder block above, where the probe itself is refused.)
    // 0x44 acknowledgements on 79 are counted; the summary line runs without a link error.
    BluetoothGattCharacteristic ackCh=new BluetoothGattCharacteristic("100f6c79-1735-4313-b402-38567131e5f3",16);ackCh.value=new byte[]{4,2,0,0,0};
    callback.onCharacteristicChanged(old,ackCh);
