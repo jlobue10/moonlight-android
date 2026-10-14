@@ -66,7 +66,9 @@ public class CacheHelper {
     // concurrent reader only ever sees a complete file (two loaders can race for one asset).
     public static File openCacheFileForStaging(File root, String... path) throws IOException {
         File target = openPath(true, root, path);
-        return File.createTempFile(target.getName(), ".part", target.getParentFile());
+        // createTempFile needs a prefix of at least three characters; the name is host-chosen
+        // (an app-list cache is keyed by the host's uuid, which may be one character long).
+        return File.createTempFile("stage-" + target.getName(), ".part", target.getParentFile());
     }
 
     public static void commitStagedCacheFile(File staging, File root, String... path) throws IOException {

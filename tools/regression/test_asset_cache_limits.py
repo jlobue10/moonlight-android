@@ -204,6 +204,10 @@ public class AssetCacheRegression {
    check(!Files.exists(cached) && reads[0]<=20,"a trickling download is cut off at the time budget");
    try(var entries=Files.list(cached.getParent())){check(entries.count()==0,"a cut-off download leaves no staging file");}
   }
+  // A33-02: the staging prefix does not depend on the host-chosen target name.
+  CacheHelper.writeStringToCacheFileAtomically(root.toFile(),"<root/>","applist","ab");
+  check(Files.exists(root.resolve("applist").resolve("ab")),"a two-character host uuid still gets its app-list cache committed");
+  try(var entries=Files.list(root.resolve("applist"))){check(entries.count()==1,"the short-name commit leaves no staging file");}
   System.out.println(checks+" asset/cache checks, "+failures+" failures");
   if(failures!=0)System.exit(1);
  }

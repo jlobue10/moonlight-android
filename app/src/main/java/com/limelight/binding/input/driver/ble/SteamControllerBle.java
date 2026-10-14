@@ -764,6 +764,11 @@ public class SteamControllerBle extends SteamControllerInput {
                         writeQueue.addFirst(failed);
                     } else if (newFraming != framing) {
                         outputFraming[index] = newFraming;
+                        // The first write in a new framing is a probe again: it goes with a
+                        // response so the firmware's verdict reaches the log, and so a second
+                        // refusal can be seen at all (a Write Command cannot be refused by the
+                        // peer, so the feature fallback would otherwise never engage).
+                        outputProbed[index] = false;
                         if (newFraming == OUTPUT_FRAMING_UNUSABLE) {
                             // Reports of this id queued for the output endpoint go the feature way too.
                             final int id = failed.id();
