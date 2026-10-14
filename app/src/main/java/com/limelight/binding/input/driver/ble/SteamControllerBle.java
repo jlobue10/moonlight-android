@@ -223,7 +223,7 @@ public class SteamControllerBle extends SteamControllerInput {
         final BluetoothGattCharacteristic ch;
         final byte[] bytes;
         final boolean output;
-        /** A settings command the host's Steam wrote, as opposed to this link's own keep-alive. */
+        /** Part of applying a host settings write; must not be coalesced as a keep-alive. */
         final boolean hostSettings;
 
         Pending(BluetoothGattCharacteristic ch, byte[] bytes, boolean output) {
@@ -1210,8 +1210,8 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             if (!p.output && !p.hostSettings && p.bytes[0] == ID_SET_SETTINGS_VALUES) {
                 // One keep-alive waiting is enough; a stalled link must not fill up with them.
-                // The host's settings writes are not keep-alives: each carries different ids
-                // and every one has to arrive, so they neither count here nor get dropped.
+                // Host writes and their post-reset setup are ordered commands. An earlier
+                // keep-alive cannot replace them, so they neither count here nor get dropped.
                 for (Pending queued : writeQueue) {
                     if (!queued.output && !queued.hostSettings && queued.bytes[0] == ID_SET_SETTINGS_VALUES) {
                         return;
@@ -1488,8 +1488,10 @@ public class SteamControllerBle extends SteamControllerInput {
             if (command == ID_LOAD_DEFAULT_SETTINGS) {
                 LimeLog.info("Steam Controller BLE: host settings 0x8e (load defaults), re-sending this link's setup");
                 enqueue(new Pending(writeChar, new byte[]{ID_LOAD_DEFAULT_SETTINGS, 0}, false, true));
-                enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
-                        SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0));
+                // A keep-alive already queued before this reset is undone by it.
+                // Keep this restoration after its reset, including repeated resets.
+                enqueue(new Pending(writeChar, settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
+                        SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0), false, true));
                 return;
             }
             if (command != ID_SET_SETTINGS_VALUES) {

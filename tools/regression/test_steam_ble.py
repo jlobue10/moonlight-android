@@ -764,6 +764,30 @@ public class BleRegression {
    hs=make();hg=(BluetoothGatt)get(hs,"gatt");hfeat=command();set(hs,"writeChar",hfeat);
    hs.steamSettings((byte)0x89,new byte[]{45,100,0});
    check(hg.writes.isEmpty(),"an unknown host settings command is ignored");hs.stop();}
+  // A keep-alive before LOAD_DEFAULT_SETTINGS cannot satisfy the setup required
+  // after it. Drive the real queue through completion and inspect the wire order,
+  // including repeated resets while a haptic write holds the GATT slot.
+  for(boolean pendingKeepAlive:new boolean[]{false,true})for(int resets:new int[]{1,2}){
+   SteamControllerBle hs=make();BluetoothGatt hg=(BluetoothGatt)get(hs,"gatt");
+   BluetoothGattCharacteristic resetFeature=command();set(hs,"writeChar",resetFeature);
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(hs,"gattCallback");
+   hs.steamHaptic(new byte[]{(byte)0x81,0,1,0,1,0,1,0});
+   if(pendingKeepAlive)((Runnable)get(hs,"keepAlive")).run();
+   for(int i=0;i<resets;i++)hs.steamSettings((byte)0x8E,new byte[0]);
+   int completions=0;
+   while(get(hs,"inFlight")!=null&&completions++<12)cb.onCharacteristicWrite(hg,resetFeature,0);
+   byte[] setup={(byte)0x87,9,9,0,0,71,0,0,48,0,0};
+   int restored=0,defaults=0;
+   for(int i=0;i<hg.writes.size();i++)if((hg.writes.get(i)[0]&255)==0x8E){
+    defaults++;
+    if(i+1<hg.writes.size()&&Arrays.equals(hg.writes.get(i+1),setup))restored++;
+   }
+   String context=" (pending keep-alive="+pendingKeepAlive+", resets="+resets+")";
+   check(defaults==resets&&restored==resets,"every host reset restores link settings immediately afterwards"+context);
+   check(get(hs,"inFlight")==null&&Arrays.equals(hg.writes.get(hg.writes.size()-1),setup),
+         "draining reset traffic leaves lizard/watchdog disabled and the configured IMU mode"+context);
+   hs.stop();
+  }
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
