@@ -527,38 +527,41 @@ public class SteamControllerBle extends SteamControllerInput {
         @SuppressLint("MissingPermission")
         @Override
         public void onMtuChanged(BluetoothGatt g, int mtu, int status) {
-            if (stopped || g != gatt) {
+            final boolean retryMtu;
+            synchronized (SteamControllerBle.this) {
+                // Consume only this live link's outstanding request. Retirement
+                // and a new connection publish their MTU state under this lock.
+                if (stopped || g != gatt || !mtuRequested) {
+                    return;
+                }
+                mtuRequested = false;
+                retryMtu = mtu < STATE_REPORT_MTU && !mtuRetried;
+                if (retryMtu) {
+                    mtuRetried = true;
+                    // Publish before GATT: the retry callback can arrive before
+                    // requestMtu returns, including on another binder thread.
+                    mtuRequested = true;
+                }
+            }
+            LimeLog.info("Steam Controller BLE: MTU " + mtu);
+            if (mtu < STATE_REPORT_MTU) {
+                // A 23-byte MTU cannot carry a 45-byte state report. Ask once
+                // more, then recycle instead of announcing a silent controller.
+                if (retryMtu) {
+                    LimeLog.warning("Steam Controller BLE: MTU " + mtu + " is too small for state reports; asking again");
+                    if (!g.requestMtu(DESIRED_MTU)) {
+                        // Retirement clears the flag only if g still owns it;
+                        // this call may have returned after a new link started.
+                        LimeLog.warning("Steam Controller BLE: MTU retry refused; recycling the known-small link");
+                        onLinkLost(g);
+                    }
+                } else {
+                    LimeLog.warning("Steam Controller BLE: MTU " + mtu + " stayed too small for state reports; recycling the link");
+                    onLinkLost(g);
+                }
                 return;
             }
-            // The stack may report this twice; discover services once.
-            if (mtuRequested) {
-                mtuRequested = false;
-                LimeLog.info("Steam Controller BLE: MTU " + mtu);
-                if (mtu < STATE_REPORT_MTU) {
-                    // State reports are 45 bytes: a 23-byte MTU truncates every one of
-                    // them and the controller would look connected but stay silent. Ask
-                    // once more; a link that stays this small is recycled rather than
-                    // announced to the host as a controller that never produces input.
-                    if (!mtuRetried) {
-                        mtuRetried = true;
-                        LimeLog.warning("Steam Controller BLE: MTU " + mtu + " is too small for state reports; asking again");
-                        // Publish the retry before entering GATT: its callback can
-                        // arrive before requestMtu returns and must consume this flag.
-                        mtuRequested = true;
-                        if (!g.requestMtu(DESIRED_MTU)) {
-                            mtuRequested = false;
-                            LimeLog.warning("Steam Controller BLE: MTU retry refused; recycling the known-small link");
-                            onLinkLost(g);
-                        }
-                        return;
-                    } else {
-                        LimeLog.warning("Steam Controller BLE: MTU " + mtu + " stayed too small for state reports; recycling the link");
-                        onLinkLost(g);
-                        return;
-                    }
-                }
-                if (!g.discoverServices()) onLinkLost(g);
-            }
+            if (!g.discoverServices()) onLinkLost(g);
         }
 
         @SuppressLint("MissingPermission")
@@ -919,7 +922,9 @@ public class SteamControllerBle extends SteamControllerInput {
             // The unlocked g == gatt check on the way in can be stale: a watchdog may have
             // retired this handle meanwhile, and marking a retired link connected would leave
             // linkConnected true for the next link's connect watchdog.
-            if (g != gatt) {
+            // stop() can also retain g while its restore writes drain, and a
+            // duplicate CONNECTED must not reset the ongoing MTU retry budget.
+            if (stopped || g != gatt || linkConnected) {
                 return;
             }
             everConnected = true;
@@ -932,7 +937,14 @@ public class SteamControllerBle extends SteamControllerInput {
         LimeLog.info("Steam Controller BLE: connected, negotiating");
         g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
         if (!g.requestMtu(DESIRED_MTU)) {
-            mtuRequested = false;
+            synchronized (this) {
+                // A rejected request can return after retirement and reconnect.
+                // It must not consume the replacement's outstanding MTU request.
+                if (stopped || g != gatt) {
+                    return;
+                }
+                mtuRequested = false;
+            }
             if (!g.discoverServices()) onLinkLost(g);
         }
     }
@@ -949,6 +961,7 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             gatt = null;
             linkConnected = false;
+            mtuRequested = false;
             earlyLost = null;
             earlyConnected = null;
             disarmConnectWatchdog();

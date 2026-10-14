@@ -57,7 +57,7 @@ STUBS = {
  public static final int GATT_SUCCESS=0, CONNECTION_PRIORITY_HIGH=1; public boolean acceptDescriptor=true, acceptWrite=true, closed;
  public BluetoothGattService service=new BluetoothGattService(); public List<byte[]> writes=new ArrayList<>();
  public boolean requestConnectionPriority(int p){return true;} public int mtuRequests; public boolean discovered,acceptMtu=true; public Runnable beforeMtuReturn;
- public boolean requestMtu(int m){++mtuRequests;if(!acceptMtu)return false;if(beforeMtuReturn!=null){Runnable r=beforeMtuReturn;beforeMtuReturn=null;r.run();}return true;}
+ public boolean requestMtu(int m){++mtuRequests;boolean accepted=acceptMtu;if(beforeMtuReturn!=null){Runnable r=beforeMtuReturn;beforeMtuReturn=null;r.run();}return accepted;}
  public boolean discoverServices(){discovered=true;return true;} public BluetoothGattService getService(UUID u){return service;}
  public boolean setCharacteristicNotification(BluetoothGattCharacteristic c,boolean b){return true;}
  public boolean writeDescriptor(BluetoothGattDescriptor d){return acceptDescriptor;}
@@ -536,6 +536,60 @@ public class BleRegression {
    Method lost=null;for(Class<?> c=d.getClass();c!=null;c=c.getSuperclass()){try{lost=c.getDeclaredMethod("onLinkLost",BluetoothGatt.class);break;}catch(NoSuchMethodException ignored){}}
    lost.setAccessible(true);lost.invoke(d,old);
    check((int)get(d,"reconnectAttempts")==1&&h.delayed.size()==1,"a second retirement of the same handle is a no-op");
+   d.stop();}
+  // Pause a CONNECTED callback after its first stopped check. stop() retains
+  // the handle while restoring lizard mode, so handle equality is insufficient.
+  {
+   BluetoothDevice dev=new BluetoothDevice();SteamControllerBle drv=create(dev);drv.start();
+   BluetoothGatt g=dev.next;
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(drv,"gattCallback");
+   Handler h=(Handler)get(drv,"handler");
+   set(drv,"writeChar",command());set(drv,"writeBusy",true);
+   Thread worker=new Thread(()->cb.onConnectionStateChange(g,0,BluetoothProfile.STATE_CONNECTED));worker.setDaemon(true);
+   synchronized(drv){
+    worker.start();long deadline=System.nanoTime()+3_000_000_000L;
+    while(worker.getState()!=Thread.State.BLOCKED&&worker.isAlive()&&System.nanoTime()<deadline)Thread.yield();
+    if(worker.getState()!=Thread.State.BLOCKED)throw new AssertionError("CONNECTED did not reach the driver monitor");
+    drv.stop();
+    check(get(drv,"gatt")==g&&(boolean)get(drv,"closing"),"stop retains the handle until restore writes finish");
+   }
+   worker.join(3000);if(worker.isAlive())throw new AssertionError("CONNECTED did not finish after stop");
+   check(g.mtuRequests==0&&!g.discovered,"a CONNECTED callback admitted before stop cannot restart setup during restoration");
+   check(!(boolean)get(drv,"linkConnected")&&!(boolean)get(drv,"mtuRequested")
+         &&!h.delayed.contains(tryGet(drv,"setupWatchdog")),
+         "stop prevents a delayed CONNECTED callback from publishing setup state or timers");
+   ((Runnable)get(drv,"closeLink")).run();
+  }
+  for(boolean retry:new boolean[]{false,true}){
+   BluetoothDevice dev=new BluetoothDevice();SteamControllerBle drv=create(dev);drv.start();
+   BluetoothGatt retired=dev.next,replacement=new BluetoothGatt();
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(drv,"gattCallback");
+   if(retry)cb.onConnectionStateChange(retired,0,BluetoothProfile.STATE_CONNECTED);
+   retired.acceptMtu=false;
+   retired.beforeMtuReturn=()->{
+    Thread worker=new Thread(()->{
+     cb.onConnectionStateChange(retired,0,BluetoothProfile.STATE_DISCONNECTED);
+     dev.next=replacement;drv.start();
+     cb.onConnectionStateChange(replacement,0,BluetoothProfile.STATE_CONNECTED);
+    });worker.setDaemon(true);worker.start();
+    try{worker.join(3000);}catch(InterruptedException e){throw new AssertionError(e);}
+    if(worker.isAlive())throw new AssertionError("replacement blocked behind the MTU call");
+   };
+   if(retry)cb.onMtuChanged(retired,23,0);
+   else cb.onConnectionStateChange(retired,0,BluetoothProfile.STATE_CONNECTED);
+   check(get(drv,"gatt")==replacement&&(boolean)get(drv,"mtuRequested")&&!retired.discovered,
+         "a returning rejected MTU request cannot consume a replacement's negotiation; retry="+retry);
+   cb.onMtuChanged(replacement,100,0);
+   check(replacement.discovered,"the replacement's MTU completion still discovers services");
+   drv.stop();}
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   callback.onConnectionStateChange(old,0,BluetoothProfile.STATE_CONNECTED);
+   callback.onMtuChanged(old,23,0);int requests=old.mtuRequests;
+   callback.onConnectionStateChange(old,0,BluetoothProfile.STATE_CONNECTED);
+   check(old.mtuRequests==requests&&(boolean)get(d,"mtuRetried"),
+         "a duplicate CONNECTED callback cannot restart setup or reset the MTU retry budget");
+   callback.onMtuChanged(old,23,0);
+   check(old.closed,"the small-MTU retry limit survives a duplicate CONNECTED callback");
    d.stop();}
   // MTU: a link whose MTU stays too small for the 45-byte state reports is recycled, not announced.
   {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
