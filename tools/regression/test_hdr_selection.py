@@ -18,7 +18,16 @@ source = (subprocess.check_output(['git', 'show', 'HEAD:' + PATH], cwd=ROOT, tex
           if '--baseline' in sys.argv else (ROOT / PATH).read_text())
 common = ROOT / 'app/src/main/jni/moonlight-core/moonlight-common-c/src'
 native = (common / 'RtspConnection.c').read_text()
-selection = native[native.index('        int pyroWaveFormat ='):native.index('        // Look for the SDP attribute')]
+# The negotiation is negotiateVideoFormat() since common-c #53: take its body between the
+# PyroWave selection and the return (brace-matched so a moved function still resolves).
+start = native.index('static int negotiateVideoFormat(')
+end = native.index('{', start)
+depth = 1
+while depth:
+    end += 1
+    depth += (native[end] == '{') - (native[end] == '}')
+function = native[start:end + 1]
+selection = function[function.index('    int pyroWaveFormat ='):function.rindex('    return format;')]
 bridge = (ROOT / 'app/src/main/java/com/limelight/nvstream/jni/MoonBridge.java').read_text()
 constants = '\n'.join(re.findall(r'public static final int VIDEO_FORMAT_[A-Z_0-9]+\s*=.*?;', bridge, re.S))
 if 'private static boolean shouldRequestHdr(' in source:
@@ -42,6 +51,8 @@ c_code = r'''
 #include <string.h>
 #include "VideoFormat.h"
 #define Limelog(...) ((void)0)
+// The fallback re-chooses the audio-quality target URL (C33-01); no fallback is configured here.
+static void selectRtspTargetUrl(SERVER_INFORMATION *serverInfo, int videoBitrateKbps) { (void)serverInfo; (void)videoBitrateKbps; }
 static int choose(int formats, int modes) {
  STREAM_CONFIGURATION StreamConfig={.supportedVideoFormats=formats,.width=1920,.height=1080};
  SERVER_INFORMATION info={.serverCodecModeSupport=modes};SERVER_INFORMATION *serverInfo=&info;
@@ -50,10 +61,10 @@ static int choose(int formats, int modes) {
   modes&SCM_MASK_AV1?"a=rtpmap:98 AV1/90000\r\n":"",
   modes&SCM_MASK_HEVC?"a=fmtp:97 sprop-parameter-sets=AAAAAU\r\n":"",
   modes&SCM_PYROWAVE?"a=rtpmap:99 PYROWAVE/90000\r\na=x-ss-pyrowave.bitstream:" LI_PYROWAVE_BITSTREAM_ID "\r\n":"");
- struct {char *payload;int payloadLength;} response={sdp,(int)strlen(sdp)};
- int NegotiatedVideoFormat=0;
+ struct {char *payload;int payloadLength;} resp={sdp,(int)strlen(sdp)},*response=&resp;
+ int format=0;
  NATIVE_SELECTION
- return NegotiatedVideoFormat;
+ return format;
 }
 int main(void){
  int ch[]={0,VIDEO_FORMAT_H265,VIDEO_FORMAT_H265|VIDEO_FORMAT_H265_MAIN10};
