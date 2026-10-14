@@ -86,7 +86,9 @@ STUBS = {
  public void onCharacteristicWrite(BluetoothGatt g,BluetoothGattCharacteristic c,int s){}
  public void onCharacteristicRead(BluetoothGatt g,BluetoothGattCharacteristic c,int s){}
  public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c){} }''',
- 'com/limelight/LimeLog.java': 'package com.limelight; public class LimeLog { public static void info(String s){} public static void warning(String s){} }',
+ 'com/limelight/LimeLog.java': '''package com.limelight; public class LimeLog {
+ public static volatile java.util.function.Consumer<String> warningHook;
+ public static void info(String s){} public static void warning(String s){if(warningHook!=null)warningHook.accept(s);} }''',
 }
 TEST = r'''import java.lang.reflect.*; import java.util.*; import android.bluetooth.*; import android.content.*; import android.os.*;
 import com.limelight.binding.input.driver.*; import com.limelight.binding.input.driver.ble.*;
@@ -120,7 +122,51 @@ public class BleRegression {
   if(status>0&&status<0x80&&ch.writeTypes.get(ch.writeTypes.size()-1)!=BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
    throw new AssertionError("the harness refused a write-without-response");
   cb.onCharacteristicWrite(g,ch,status);}
+ static void await(java.util.concurrent.CountDownLatch latch){
+  try{if(!latch.await(3,java.util.concurrent.TimeUnit.SECONDS))throw new AssertionError("callback did not reach its boundary");}
+  catch(InterruptedException e){throw new AssertionError(e);}
+ }
+ static void staleWriteCompletion(boolean afterDrain)throws Exception{
+  SteamControllerBle driver=make();BluetoothGatt retired=(BluetoothGatt)get(driver,"gatt");
+  BluetoothGattCharacteristic oldCommand=command();set(driver,"writeChar",oldCommand);
+  byte[] pulse={(byte)0x81,0,1,0,1,0,1,0};driver.steamHaptic(pulse);
+  BluetoothGattCallback cb=(BluetoothGattCallback)get(driver,"gattCallback");
+  java.util.concurrent.CountDownLatch entered=new java.util.concurrent.CountDownLatch(1), resume=new java.util.concurrent.CountDownLatch(1);
+  if(afterDrain)com.limelight.LimeLog.warningHook=message->{
+   if(message.contains("write failed")){entered.countDown();await(resume);}
+  };
+  Thread completion=new Thread(()->cb.onCharacteristicWrite(retired,oldCommand,afterDrain?133:0));
+  completion.setDaemon(true);
+  BluetoothGatt replacement=new BluetoothGatt();Object pending;
+  try{
+   if(afterDrain){completion.start();await(entered);}
+   synchronized(driver){
+    if(!afterDrain){
+     completion.start();long deadline=System.nanoTime()+3_000_000_000L;
+     while(completion.getState()!=Thread.State.BLOCKED&&System.nanoTime()<deadline)Thread.yield();
+     if(completion.getState()!=Thread.State.BLOCKED)throw new AssertionError("callback did not reach the driver monitor");
+    }
+    cb.onConnectionStateChange(retired,0,BluetoothProfile.STATE_DISCONNECTED);
+    ((BluetoothDevice)get(driver,"device")).next=replacement;driver.start();
+    set(driver,"writeChar",command());driver.steamHaptic(pulse);pending=get(driver,"inFlight");
+   }
+   resume.countDown();completion.join(3000);
+   if(completion.isAlive())throw new AssertionError("old write completion did not finish");
+   String where=afterDrain?"after draining the retired write":"before taking the driver lock";
+   check(pending!=null&&get(driver,"inFlight")==pending&&(boolean)get(driver,"writeBusy"),
+         "reconnect "+where+" preserves the replacement's in-flight write");
+   check(((Handler)get(driver,"handler")).delayed.contains(get(driver,"writeWatchdog")),
+         "reconnect "+where+" preserves the replacement's write watchdog");
+   driver.steamHaptic(pulse);
+   check(replacement.writes.size()==1,"reconnect "+where+" cannot dispatch overlapping replacement writes");
+   cb.onCharacteristicWrite(replacement,(BluetoothGattCharacteristic)get(driver,"writeChar"),0);
+   check(replacement.writes.size()==2,"the replacement's own completion drains its queued pulse");
+  }finally{
+   resume.countDown();com.limelight.LimeLog.warningHook=null;driver.stop();
+  }
+ }
  public static void main(String[] args)throws Exception{
+  staleWriteCompletion(false);staleWriteCompletion(true);
   SteamControllerBle d=make();set(d,"writeChar",command());set(d,"writeBusy",true);
   for(int i=0;i<1000;i++)d.steamHaptic(new byte[]{(byte)0x81,(byte)(i%2),0,0,0,0,0,0});
   check(((Deque<?>)get(d,"writeQueue")).size()<=32,"stalled link has a bounded queue even for motors-off floods");

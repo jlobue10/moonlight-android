@@ -693,18 +693,20 @@ public class SteamControllerBle extends SteamControllerInput {
             if (g != gatt) {
                 return;
             }
-            if (stopped && !closing) {
-                // Not restoring (no link to restore): release the write slot anyway
-                synchronized (SteamControllerBle.this) {
-                    writeBusy = false;
-                }
-                return;
-            }
             Pending failed;
             boolean withResponse;
             int framing = OUTPUT_FRAMING_PAYLOAD;
             int index = -1;
             synchronized (SteamControllerBle.this) {
+                // Link loss can retire g after the check above while this callback
+                // waits for the monitor. Only its own link may consume inFlight.
+                if (g != gatt) {
+                    return;
+                }
+                if (stopped && !closing) {
+                    writeBusy = false;
+                    return;
+                }
                 failed = inFlight;
                 inFlight = null;
                 writeRejectedSinceMs = -1;
@@ -754,37 +756,40 @@ public class SteamControllerBle extends SteamControllerInput {
                     retryWithoutResponse = true;
                 }
             }
-            disarmWriteWatchdog();
             boolean drained;
             synchronized (SteamControllerBle.this) {
+                // Failure logging and fallback selection run outside the lock.
+                // A reconnect there must keep its write slot and watchdog.
+                if (g != gatt) {
+                    return;
+                }
+                disarmWriteWatchdog();
                 writeBusy = false;
-                if (g == gatt) {
-                    if (retryWithoutResponse) {
-                        forceNoResponse = true;
-                        writeQueue.addFirst(failed);
-                    } else if (newFraming != framing) {
-                        outputFraming[index] = newFraming;
-                        // The first write in a new framing is a probe again: it goes with a
-                        // response so the firmware's verdict reaches the log, and so a second
-                        // refusal can be seen at all (a Write Command cannot be refused by the
-                        // peer, so the feature fallback would otherwise never engage).
-                        outputProbed[index] = false;
-                        if (newFraming == OUTPUT_FRAMING_UNUSABLE) {
-                            // Reports of this id queued for the output endpoint go the feature way too.
-                            final int id = failed.id();
-                            ArrayDeque<Pending> kept = new ArrayDeque<>();
-                            for (Pending queued : writeQueue) {
-                                Pending replacement = queued.output && queued.id() == id ? featureFallback(queued.bytes) : queued;
-                                if (replacement != null) {
-                                    kept.add(replacement);
-                                }
+                if (retryWithoutResponse) {
+                    forceNoResponse = true;
+                    writeQueue.addFirst(failed);
+                } else if (newFraming != framing) {
+                    outputFraming[index] = newFraming;
+                    // The first write in a new framing is a probe again: it goes with a
+                    // response so the firmware's verdict reaches the log, and so a second
+                    // refusal can be seen at all (a Write Command cannot be refused by the
+                    // peer, so the feature fallback would otherwise never engage).
+                    outputProbed[index] = false;
+                    if (newFraming == OUTPUT_FRAMING_UNUSABLE) {
+                        // Reports of this id queued for the output endpoint go the feature way too.
+                        final int id = failed.id();
+                        ArrayDeque<Pending> kept = new ArrayDeque<>();
+                        for (Pending queued : writeQueue) {
+                            Pending replacement = queued.output && queued.id() == id ? featureFallback(queued.bytes) : queued;
+                            if (replacement != null) {
+                                kept.add(replacement);
                             }
-                            writeQueue.clear();
-                            writeQueue.addAll(kept);
                         }
-                        if (retry != null) {
-                            writeQueue.addFirst(retry);
-                        }
+                        writeQueue.clear();
+                        writeQueue.addAll(kept);
+                    }
+                    if (retry != null) {
+                        writeQueue.addFirst(retry);
                     }
                 }
                 drained = closing && writeQueue.isEmpty();
