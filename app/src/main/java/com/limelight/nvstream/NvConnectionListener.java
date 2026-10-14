@@ -23,4 +23,10 @@ public interface NvConnectionListener {
 
     /** A Steam Controller (2026) haptic output report to replay on the controller, id first. */
     void steamHaptic(short controllerNumber, byte[] report);
+
+    /**
+     * A Steam Controller (2026) settings write from the host's Steam: command 0x87 with
+     * (id, lo, hi) triples, or 0x8E with none. The driver that owns the controller applies it.
+     */
+    void steamSettings(short controllerNumber, byte command, byte[] triples);
 }

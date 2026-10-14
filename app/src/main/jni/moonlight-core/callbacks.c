@@ -39,6 +39,7 @@ static jmethodID BridgeClRumbleTriggersMethod;
 static jmethodID BridgeClSetMotionEventStateMethod;
 static jmethodID BridgeClSetControllerLEDMethod;
 static jmethodID BridgeClSteamHapticMethod;
+static jmethodID BridgeClSteamSettingsMethod;
 static jbyteArray DecodedFrameBuffer;
 static jshortArray DecodedAudioBuffer;
 
@@ -104,6 +105,7 @@ Java_com_limelight_nvstream_jni_MoonBridge_init(JNIEnv *env, jclass clazz) {
     BridgeClSetMotionEventStateMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSetMotionEventState", "(SBS)V");
     BridgeClSetControllerLEDMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSetControllerLED", "(SBBB)V");
     BridgeClSteamHapticMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSteamHaptic", "(S[B)V");
+    BridgeClSteamSettingsMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeClSteamSettings", "(SB[B)V");
 }
 
 // NewGlobalRef can fail independently of NewByteArray. Publish a buffer only
@@ -466,6 +468,30 @@ void BridgeClSteamHaptic(uint16_t controllerNumber, uint8_t length, const uint8_
     }
 }
 
+void BridgeClSteamSettings(uint16_t controllerNumber, uint8_t command, uint8_t count, const uint8_t *triples) {
+    JNIEnv* env = GetThreadEnv();
+
+    // Only the triples the write carries: the common-c layer bounded count already.
+    jsize length = (jsize)count * 3;
+    jbyteArray array = (*env)->NewByteArray(env, length);
+    if (array == NULL) {
+        if ((*env)->ExceptionCheck(env)) {
+            // We will crash here
+            (*JVM)->DetachCurrentThread(JVM);
+        }
+        return;
+    }
+    if (length != 0) {
+        (*env)->SetByteArrayRegion(env, array, 0, length, (const jbyte*)triples);
+    }
+    (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeClSteamSettingsMethod, (short)controllerNumber, (jbyte)command, array);
+    (*env)->DeleteLocalRef(env, array);
+    if ((*env)->ExceptionCheck(env)) {
+        // We will crash here
+        (*JVM)->DetachCurrentThread(JVM);
+    }
+}
+
 void BridgeClLogMessage(const char* format, ...) {
     va_list va;
     va_start(va, format);
@@ -504,6 +530,7 @@ static CONNECTION_LISTENER_CALLBACKS BridgeConnListenerCallbacks = {
         .setMotionEventState = BridgeClSetMotionEventState,
         .setControllerLED = BridgeClSetControllerLED,
         .steamHaptic = BridgeClSteamHaptic,
+        .steamSettings = BridgeClSteamSettings,
 };
 
 static bool

@@ -95,6 +95,19 @@ public class SteamControllerBle extends SteamControllerInput {
     private static final int SETTING_LIZARD_MODE = 9;
     private static final int SETTING_IMU_MODE = 48;
     private static final int SETTING_STEAM_WATCHDOG_ENABLE = 71;
+    private static final int SETTING_WIRELESS_PACKET_VERSION = 49;
+    private static final int SETTING_LEFT_TRACKPAD_CLICK_PRESSURE = 52;
+    private static final int SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE = 53;
+    /**
+     * Setting ids a host's write never reaches the controller with: the three this link sets
+     * itself (lizard mode, watchdog, IMU mode; the keep-alive would fight the host over them),
+     * the wireless packet version (it changes the state report this driver parses), and the
+     * pad click pressures (Steam sets them to 0xFFFF over USB so the firmware never reports a
+     * click and Steam derives it from pressure; here the click bits are what the host gets).
+     */
+    private static final int[] HOST_SETTINGS_RESERVED = {SETTING_LIZARD_MODE, SETTING_IMU_MODE,
+            SETTING_STEAM_WATCHDOG_ENABLE, SETTING_WIRELESS_PACKET_VERSION,
+            SETTING_LEFT_TRACKPAD_CLICK_PRESSURE, SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE};
     private static final int IMU_MODE_RAW_ACCEL = 0x08;
     private static final int IMU_MODE_RAW_GYRO = 0x10;
 
@@ -210,11 +223,18 @@ public class SteamControllerBle extends SteamControllerInput {
         final BluetoothGattCharacteristic ch;
         final byte[] bytes;
         final boolean output;
+        /** A settings command the host's Steam wrote, as opposed to this link's own keep-alive. */
+        final boolean hostSettings;
 
         Pending(BluetoothGattCharacteristic ch, byte[] bytes, boolean output) {
+            this(ch, bytes, output, false);
+        }
+
+        Pending(BluetoothGattCharacteristic ch, byte[] bytes, boolean output, boolean hostSettings) {
             this.ch = ch;
             this.bytes = bytes;
             this.output = output;
+            this.hostSettings = hostSettings;
         }
 
         int id() {
@@ -334,6 +354,8 @@ public class SteamControllerBle extends SteamControllerInput {
         this.device = device;
         this.rumbleHoldMs = Math.max(0, rumbleHoldMs);
         this.rumbleMethod = rumbleMethod;
+        // This transport applies Steam's settings writes; the wired one does not (yet).
+        capabilities = (short) (capabilities | MoonBridge.LI_CCAP_STEAM_SETTINGS);
         handlerThread.start();
         handler = new Handler(handlerThread.getLooper());
     }
@@ -1186,10 +1208,12 @@ public class SteamControllerBle extends SteamControllerInput {
                 // Latest rumble state wins; an older queued 0x80, stop or not, is obsolete.
                 writeQueue.removeIf(queued -> queued.output && queued.id() == 0x80);
             }
-            if (!p.output && p.bytes[0] == ID_SET_SETTINGS_VALUES) {
+            if (!p.output && !p.hostSettings && p.bytes[0] == ID_SET_SETTINGS_VALUES) {
                 // One keep-alive waiting is enough; a stalled link must not fill up with them.
+                // The host's settings writes are not keep-alives: each carries different ids
+                // and every one has to arrive, so they neither count here nor get dropped.
                 for (Pending queued : writeQueue) {
-                    if (!queued.output && queued.bytes[0] == ID_SET_SETTINGS_VALUES) {
+                    if (!queued.output && !queued.hostSettings && queued.bytes[0] == ID_SET_SETTINGS_VALUES) {
                         return;
                     }
                 }
@@ -1443,6 +1467,69 @@ public class SteamControllerBle extends SteamControllerInput {
             repeat = 0;
         }
         sendPulse(side, onUs, offUs, repeat);
+    }
+
+    /**
+     * A host's Steam settings write for the controller: over USB Steam configures the unit at
+     * connect and when its controller UI opens (pad modes, LED, sleep timeout, and the haptic
+     * gains and intensities that decide how a pulse feels), and the virtual controller on the
+     * host forwards those writes here. They go to the command characteristic with their report
+     * id, exactly as this link's own setup does, minus {@link #HOST_SETTINGS_RESERVED}. A
+     * LOAD_DEFAULT_SETTINGS (Steam's exit) is applied and followed by this link's own setup, so
+     * lizard mode and the watchdog do not come back for up to a keep-alive interval.
+     */
+    @Override
+    public void steamSettings(byte command, byte[] triples) {
+        final byte[] copy = triples == null ? new byte[0] : triples.clone();
+        handler.post(() -> {
+            if (stopped || gatt == null || writeChar == null) {
+                return;
+            }
+            if (command == ID_LOAD_DEFAULT_SETTINGS) {
+                LimeLog.info("Steam Controller BLE: host settings 0x8e (load defaults), re-sending this link's setup");
+                enqueue(new Pending(writeChar, new byte[]{ID_LOAD_DEFAULT_SETTINGS, 0}, false, true));
+                enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
+                        SETTING_IMU_MODE, motionEnabled ? (IMU_MODE_RAW_ACCEL | IMU_MODE_RAW_GYRO) : 0));
+                return;
+            }
+            if (command != ID_SET_SETTINGS_VALUES) {
+                return;
+            }
+            int triplesIn = copy.length / 3;
+            byte[] cmd = new byte[2 + 3 * triplesIn];
+            StringBuilder applied = new StringBuilder(), reserved = new StringBuilder();
+            int kept = 0;
+            for (int i = 0; i < triplesIn; i++) {
+                int id = copy[3 * i] & 0xFF;
+                int value = (copy[3 * i + 1] & 0xFF) | ((copy[3 * i + 2] & 0xFF) << 8);
+                if (isHostSettingReserved(id)) {
+                    reserved.append(reserved.length() == 0 ? "" : " ").append(id);
+                    continue;
+                }
+                cmd[2 + 3 * kept] = (byte) id;
+                cmd[3 + 3 * kept] = copy[3 * i + 1];
+                cmd[4 + 3 * kept] = copy[3 * i + 2];
+                kept++;
+                applied.append(applied.length() == 0 ? "" : " ").append(id).append('=').append(value);
+            }
+            LimeLog.info("Steam Controller BLE: host settings 0x87: " + (kept == 0 ? "nothing to apply" : applied)
+                    + (reserved.length() == 0 ? "" : " (reserved, kept ours: " + reserved + ")"));
+            if (kept == 0) {
+                return;
+            }
+            cmd[0] = ID_SET_SETTINGS_VALUES;
+            cmd[1] = (byte) (3 * kept);
+            enqueue(new Pending(writeChar, kept == triplesIn ? cmd : Arrays.copyOf(cmd, 2 + 3 * kept), false, true));
+        });
+    }
+
+    private static boolean isHostSettingReserved(int id) {
+        for (int reserved : HOST_SETTINGS_RESERVED) {
+            if (reserved == id) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

@@ -92,6 +92,14 @@ public abstract class AbstractController {
     public void steamHaptic(byte[] report) {
     }
 
+    /**
+     * A Steam Controller (2026) settings write from the host's Steam: 0x87 SET_SETTINGS_VALUES with
+     * (id, lo, hi) triples, or 0x8E LOAD_DEFAULT_SETTINGS with none. Only sent to a controller that
+     * advertised LI_CCAP_STEAM_SETTINGS; a transport applies what its link can take.
+     */
+    public void steamSettings(byte command, byte[] triples) {
+    }
+
     protected void notifyDeviceRemoved() {
         listener.deviceRemoved(this);
     }
