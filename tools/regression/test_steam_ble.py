@@ -652,6 +652,23 @@ public class BleRegression {
    w.run();
    check(get(drv,"gatt")==dev.next&&!dev.next.closed,"a stale connect watchdog does not recycle the replacement link");
    drv.stop();}
+  // A46-01: a setup completing as the stream stops must not hand the listener a context for
+  // a driver that is already closing. Park onReady on the driver monitor, stop() while it
+  // waits, then let it continue.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");set(d,"writeChar",command());set(d,"stateSubscribed",true);
+   final SteamControllerBle drv=d;final BluetoothGatt g=old;int addedBefore=added;
+   Method ready=null;for(Class<?> c=d.getClass();c!=null;c=c.getSuperclass()){try{ready=c.getDeclaredMethod("onReady",BluetoothGatt.class);break;}catch(NoSuchMethodException ignored){}}
+   ready.setAccessible(true);final Method readyM=ready;
+   Thread worker=new Thread(()->{try{readyM.invoke(drv,g);}catch(Exception e){throw new AssertionError(e);}});worker.setDaemon(true);
+   synchronized(drv){
+    worker.start();long deadline=System.nanoTime()+3_000_000_000L;
+    while(worker.getState()!=Thread.State.BLOCKED&&worker.isAlive()&&System.nanoTime()<deadline)Thread.yield();
+    if(worker.getState()!=Thread.State.BLOCKED)throw new AssertionError("onReady did not reach the driver monitor");
+    drv.stop();
+   }
+   worker.join(3000);if(worker.isAlive())throw new AssertionError("onReady did not finish after stop");
+   check(added==addedBefore&&!(boolean)get(drv,"announced"),"a setup completing during stop() does not announce a closing driver");
+   ((Runnable)get(drv,"closeLink")).run();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
