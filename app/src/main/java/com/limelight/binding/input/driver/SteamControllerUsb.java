@@ -418,7 +418,12 @@ public final class SteamControllerUsb {
                         repeatingRumble = null;
                         enqueue(new byte[]{(byte) 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0});
                     } else {
-                        enqueue(repeatingRumble);
+                        // A fresh instance each tick: enqueue() drops any queued 0x80, including
+                        // the one a slow transfer is still writing, and that transfer's completion
+                        // then removes its own instance; re-adding the same instance let that
+                        // completion take the resend with it, leaving an ~80 ms gap past the
+                        // firmware's rumble cutoff (A46-02).
+                        enqueue(repeatingRumble.clone());
                         outputHandler.postDelayed(this, 40);
                     }
                 }

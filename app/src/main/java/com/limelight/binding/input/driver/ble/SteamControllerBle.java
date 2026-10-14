@@ -420,7 +420,7 @@ public class SteamControllerBle extends SteamControllerInput {
     @Override
     public void stop() {
         BluetoothGatt g;
-        boolean restore;
+        boolean restore, wasAnnounced;
         synchronized (this) {
             if (stopped) return;
             stopped = true;
@@ -444,6 +444,10 @@ public class SteamControllerBle extends SteamControllerInput {
                 writeQueue.add(new Pending(writeChar, new byte[]{ID_SET_DEFAULT_DIGITAL_MAPPINGS, 0}, false));
                 writeQueue.add(new Pending(writeChar, new byte[]{ID_LOAD_DEFAULT_SETTINGS, 0}, false));
             }
+            // Read under the lock: onReady announces under it against `stopped`, so no
+            // announcement can land after this point.
+            wasAnnounced = announced;
+            announced = false;
         }
         handler.removeCallbacksAndMessages(null);
         saveStickExtents();
@@ -453,8 +457,7 @@ public class SteamControllerBle extends SteamControllerInput {
         } else {
             closeLink.run();
         }
-        if (announced) {
-            announced = false;
+        if (wasAnnounced) {
             notifyDeviceRemoved();
         }
     }
@@ -905,7 +908,14 @@ public class SteamControllerBle extends SteamControllerInput {
         handler.postDelayed(keepAlive, KEEPALIVE_INTERVAL_MS);
         handler.removeCallbacks(hapticStats);
         handler.postDelayed(hapticStats, HAPTIC_STATS_INTERVAL_MS);
-        if (!announced) {
+        synchronized (this) {
+            // Announce under the lock, against the stopped flag: a stop() landing between
+            // the check on entry and here either sees `announced` and removes the context,
+            // or has set `stopped` so no context is handed to a driver that is closing.
+            // (A46-01; the listener's lock is always taken after this one.)
+            if (stopped || announced) {
+                return;
+            }
             announced = true;
             LimeLog.info("Steam Controller BLE: ready, reporting as LI_CTYPE_STEAM");
             notifyDeviceAdded();
