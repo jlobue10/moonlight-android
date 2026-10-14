@@ -250,12 +250,11 @@ public class ComputerManagerService extends Service {
                 try {
                     Thread.sleep(250);
                 } catch (InterruptedException e) {
-                    e.printStackTrace();
-
                     // InterruptedException clears the thread's interrupt status. Since we can't
                     // handle that here, we will re-interrupt the thread to set the interrupt
                     // status back to true.
                     Thread.currentThread().interrupt();
+                    return;
                 }
             }
         }
@@ -550,11 +549,15 @@ public class ComputerManagerService extends Service {
     }
 
     private boolean getLocalDatabaseReference() {
-        if (dbRefCount.get() == 0) {
-            return false;
-        }
-
-        dbRefCount.incrementAndGet();
+        int references;
+        do {
+            references = dbRefCount.get();
+            if (references == 0) {
+                return false;
+            }
+            // The final release may close the DB after our read. Acquire only
+            // if that live reference count is still current; never revive zero.
+        } while (!dbRefCount.compareAndSet(references, references + 1));
         return true;
     }
 
@@ -838,6 +841,7 @@ public class ComputerManagerService extends Service {
     }
 
     public class ApplistPoller {
+        // Worker ownership and app-list publication are guarded by this poller.
         private Thread thread;
         private final ComputerDetails computer;
         private final Object pollEvent = new Object();
@@ -853,7 +857,14 @@ public class ComputerManagerService extends Service {
             }
         }
 
+        private synchronized boolean isCurrentWorker() {
+            return thread == Thread.currentThread() && !thread.isInterrupted();
+        }
+
         private boolean waitPollingDelay() {
+            if (!isCurrentWorker()) {
+                return false;
+            }
             try {
                 synchronized (pollEvent) {
                     if (receivedAppList) {
@@ -870,7 +881,7 @@ public class ComputerManagerService extends Service {
                 return false;
             }
 
-            return thread != null && !thread.isInterrupted();
+            return isCurrentWorker();
         }
 
         private PollingTuple getPollingTuple(ComputerDetails details) {
@@ -885,17 +896,28 @@ public class ComputerManagerService extends Service {
             return null;
         }
 
-        public void start() {
+        public synchronized void start() {
+            if (thread != null && thread.isAlive()) {
+                return;
+            }
+            receivedAppList = false;
             thread = new Thread() {
                 @Override
                 public void run() {
                     int emptyAppListResponses = 0;
                     do {
+                        if (!isCurrentWorker()) {
+                            return;
+                        }
                         // Can't poll if it's not online or paired
                         if (computer.state != ComputerDetails.State.ONLINE ||
                                 computer.pairState != PairingManager.PairState.PAIRED) {
-                            if (listener != null) {
-                                listener.notifyComputerUpdated(computer);
+                            synchronized (ApplistPoller.this) {
+                                if (!isCurrentWorker()) return;
+                                ComputerManagerListener currentListener = listener;
+                                if (currentListener != null) {
+                                    currentListener.notifyComputerUpdated(computer);
+                                }
                             }
                             continue;
                         }
@@ -917,6 +939,7 @@ public class ComputerManagerService extends Service {
                                 // while doing the app list request to prevent other requests
                                 // from being issued in the meantime.
                                 synchronized (tuple.networkLock) {
+                                    if (!isCurrentWorker()) return;
                                     appList = http.getAppListRaw();
                                 }
                             }
@@ -925,6 +948,7 @@ public class ComputerManagerService extends Service {
                                 appList = http.getAppListRaw();
                             }
 
+                            if (!isCurrentWorker()) return;
                             List<NvApp> list = NvHTTP.getAppListByReader(new StringReader(appList));
                             if (list.isEmpty()) {
                                 LimeLog.warning("Empty app list received from "+computer.uuid);
@@ -935,26 +959,33 @@ public class ComputerManagerService extends Service {
                             }
                             if (!appList.isEmpty() &&
                                     (!list.isEmpty() || emptyAppListResponses >= EMPTY_LIST_THRESHOLD)) {
-                                // Staged and renamed so a concurrent reader never sees a torn list
-                                try {
-                                    CacheHelper.writeStringToCacheFileAtomically(getCacheDir(), appList, "applist", computer.uuid);
-                                } catch (IOException e) {
-                                    e.printStackTrace();
-                                }
+                                synchronized (ApplistPoller.this) {
+                                    // HTTP and parsing may finish after stop/restart.
+                                    // Admit and publish together so a retired worker
+                                    // cannot replace the current cache or UI state.
+                                    if (!isCurrentWorker()) return;
+                                    // Staged and renamed so a concurrent reader never sees a torn list
+                                    try {
+                                        CacheHelper.writeStringToCacheFileAtomically(getCacheDir(), appList, "applist", computer.uuid);
+                                    } catch (IOException e) {
+                                        e.printStackTrace();
+                                    }
 
-                                // Reset empty count if it wasn't empty this time
-                                if (!list.isEmpty()) {
-                                    emptyAppListResponses = 0;
-                                }
+                                    // Reset empty count if it wasn't empty this time
+                                    if (!list.isEmpty()) {
+                                        emptyAppListResponses = 0;
+                                    }
 
-                                // Update the computer
-                                computer.rawAppList = appList;
-                                receivedAppList = true;
+                                    // Update the computer
+                                    computer.rawAppList = appList;
+                                    receivedAppList = true;
 
-                                // Notify that the app list has been updated
-                                // and ensure that the thread is still active
-                                if (listener != null && thread != null) {
-                                    listener.notifyComputerUpdated(computer);
+                                    // Notify that the app list has been updated
+                                    // and ensure that the thread is still active
+                                    ComputerManagerListener currentListener = listener;
+                                    if (currentListener != null) {
+                                        currentListener.notifyComputerUpdated(computer);
+                                    }
                                 }
                             }
                             else if (appList.isEmpty()) {
@@ -976,7 +1007,7 @@ public class ComputerManagerService extends Service {
             thread.start();
         }
 
-        public void stop() {
+        public synchronized void stop() {
             if (thread != null) {
                 thread.interrupt();
 
