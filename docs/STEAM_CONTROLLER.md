@@ -246,7 +246,9 @@ as a fallback. What to look for on the next device test:
    lines. A `output report refused without its id; retrying with the report id` line means the
    firmware wants the id byte on the air (the driver switches for the rest of the link; report
    it, and the default can change); a second refusal falls back to the feature commands, which
-   we know do not work, so haptics would stay silent.
+   we know do not work, so haptics would stay silent. (Superseded in fork.116: the retry with
+   the id and the feature fallback are gone; a refusal is retried id-less once, then dropped,
+   and the 10 s summary shows each report's verdict.)
 3. 0x44 acknowledgements now show as "n-byte report on 0x100f6c79" only when the short-report log
    is still within its first five lines; they are expected after each zero-repeat pulse.
 
@@ -265,8 +267,9 @@ response, so a refused report could not show in the fork.97 log. fork.98 adds, p
 - the first write of each output report id goes with a response and its verdict is logged
   (`output report 0x81 accepted by the controller without its report id`, or `refused (status n)`);
   later writes of that id go without response as before;
-- the refusal ladder (retry with the report id, then the feature-command form) is per report id,
-  so a refused 0x82 cannot take 0x81 or 0x80 down with it;
+- the refusal ladder (retry with the report id, then the feature-command form; replaced in
+  fork.116 by one id-less retry) is per report id, so a refused 0x82 cannot take 0x81 or 0x80
+  down with it;
 - the first 24 host haptic reports are logged one by one (`host haptic report #n at +t ms: ..`),
   and every 10 s a summary: `haptics, last 10 s: host 0x81 x12 (4 stops, 0 ignored); written
   0x81 x12; evicted 0; acks 4 (last 04 02 00 00 00)`. "host" counts what Steam sent through
@@ -338,6 +341,55 @@ The link logs its configuration at setup (`haptics: 0x82 gain boost +6 dB (ceili
 pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts the rewritten
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
+
+### fork.116: setup-time touches, write refusals, duplicate setup, and the settings queue
+
+Seven fixes from an audit of fork.115, one of them in moonlight-common-c (pyrowave); none
+changes what a working link sends.
+
+- A finger on a pad during setup reached the host as a pointer it never saw go down. The state
+  characteristic is subscribed first, so 250 Hz reports arrive before the controller is
+  announced; the touch sent a DOWN to a listener with no context for the controller (dropped),
+  and after the announcement the host got MOVEs (or nothing, after the dedupe) until the thumb
+  lifted. `onReady` now forgets the pad state as it announces, without an UP (the host never
+  saw the DOWN), so the next report sends a DOWN.
+- An ATT refusal (status 1..0x7F) of a feature command, which the firmware answers with status
+  4 for a message it does not know, was handled as a stack refusing a write request (the command
+  characteristic offers write-without-response too): the link switched to write-without-response
+  for good and re-queued the refused command, so every later settings write went without
+  response and firmware refusals became invisible. The switch is now reserved for stack/link
+  codes (0x80 and up, 133 among them); a peer refusal of a feature command drops that command
+  and keeps the write type.
+- The output-report framing ladder is gone. A refused id-less output report was retried with
+  its report id, which fork.112 showed the firmware accepts and silently ignores, so one
+  transient refusal silenced that report id for the rest of the link while `written` kept
+  counting. A refusal is now retried once, id-less again and with a response, after the 50 ms
+  write-retry delay; a second refusal within 2 s drops the report, and the framing stays id-less
+  (never the id, never the feature forms, which the firmware refuses). The 10 s summary ends
+  with each offered report's verdict for the link (`id-less framing: 0x80 accepted, 0x81
+  refused x2, 0x82 not written`), so a silent link can be told from a refusing one.
+- `onReady` ran again on a late or duplicate descriptor-write completion (`subscribeNext` finds
+  nothing left): the keep-alive was re-armed, the reconnect budget reset, the setup commands
+  re-queued and a second haptic self-test schedule interleaved with the first. Only the
+  announcement was guarded; now the whole setup runs once per link.
+- The host's haptic, settings, rumble and trigger-rumble packets were matched to a driver-fed
+  controller by number alone. A fresh context is controller 0 until its first input assigns a
+  number, so packets for a real controller 0 could be written to an unassigned Steam Controller.
+  The USB-context loops now also require the number to be assigned (the input-device loops keep
+  upstream's behaviour).
+- The launch/resume and serverinfo failure lines (fork.115) appended the exception, and a 404 is
+  a `FileNotFoundException` whose message is the whole URL, with the session key (`rikey`), its
+  id and the unique id. The lines now name the exception class and the HTTP status only.
+- common-c: a settings chunk was an ordinary event in the control callback queue, and more than
+  32 haptic events queued behind it displaced it, so a burst of slide pulses while a 20-triple
+  write waited dropped a chunk and the controller applied a partial write. Settings chunks now
+  have their own bound (16) and are never displaced for a haptic event; a haptic burst evicts
+  only haptic events. `tests/test_steam_settings.c` covers the burst over one chunk and over a
+  chunked write, and the settings bound itself.
+
+The harness grows from 171 to 183 checks: the DOWN after the announcement, the dropped feature
+command, the id-less retry and drop with the summary verdicts, and the duplicate descriptor-write
+completion.
 
 ### fork.115: launch logging, the feature-report command mask, and the self-test across a drop
 

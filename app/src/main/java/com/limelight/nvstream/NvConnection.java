@@ -353,7 +353,7 @@ public class NvConnection {
             serverInfo = h.getServerInfo(true);
         } catch (IOException | XmlPullParserException e) {
             LimeLog.warning("The serverinfo request to " + context.serverAddress + " failed after "
-                    + (System.currentTimeMillis() - serverInfoStartMs) + " ms: " + e);
+                    + (System.currentTimeMillis() - serverInfoStartMs) + " ms: " + NvHTTP.describeFailure(e));
             throw e;
         }
         LimeLog.info("The serverinfo request to " + context.serverAddress + " returned after "

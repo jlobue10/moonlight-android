@@ -2271,8 +2271,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
 
         for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
-
-            if (deviceContext.controllerNumber == controllerNumber) {
+            // A fresh context is controller 0 until its first input assigns a number: the host's
+            // packets for a real controller 0 must not reach it meanwhile (fork.116).
+            if (deviceContext.assignedControllerNumber && deviceContext.controllerNumber == controllerNumber) {
                 foundMatchingDevice = vibrated = true;
                 deviceContext.device.rumble(lowFreqMotor, highFreqMotor);
             }
@@ -2324,8 +2325,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
 
         for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
-
-            if (deviceContext.controllerNumber == controllerNumber) {
+            if (deviceContext.assignedControllerNumber && deviceContext.controllerNumber == controllerNumber) {
                 deviceContext.device.rumbleTriggers(leftTrigger, rightTrigger);
             }
         }
@@ -2340,7 +2340,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
         for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
-            if (deviceContext.controllerNumber == controllerNumber) {
+            // Unassigned contexts are controller 0 until their first input (see handleRumble).
+            if (deviceContext.assignedControllerNumber && deviceContext.controllerNumber == controllerNumber) {
                 deviceContext.device.steamHaptic(report);
             }
         }
@@ -2355,7 +2356,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
         for (UsbDeviceContext deviceContext : usbDeviceContexts.values()) {
-            if (deviceContext.controllerNumber == controllerNumber) {
+            if (deviceContext.assignedControllerNumber && deviceContext.controllerNumber == controllerNumber) {
                 deviceContext.device.steamSettings(command, triples);
             }
         }
