@@ -274,6 +274,8 @@
     <string name="steam_controller_haptic_master_gain_off">Firmware default (default)</string>
     <string name="steam_controller_haptic_master_gain_6">+6 dB</string>
     <string name="steam_controller_haptic_master_gain_12">+12 dB</string>
+    <string name="title_checkbox_steam_controller_haptic_self_test">Bluetooth haptic self-test at connect</string>
+    <string name="summary_checkbox_steam_controller_haptic_self_test">Diagnostic. About 1.5 s after the controller connects, plays the same reports Steam sends, without the host: on the right pad then the left, three clicks, then three ticks, then three 2 ms pulses, 300 ms apart, at the strongest gain. Note which pad you feel and what. Turn off afterwards.</string>
     <string name="title_checkbox_steam_controller_stick_rim">Stretch sticks to a full circle</string>
     <string name="summary_checkbox_steam_controller_stick_rim">Learns each stick range from your pushes and stretches it to a perfect circle. Off by default: the wired Steam Controller reports a rounded square, with each axis parked at full deflection, and the Steam controller test accepts that shape but keeps waiting on a perfect circle delivered at 250 reports per second. Turn on only if a stick cannot reach the edge in some direction.</string>
     <string name="toast_steam_controller_permission">Bluetooth permission is needed for the Steam Controller driver. Enable it in the stream settings.</string>

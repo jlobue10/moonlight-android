@@ -1902,6 +1902,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     SteamControllerBleManager.hapticBoostFromPref(prefConfig.steamControllerHapticBoost),
                     SteamControllerBleManager.pulseScaleFromPref(prefConfig.steamControllerHapticPulseScale),
                     SteamControllerBleManager.masterGainFromPref(prefConfig.steamControllerHapticMasterGain),
+                    prefConfig.steamControllerHapticSelfTest,
                     prefConfig.steamControllerStickRim);
             steamControllerBle.start();
         }

@@ -53,7 +53,7 @@ public class BleStartLifecycle {
  void bindService(Intent i,Object c,int f){++binds;} void unbindService(Object c){++unbinds;}
  void bindUsbDriverIfEnabled(){prefConfig.usbDriver=true;bindUsbDriver();}
  static class Build {static class VERSION {static int SDK_INT=35;}static class VERSION_CODES {static final int M=23;}}
- static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerHapticBoost,steamControllerHapticPulseScale,steamControllerHapticMasterGain,steamControllerStickRim;boolean usbDriver,enableRumble=true;}
+ static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerHapticBoost,steamControllerHapticPulseScale,steamControllerHapticMasterGain,steamControllerHapticSelfTest,steamControllerStickRim;boolean usbDriver,enableRumble=true;}
  static class SteamControllerBleManager {
   static boolean permission=true;static int starts;
   SteamControllerBleManager(Object... args){}void start(){++starts;}

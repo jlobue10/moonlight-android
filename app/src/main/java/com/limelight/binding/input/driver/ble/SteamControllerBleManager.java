@@ -43,6 +43,7 @@ public final class SteamControllerBleManager {
     private final int hapticBoostDb;
     private final int pulseScalePercent;
     private final int masterGainDb;
+    private final boolean hapticSelfTest;
     private final boolean stickRim;
     private final Map<String, SteamControllerBle> drivers = new HashMap<>();
     private int nextDeviceId = BASE_DEVICE_ID;
@@ -50,7 +51,8 @@ public final class SteamControllerBleManager {
 
     public SteamControllerBleManager(Context context, UsbDriverListener listener, boolean motionEnabled,
                                      boolean splitPads, int gripsMode, int rumbleHoldMs, int rumbleMethod,
-                                     int hapticBoostDb, int pulseScalePercent, int masterGainDb, boolean stickRim) {
+                                     int hapticBoostDb, int pulseScalePercent, int masterGainDb, boolean hapticSelfTest,
+                                     boolean stickRim) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.motionEnabled = motionEnabled;
@@ -61,6 +63,7 @@ public final class SteamControllerBleManager {
         this.hapticBoostDb = hapticBoostDb;
         this.pulseScalePercent = pulseScalePercent;
         this.masterGainDb = masterGainDb;
+        this.hapticSelfTest = hapticSelfTest;
         this.stickRim = stickRim;
     }
 
@@ -220,7 +223,7 @@ public final class SteamControllerBleManager {
             }
             return;
         }
-        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, rumbleMethod, hapticBoostDb, pulseScalePercent, masterGainDb, stickRim);
+        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, rumbleMethod, hapticBoostDb, pulseScalePercent, masterGainDb, hapticSelfTest, stickRim);
         drivers.put(address, driver);
         if (!driver.start()) {
             drivers.remove(address);
