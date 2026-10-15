@@ -196,8 +196,10 @@ public class SteamControllerBle extends SteamControllerInput {
     // Haptic diagnostics for the 10 s summary line; guarded by this.
     private final int[] hostReports = new int[OUTPUT_REPORT_COUNT];
     private final int[] writtenReports = new int[OUTPUT_REPORT_COUNT];
-    // The host's 0x81/0x82 reports by the firmware's side byte (index 1 = left pad, 0 = right pad).
-    private final int[] hostSide0 = new int[OUTPUT_REPORT_COUNT], hostSide1 = new int[OUTPUT_REPORT_COUNT];
+    // The host's 0x81/0x82 reports by pad. The side byte is numbered differently per report: a
+    // 0x81 pulse has 0 = right pad, 1 = left; a 0x82 command has 0 = left pad, 1 = right (both
+    // measured on the controller over USB and over BLE, fork.114).
+    private final int[] hostLeft = new int[OUTPUT_REPORT_COUNT], hostRight = new int[OUTPUT_REPORT_COUNT];
     private int hostStops, hostIgnored, evictedWrites, hapticAcks, hostSamplesLogged, hostReportsSeen, hostHapticsAdjusted;
     // Per report id: how many of the host's reports of that id were logged one by one.
     private final int[] hostSamplesById = new int[OUTPUT_REPORT_COUNT];
@@ -1126,30 +1128,33 @@ public class SteamControllerBle extends SteamControllerInput {
 
     /**
      * Diagnostic: the same reports Steam sends, generated here, so what the firmware renders on
-     * each pad over BLE can be felt without the host in the loop. Right pad (side 0) first, then
-     * left (side 1): three click commands, three tick commands, three 2 ms pulses, 300 ms apart,
-     * the commands at the +6 dB ceiling. Boost and pulse scale do not apply; nothing is logged
-     * per write, the 10 s summary shows them as "written".
+     * each pad over BLE can be felt without the host in the loop. Right pad first, then left:
+     * three click commands, three tick commands, three 2 ms pulses, 300 ms apart, the commands
+     * at the +6 dB ceiling. The two reports number the sides differently (a command's side 1 is
+     * the right pad, a pulse's side 0), which the schedule accounts for. Boost and pulse scale
+     * do not apply; nothing is logged per write, the 10 s summary shows them as "written".
      */
     private void scheduleHapticSelfTest() {
         int t = 1500;
         for (int cmd = HAPTIC_CMD_CLICK; cmd >= HAPTIC_CMD_TICK; cmd--) {
-            for (int side = 0; side <= 1; side++) {
+            for (int pad = 0; pad <= 1; pad++) {
+                byte side = pad == 0 ? CMD_SIDE_RIGHT : CMD_SIDE_LEFT;
                 for (int i = 0; i < 3; i++, t += 300) {
-                    postSelfTestReport(t, new byte[]{(byte) 0x82, (byte) side, (byte) cmd, (byte) HAPTIC_GAIN_MAX_DB});
+                    postSelfTestReport(t, new byte[]{(byte) 0x82, side, (byte) cmd, (byte) HAPTIC_GAIN_MAX_DB});
                 }
                 t += 700;
             }
         }
-        for (int side = 0; side <= 1; side++) {
+        for (int pad = 0; pad <= 1; pad++) {
+            byte side = pad == 0 ? SIDE_RIGHT : SIDE_LEFT;
             for (int i = 0; i < 3; i++, t += 300) {
-                postSelfTestReport(t, new byte[]{(byte) 0x81, (byte) side, (byte) 0xD0, 0x07, 0, 0, 1, 0});  // 2000 us once
+                postSelfTestReport(t, new byte[]{(byte) 0x81, side, (byte) 0xD0, 0x07, 0, 0, 1, 0});  // 2000 us once
             }
             t += 700;
         }
-        LimeLog.info("Steam Controller BLE: haptic self-test in 1.5 s: right pad (side 0) then left pad (side 1), "
-                + "3 clicks, then 3 ticks, then 3 pulses of 2 ms, 300 ms apart, commands at +" + HAPTIC_GAIN_MAX_DB + " dB; "
-                + t / 1000 + " s in all");
+        LimeLog.info("Steam Controller BLE: haptic self-test in 1.5 s: right pad then left pad, "
+                + "3 clicks, then 3 ticks, then 3 pulses of 2 ms, 300 ms apart, commands at +" + HAPTIC_GAIN_MAX_DB + " dB "
+                + "(command side 1 = right pad, pulse side 0 = right pad); " + t / 1000 + " s in all");
     }
 
     private void postSelfTestReport(int delayMs, byte[] report) {
@@ -1728,8 +1733,8 @@ public class SteamControllerBle extends SteamControllerInput {
         Arrays.fill(outputProbed, false);
         Arrays.fill(hostReports, 0);
         Arrays.fill(writtenReports, 0);
-        Arrays.fill(hostSide0, 0);
-        Arrays.fill(hostSide1, 0);
+        Arrays.fill(hostLeft, 0);
+        Arrays.fill(hostRight, 0);
         hostStops = hostIgnored = evictedWrites = hapticAcks = 0;
         lastAck = null;
     }
@@ -1760,11 +1765,11 @@ public class SteamControllerBle extends SteamControllerInput {
             } else {
                 if (index >= 0 && index < hostReports.length) {
                     hostReports[index]++;
-                    if ((id == 0x81 || id == 0x82) && report.length > 1) {
-                        if (report[1] == 0) {
-                            hostSide0[index]++;
-                        } else if (report[1] == 1) {
-                            hostSide1[index]++;
+                    if ((id == 0x81 || id == 0x82) && report.length > 1 && (report[1] == 0 || report[1] == 1)) {
+                        if (isLeftPad(id, report[1])) {
+                            hostLeft[index]++;
+                        } else {
+                            hostRight[index]++;
                         }
                     }
                 }
@@ -1794,8 +1799,8 @@ public class SteamControllerBle extends SteamControllerInput {
                     if (hostReports[i] != 0) {
                         host.append(host.length() == 0 ? "" : ", ").append("0x")
                                 .append(Integer.toHexString(OUTPUT_REPORT_FIRST + i)).append(" x").append(hostReports[i]);
-                        if (hostSide0[i] != 0 || hostSide1[i] != 0) {
-                            host.append(" (L ").append(hostSide1[i]).append(" R ").append(hostSide0[i]).append(')');
+                        if (hostLeft[i] != 0 || hostRight[i] != 0) {
+                            host.append(" (L ").append(hostLeft[i]).append(" R ").append(hostRight[i]).append(')');
                         }
                     }
                     if (writtenReports[i] != 0) {
@@ -1811,8 +1816,8 @@ public class SteamControllerBle extends SteamControllerInput {
                 ack = lastAck;
                 Arrays.fill(hostReports, 0);
                 Arrays.fill(writtenReports, 0);
-                Arrays.fill(hostSide0, 0);
-                Arrays.fill(hostSide1, 0);
+                Arrays.fill(hostLeft, 0);
+                Arrays.fill(hostRight, 0);
                 hostStops = hostIgnored = evictedWrites = hapticAcks = hostHapticsAdjusted = 0;
             }
             if (host.length() != 0 || written.length() != 0 || ignored != 0 || acks != 0) {
@@ -1901,9 +1906,17 @@ public class SteamControllerBle extends SteamControllerInput {
                 0};                                 // gain (dB)
     }
 
-    /** Pulse side ids; the firmware numbers them the other way round from the kernel's pad ids. */
+    /** 0x81 pulse side ids; the firmware numbers them the other way round from the kernel's pad ids. */
     private static final byte SIDE_RIGHT = 0;
     private static final byte SIDE_LEFT = 1;
+    /** 0x82 command side ids: the opposite numbering from the pulses (measured over USB and BLE). */
+    private static final byte CMD_SIDE_LEFT = 0;
+    private static final byte CMD_SIDE_RIGHT = 1;
+
+    /** Which pad a host's 0x81 or 0x82 report addresses, given its side byte. */
+    static boolean isLeftPad(int reportId, byte side) {
+        return reportId == 0x82 ? side == CMD_SIDE_LEFT : side == SIDE_LEFT;
+    }
 
     @Override
     public void rumbleTriggers(short leftTrigger, short rightTrigger) {
