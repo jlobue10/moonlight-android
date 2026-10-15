@@ -336,11 +336,13 @@ public abstract class SteamControllerInput extends AbstractController {
                 + describeStick(stickLogRightMax, stickLogRightAxisX, stickLogRightAxisY, stickLogRightSectors, stickLogRightSectorPeak)
                 + String.format(Locale.ROOT, "; rim calibration %s, extents left %.3f/%.3f right %.3f/%.3f",
                         stickRim ? "on" : "off", leftExtentX, leftExtentY, rightExtentX, rightExtentY)
-                + String.format(Locale.ROOT, "; raw buttons seen 0x%08x (grip touch L %s R %s, stick touch L %s R %s)", stickLogButtonsSeen,
+                + String.format(Locale.ROOT, "; raw buttons seen 0x%08x (grip touch L %s R %s, stick touch L %s R %s, pad touch L %s R %s)", stickLogButtonsSeen,
                         bit(stickLogButtonsSeen, BTN_GRIP_L_TOUCH) ? "yes" : "no",
                         bit(stickLogButtonsSeen, BTN_GRIP_R_TOUCH) ? "yes" : "no",
                         bit(stickLogButtonsSeen, BTN_LSTICK_TOUCH) ? "yes" : "no",
-                        bit(stickLogButtonsSeen, BTN_RSTICK_TOUCH) ? "yes" : "no"));
+                        bit(stickLogButtonsSeen, BTN_RSTICK_TOUCH) ? "yes" : "no",
+                        bit(stickLogButtonsSeen, BTN_LPAD_TOUCH) ? "yes" : "no",
+                        bit(stickLogButtonsSeen, BTN_RPAD_TOUCH) ? "yes" : "no"));
         stickLogDueMs = now + 10_000;
         stickLogButtonsSeen = 0;
         stickLogLeftMax = stickLogRightMax = 0;

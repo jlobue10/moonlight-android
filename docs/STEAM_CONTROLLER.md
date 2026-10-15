@@ -339,6 +339,37 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.113: haptic self-test and per-side counts
+
+fork.112 on the headset (stream_23, boost +6 dB, pulses 2x): "right pad has no haptic feedback
+while scrolling most, if not all the time; left has it, but it feels incorrect". Across every
+stream log so far Steam's tick commands (`82 <side> 01 ..`) have only ever gone to side 1 and its
+click commands (`82 <side> 02 ..`) only to side 0, with the 400 µs pulses on both sides, side 1
+dominant. The firmware numbers the sides 1 = left, 0 = right (hid-steam swaps its pad ids for
+this report). The input path is not the cause: the client puts the left pad in the left half of
+the single touchpad and the right pad in the right half, and the host maps the halves back the
+same way (`vhf_gamepad.cpp`), which Steam's own controller test confirmed for both pads.
+
+So the open question is whether the controller renders side 0 at all over BLE, and fork.113
+makes that answerable without Steam in the loop:
+
+- **Bluetooth haptic self-test at connect** (`checkbox_steam_controller_haptic_self_test`, off by
+  default): 1.5 s after link setup the client writes, to the output characteristics exactly as a
+  host report would go, right pad (side 0) then left (side 1): three click commands, then three
+  tick commands, then three 2 ms pulses, 300 ms apart, the commands at the +6 dB ceiling. Boost
+  and pulse scale do not apply. The log announces the schedule and the 10 s summary shows the
+  writes (`written 0x82 x12`). What to note: which pad moves for each group. If the right pad
+  stays silent for its own clicks and ticks, the firmware does not drive that pad from these
+  reports over BLE (or the side numbering differs on this transport) and the next experiment is
+  the side byte itself; if both pads respond, the firmware is fine and the difference is in what
+  Steam sends for the right pad through the stream (rate or type), which the per-side counts
+  below then show.
+- The 10 s summary counts the host's 0x81 and 0x82 reports per side: `host 0x81 x23 (L 20 R 3),
+  0x82 x52 (L 0 R 52)`. Scroll one pad at a time for a whole 10 s window and the line says
+  whether Steam sent that pad anything.
+- The 10 s stick/extents line adds `pad touch L yes/no R yes/no`, so a pad the controller never
+  reported touched is visible too.
+
 ### fork.100: connection-attempt races and small MTUs
 
 An audit of the driver (round 42) found three lifecycle gaps, none of them seen on the Galaxy

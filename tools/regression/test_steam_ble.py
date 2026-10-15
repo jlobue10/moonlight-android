@@ -103,13 +103,14 @@ public class BleRegression {
   Method m=null;for(Class<?> c=d.getClass();c!=null;c=c.getSuperclass()){try{m=c.getDeclaredMethod("handleBattery",byte[].class);break;}catch(NoSuchMethodException ignored){}}m.setAccessible(true);
   batteryState=-1;batteryPercent=-1;m.invoke(d,(Object)new byte[]{(byte)chargeState,(byte)percent});}
  static SteamControllerBle create(BluetoothDevice device)throws Exception{return createWith(device,0,100,0);}
- static SteamControllerBle createWith(BluetoothDevice device,int boostDb,int pulseScale,int masterGainDb)throws Exception{
+ static SteamControllerBle createWith(BluetoothDevice device,int boostDb,int pulseScale,int masterGainDb)throws Exception{return createWith(device,boostDb,pulseScale,masterGainDb,false);}
+ static SteamControllerBle createWith(BluetoothDevice device,int boostDb,int pulseScale,int masterGainDb,boolean selfTest)throws Exception{
   SteamControllerBle d=new SteamControllerBle(1,new UsbDriverListener(){
    public void reportControllerState(int i,int b,float x,float y,float z,float w,float l,float r){states++;}
    public void reportControllerMotion(int i,byte t,float x,float y,float z){}
    public void deviceRemoved(AbstractController c){} public void deviceAdded(AbstractController c){added++;}
    public void reportControllerBattery(int i,byte s,byte p){batteryState=s;batteryPercent=p;}
-  },new Context(),device,false,false,0,0,0,boostDb,pulseScale,masterGainDb,false);return d;
+  },new Context(),device,false,false,0,0,0,boostDb,pulseScale,masterGainDb,selfTest,false);return d;
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
  static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",8);}
@@ -839,7 +840,32 @@ public class BleRegression {
    long pulses=infos.stream().filter(s->s.contains("host haptic report")&&s.contains(": 81 ")).count();
    boolean cmdLogged=infos.stream().anyMatch(s->s.contains("host haptic report")&&s.endsWith(": 82 01 01 00"));
    check(pulses==12&&cmdLogged,"host haptic samples are logged per report id, so a 0x82 after 30 pulses still appears");
+   check(((int[])get(sd,"hostSide1"))[1]==30&&((int[])get(sd,"hostSide1"))[2]==1&&((int[])get(sd,"hostSide0"))[1]==0,
+         "host 0x81/0x82 reports are counted by their side byte for the 10 s summary");
    sd.stop();
+  }
+  // fork.113: the haptic self-test plays Steam's report shapes on each pad after link setup, without the host.
+  {BluetoothGattCharacteristic outPulse3=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",12);
+   BluetoothGattCharacteristic outCmd3=new BluetoothGattCharacteristic("100f6cb7-1735-4313-b402-38567131e5f3",12);
+   for(boolean enabled:new boolean[]{false,true}){
+    SteamControllerBle td=createWith(new BluetoothDevice(),0,100,0,enabled);td.start();
+    BluetoothGatt tg=(BluetoothGatt)get(td,"gatt");BluetoothGattCharacteristic feat=command();
+    tg.service.chars.add(outPulse3);tg.service.chars.add(outCmd3);tg.service.chars.add(feat);tg.service.chars.add(notify);
+    BluetoothGattCallback cb=(BluetoothGattCallback)get(td,"gattCallback");cb.onServicesDiscovered(tg,0);
+    cb.onCharacteristicWrite(tg,feat,0);cb.onCharacteristicWrite(tg,feat,0);
+    Handler h=(Handler)get(td,"handler");List<Runnable> due=new ArrayList<>(h.delayed);
+    for(Runnable r:due){if(!r.getClass().getSimpleName().equals("SelfTestReport"))continue;h.delayed.remove(r);r.run();int c=0;while(get(td,"inFlight")!=null&&c++<4){Object p=get(td,"inFlight");cb.onCharacteristicWrite(tg,(BluetoothGattCharacteristic)get(p,"ch"),0);}}
+    int clicksR=0,clicksL=0,ticksR=0,ticksL=0,pulsesR=0,pulsesL=0;
+    for(byte[] w:tg.writes){
+     if(Arrays.equals(w,new byte[]{0,2,6}))clicksR++;else if(Arrays.equals(w,new byte[]{1,2,6}))clicksL++;
+     else if(Arrays.equals(w,new byte[]{0,1,6}))ticksR++;else if(Arrays.equals(w,new byte[]{1,1,6}))ticksL++;
+     else if(Arrays.equals(w,new byte[]{0,(byte)0xd0,7,0,0,1,0}))pulsesR++;else if(Arrays.equals(w,new byte[]{1,(byte)0xd0,7,0,0,1,0}))pulsesL++;
+    }
+    int expected=enabled?3:0;
+    check(clicksR==expected&&clicksL==expected&&ticksR==expected&&ticksL==expected&&pulsesR==expected&&pulsesL==expected,
+          "the haptic self-test writes 3 clicks, 3 ticks and 3 pulses per side at +6 dB only when enabled (enabled="+enabled+")");
+    td.stop();
+   }
   }
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
@@ -863,7 +889,7 @@ public class ManagerHarness {
  private static final String[] NAME_HINTS = {"steam controller", "steam ctrl", "steamcontroller"};
  public final Map<String,SteamControllerBle> drivers=new HashMap<>();int nextDeviceId;
  public Context context=new Context();UsbDriverListener listener;boolean motionEnabled,splitPads,stickRim;
- int gripsMode,rumbleHoldMs,rumbleMethod,hapticBoostDb,pulseScalePercent,masterGainDb;BroadcastReceiver aclReceiver;
+ int gripsMode,rumbleHoldMs,rumbleMethod,hapticBoostDb,pulseScalePercent,masterGainDb;boolean hapticSelfTest;BroadcastReceiver aclReceiver;
  static boolean hasPermission(Context c){return true;}
  public void start(BluetoothDevice d){startDriver(d);}
 """ + '\n'.join(manager_methods).replace('SteamControllerBleManager.this', 'ManagerHarness.this') + '}'

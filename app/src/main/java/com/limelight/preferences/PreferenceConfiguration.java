@@ -72,6 +72,7 @@ public class PreferenceConfiguration {
     private static final String STEAM_CONTROLLER_HAPTIC_BOOST_PREF_STRING = "steam_controller_haptic_boost";
     private static final String STEAM_CONTROLLER_HAPTIC_PULSE_SCALE_PREF_STRING = "steam_controller_haptic_pulse_scale";
     private static final String STEAM_CONTROLLER_HAPTIC_MASTER_GAIN_PREF_STRING = "steam_controller_haptic_master_gain";
+    private static final String STEAM_CONTROLLER_HAPTIC_SELF_TEST_PREF_STRING = "checkbox_steam_controller_haptic_self_test";
     private static final String STEAM_CONTROLLER_STICK_RIM_PREF_STRING = "checkbox_steam_controller_stick_stretch";
     private static final String VIDEO_FORMAT_PREF_STRING = "video_format";
     private static final String ONSCREEN_CONTROLLER_PREF_STRING = "checkbox_show_onscreen_controls";
@@ -275,6 +276,7 @@ public class PreferenceConfiguration {
     public String steamControllerHapticBoost;      // dB added to Steam's pad click/tick gain, "0" = as sent
     public String steamControllerHapticPulseScale; // percent of Steam's pad slide pulse on-time, "100" = as sent
     public String steamControllerHapticMasterGain; // dB written as the firmware's haptic master gain, "off" = not written
+    public boolean steamControllerHapticSelfTest;  // play clicks, ticks and pulses on each pad after connect (diagnostic)
     public boolean steamControllerStickRim;  // rescale the BLE sticks so a full push reaches the rim
     public String depthModel;              // DepthModel.prefValue
     public boolean depthGuidedUpsampling;
@@ -945,6 +947,7 @@ private static int getFramePacingValue(Context context) {
         config.steamControllerHapticBoost = prefs.getString(STEAM_CONTROLLER_HAPTIC_BOOST_PREF_STRING, "0");
         config.steamControllerHapticPulseScale = prefs.getString(STEAM_CONTROLLER_HAPTIC_PULSE_SCALE_PREF_STRING, "100");
         config.steamControllerHapticMasterGain = prefs.getString(STEAM_CONTROLLER_HAPTIC_MASTER_GAIN_PREF_STRING, "off");
+        config.steamControllerHapticSelfTest = prefs.getBoolean(STEAM_CONTROLLER_HAPTIC_SELF_TEST_PREF_STRING, false);
         config.steamControllerStickRim = prefs.getBoolean(STEAM_CONTROLLER_STICK_RIM_PREF_STRING, false);
         config.fullScreen = prefs.getBoolean(FULL_SCREEN_PREF_STRING, DEFAULT_FULL_SCREEN);
 
