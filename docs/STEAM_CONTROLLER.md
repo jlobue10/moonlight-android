@@ -339,6 +339,29 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.114: the side byte differs between the pulse and the command report
+
+Measured on the author's controller on 2026-10-15, over USB (HID output reports through the
+vendor collection) and over Bluetooth (writes to the same Valve-service characteristics this
+client uses, captured with USBPcap on the PC's Bluetooth radio): a `0x81` pulse with side 0
+lands on the right pad and side 1 on the left, as the client assumed, but a `0x82` command with
+side 0 lands on the **left** pad and side 1 on the **right**. Every level was felt on both
+transports, including the -14 dB click Steam sends in Big Picture, so neither the firmware's
+BLE path nor these characteristics are where the stream's weak slide haptics come from.
+
+Re-read with the right mapping, stream_24 shows the right pad received Steam's tick commands
+(`82 01 01 00`) at under 2 per second, where Steam on a direct connection with the right pad as
+a mouse sends 15 to 60 ticks per second on the same controller (both transports); the left pad
+received the -14 dB clicks. What differs is how many commands Steam generates, which depends on
+the active layout and on the pad input reaching it, and the per-pad counts below are what to
+compare against those direct rates on the next stream run.
+
+- The 10 s summary's per-pad counts (`host 0x82 x55 (L 37 R 18)`) now use the right numbering
+  for each report; before fork.114 the 0x82 counts were labelled the wrong way round.
+- The self-test addresses the right pad first for the commands as well as the pulses
+  (`82 01 ..` then `82 00 ..`; `81 00 ..` then `81 01 ..`); fork.113 played its clicks and ticks
+  on the opposite pad from its pulses.
+
 ### fork.113: haptic self-test and per-side counts
 
 fork.112 on the headset (stream_23, boost +6 dB, pulses 2x): "right pad has no haptic feedback

@@ -840,8 +840,11 @@ public class BleRegression {
    long pulses=infos.stream().filter(s->s.contains("host haptic report")&&s.contains(": 81 ")).count();
    boolean cmdLogged=infos.stream().anyMatch(s->s.contains("host haptic report")&&s.endsWith(": 82 01 01 00"));
    check(pulses==12&&cmdLogged,"host haptic samples are logged per report id, so a 0x82 after 30 pulses still appears");
-   check(((int[])get(sd,"hostSide1"))[1]==30&&((int[])get(sd,"hostSide1"))[2]==1&&((int[])get(sd,"hostSide0"))[1]==0,
-         "host 0x81/0x82 reports are counted by their side byte for the 10 s summary");
+   check(((int[])get(sd,"hostLeft"))[1]==30&&((int[])get(sd,"hostRight"))[1]==0&&((int[])get(sd,"hostRight"))[2]==1&&((int[])get(sd,"hostLeft"))[2]==0,
+         "host 0x81/0x82 reports are counted per pad for the 10 s summary: pulse side 1 is the left pad, command side 1 the right");
+   Method ilp=SteamControllerBle.class.getDeclaredMethod("isLeftPad",int.class,byte.class);ilp.setAccessible(true);
+   check((Boolean)ilp.invoke(null,0x81,(byte)1)&&!(Boolean)ilp.invoke(null,0x81,(byte)0)&&(Boolean)ilp.invoke(null,0x82,(byte)0)&&!(Boolean)ilp.invoke(null,0x82,(byte)1),
+         "the 0x82 command numbers its sides opposite to the 0x81 pulse");
    sd.stop();
   }
   // fork.113: the haptic self-test plays Steam's report shapes on each pad after link setup, without the host.
@@ -857,13 +860,13 @@ public class BleRegression {
     for(Runnable r:due){if(!r.getClass().getSimpleName().equals("SelfTestReport"))continue;h.delayed.remove(r);r.run();int c=0;while(get(td,"inFlight")!=null&&c++<4){Object p=get(td,"inFlight");cb.onCharacteristicWrite(tg,(BluetoothGattCharacteristic)get(p,"ch"),0);}}
     int clicksR=0,clicksL=0,ticksR=0,ticksL=0,pulsesR=0,pulsesL=0;
     for(byte[] w:tg.writes){
-     if(Arrays.equals(w,new byte[]{0,2,6}))clicksR++;else if(Arrays.equals(w,new byte[]{1,2,6}))clicksL++;
-     else if(Arrays.equals(w,new byte[]{0,1,6}))ticksR++;else if(Arrays.equals(w,new byte[]{1,1,6}))ticksL++;
+     if(Arrays.equals(w,new byte[]{1,2,6}))clicksR++;else if(Arrays.equals(w,new byte[]{0,2,6}))clicksL++;
+     else if(Arrays.equals(w,new byte[]{1,1,6}))ticksR++;else if(Arrays.equals(w,new byte[]{0,1,6}))ticksL++;
      else if(Arrays.equals(w,new byte[]{0,(byte)0xd0,7,0,0,1,0}))pulsesR++;else if(Arrays.equals(w,new byte[]{1,(byte)0xd0,7,0,0,1,0}))pulsesL++;
     }
     int expected=enabled?3:0;
     check(clicksR==expected&&clicksL==expected&&ticksR==expected&&ticksL==expected&&pulsesR==expected&&pulsesL==expected,
-          "the haptic self-test writes 3 clicks, 3 ticks and 3 pulses per side at +6 dB only when enabled (enabled="+enabled+")");
+          "the haptic self-test writes 3 clicks, 3 ticks and 3 pulses per pad at +6 dB only when enabled, command side 1 and pulse side 0 both being the right pad (enabled="+enabled+")");
     td.stop();
    }
   }
