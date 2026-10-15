@@ -133,6 +133,19 @@ public class SteamControllerBle extends SteamControllerInput {
     /** Rumble methods (steam_controller_rumble_method preference). */
     public static final int RUMBLE_METHOD_RUMBLE_CMD = 0;
     public static final int RUMBLE_METHOD_PULSES = 1;
+    /** Haptic path preference: output reports go without their id (default) or with it from the first write. */
+    public static final int HAPTIC_PATH_OUTPUT = 0;
+    public static final int HAPTIC_PATH_OUTPUT_WITH_ID = 1;
+    /** Haptic gain preference: the host's 0x82 gain byte as sent, the wired unit's values, or +6 dB. */
+    public static final int HAPTIC_GAIN_HOST = 0;
+    public static final int HAPTIC_GAIN_USB = 1;
+    public static final int HAPTIC_GAIN_PLUS6 = 2;
+    /** What Steam sends the wired unit (libvirtualgamepad captures): ticks at -3 dB, clicks at -14 dB. */
+    private static final byte USB_TICK_GAIN_DB = (byte) 0xFD;
+    private static final byte USB_CLICK_GAIN_DB = (byte) 0xF2;
+    private static final byte PLUS6_GAIN_DB = 6;
+    private static final int HAPTIC_CMD_TICK = 1;
+    private static final int HAPTIC_CMD_CLICK = 2;
     /** The firmware stops a rumble command on its own after ~50 ms, so SDL re-sends every 40. */
     private static final int RUMBLE_CMD_RESEND_MS = 40;
     /** A host 0x80 that lands this soon after the last rumble write just updates the chain. */
@@ -155,6 +168,7 @@ public class SteamControllerBle extends SteamControllerInput {
     private final BluetoothDevice device;
     private final int rumbleHoldMs;
     private final int rumbleMethod;
+    private final int hapticPath, hapticGain;
     // The driver's own thread: rumble and Steam haptic reports from the host, the write
     // queue retries, the keep-alive and the watchdog all run here, so haptic latency no
     // longer tracks main-thread load (perf overlay, toasts, layout). Quits once the link
@@ -180,11 +194,17 @@ public class SteamControllerBle extends SteamControllerInput {
     // Haptic diagnostics for the 10 s summary line; guarded by this.
     private final int[] hostReports = new int[OUTPUT_REPORT_COUNT];
     private final int[] writtenReports = new int[OUTPUT_REPORT_COUNT];
-    private int hostStops, hostIgnored, evictedWrites, hapticAcks, hostSamplesLogged;
+    private int hostStops, hostIgnored, evictedWrites, hapticAcks, hostSamplesLogged, hostReportsSeen, hostGainOverrides;
+    // Per report id: how many of the host's reports of that id were logged one by one.
+    private final int[] hostSamplesById = new int[OUTPUT_REPORT_COUNT];
+    private int hostSamplesOther;
     private byte[] lastAck;
     private long firstHostReportMs;
-    /** How many of the host's haptic reports are logged one by one, for the record of what Steam sends. */
-    private static final int HOST_SAMPLES_LOGGED = 24;
+    /**
+     * How many of the host's haptic reports are logged one by one, per report id, for the record
+     * of what Steam sends: a 24-report total hid every 0x82 behind the 0x81 click pairs.
+     */
+    private static final int HOST_SAMPLES_PER_ID = 12;
     private static final long HAPTIC_STATS_INTERVAL_MS = 10_000;
     private final ArrayDeque<Pending> writeQueue = new ArrayDeque<>();
     private boolean writeBusy;
@@ -347,13 +367,15 @@ public class SteamControllerBle extends SteamControllerInput {
 
     public SteamControllerBle(int deviceId, UsbDriverListener listener, Context context,
                               BluetoothDevice device, boolean motionEnabled, boolean splitPads, int gripsMode,
-                              int rumbleHoldMs, int rumbleMethod, boolean stickRim) {
+                              int rumbleHoldMs, int rumbleMethod, int hapticPath, int hapticGain, boolean stickRim) {
         super(deviceId, listener, PRODUCT_ID_IBEX_BLE, context, device.getAddress(), "BLE",
                 motionEnabled, splitPads, gripsMode, stickRim);
         this.context = context.getApplicationContext();
         this.device = device;
         this.rumbleHoldMs = Math.max(0, rumbleHoldMs);
         this.rumbleMethod = rumbleMethod;
+        this.hapticPath = hapticPath;
+        this.hapticGain = hapticGain;
         // This transport applies Steam's settings writes; the wired one does not (yet).
         capabilities = (short) (capabilities | MoonBridge.LI_CCAP_STEAM_SETTINGS);
         handlerThread.start();
@@ -925,6 +947,8 @@ public class SteamControllerBle extends SteamControllerInput {
         }
         reconnectAttempts = 0;
         disarmSetupWatchdog();
+        LimeLog.info("Steam Controller BLE: haptic path: output reports "
+                + (hapticPath == HAPTIC_PATH_OUTPUT_WITH_ID ? "with" : "without") + " their id; 0x82 gain: " + describeGain());
         enqueueWrite(new byte[]{ID_CLEAR_DIGITAL_MAPPINGS, 0});
         // All settings in one command: keep-alive deduplication must not discard the IMU setup.
         enqueueWrite(settings(SETTING_LIZARD_MODE, 0, SETTING_STEAM_WATCHDOG_ENABLE, 0,
@@ -1562,6 +1586,21 @@ public class SteamControllerBle extends SteamControllerInput {
                 return;
             }
             byte[] r = copy.length == size ? copy : Arrays.copyOf(copy, size);
+            if (id == 0x82 && hapticGain != HAPTIC_GAIN_HOST) {
+                // Diagnostic: the gain byte of a tick or click command, which the wired unit
+                // gets as -3 / -14 dB and the streamed one has only ever got as 0.
+                int cmd = r[2] & 0xFF;
+                if (cmd == HAPTIC_CMD_TICK || cmd == HAPTIC_CMD_CLICK) {
+                    byte gain = hapticGain == HAPTIC_GAIN_PLUS6 ? PLUS6_GAIN_DB
+                            : cmd == HAPTIC_CMD_CLICK ? USB_CLICK_GAIN_DB : USB_TICK_GAIN_DB;
+                    if (r[3] != gain) {
+                        r[3] = gain;
+                        synchronized (this) {
+                            hostGainOverrides++;
+                        }
+                    }
+                }
+            }
             if (id != 0x80) {
                 if (!enqueueOutput(r)) {
                     Pending fallback = featureFallback(r);
@@ -1598,9 +1637,9 @@ public class SteamControllerBle extends SteamControllerInput {
         });
     }
 
-    /** New link: every output report starts without its id and unprobed, and the counters restart. */
+    /** New link: every output report starts in the preferred framing and unprobed, and the counters restart. */
     private synchronized void resetOutputState() {
-        Arrays.fill(outputFraming, OUTPUT_FRAMING_PAYLOAD);
+        Arrays.fill(outputFraming, hapticPath == HAPTIC_PATH_OUTPUT_WITH_ID ? OUTPUT_FRAMING_WITH_ID : OUTPUT_FRAMING_PAYLOAD);
         Arrays.fill(outputProbed, false);
         Arrays.fill(hostReports, 0);
         Arrays.fill(writtenReports, 0);
@@ -1616,11 +1655,17 @@ public class SteamControllerBle extends SteamControllerInput {
         int sample = 0;
         long sinceFirst;
         synchronized (this) {
-            if (hostSamplesLogged == 0) {
+            if (hostReportsSeen++ == 0) {
                 firstHostReportMs = now;
             }
             sinceFirst = now - firstHostReportMs;
-            if (hostSamplesLogged < HOST_SAMPLES_LOGGED) {
+            boolean known = index >= 0 && index < hostSamplesById.length;
+            if ((known ? hostSamplesById[index] : hostSamplesOther) < HOST_SAMPLES_PER_ID) {
+                if (known) {
+                    hostSamplesById[index]++;
+                } else {
+                    hostSamplesOther++;
+                }
                 sample = ++hostSamplesLogged;
             }
             if (!usable) {
@@ -1648,7 +1693,7 @@ public class SteamControllerBle extends SteamControllerInput {
                 return;
             }
             StringBuilder host = new StringBuilder(), written = new StringBuilder();
-            int stops, ignored, evicted, acks;
+            int stops, ignored, evicted, acks, overrides;
             byte[] ack;
             synchronized (SteamControllerBle.this) {
                 for (int i = 0; i < hostReports.length; i++) {
@@ -1665,20 +1710,30 @@ public class SteamControllerBle extends SteamControllerInput {
                 ignored = hostIgnored;
                 evicted = evictedWrites;
                 acks = hapticAcks;
+                overrides = hostGainOverrides;
                 ack = lastAck;
                 Arrays.fill(hostReports, 0);
                 Arrays.fill(writtenReports, 0);
-                hostStops = hostIgnored = evictedWrites = hapticAcks = 0;
+                hostStops = hostIgnored = evictedWrites = hapticAcks = hostGainOverrides = 0;
             }
             if (host.length() != 0 || written.length() != 0 || ignored != 0 || acks != 0) {
                 LimeLog.info("Steam Controller BLE: haptics, last " + (HAPTIC_STATS_INTERVAL_MS / 1000) + " s: host "
                         + (host.length() == 0 ? "none" : host) + " (" + stops + " stops, " + ignored + " ignored); written "
                         + (written.length() == 0 ? "none" : written) + "; evicted " + evicted + "; acks " + acks
-                        + (ack != null ? " (last " + hex(ack) + ")" : ""));
+                        + (ack != null ? " (last " + hex(ack) + ")" : "")
+                        + (overrides != 0 ? "; 0x82 gain overridden x" + overrides : ""));
             }
             handler.postDelayed(this, HAPTIC_STATS_INTERVAL_MS);
         }
     };
+
+    private String describeGain() {
+        switch (hapticGain) {
+            case HAPTIC_GAIN_USB: return "the wired unit's values (tick -3 dB, click -14 dB)";
+            case HAPTIC_GAIN_PLUS6: return "+6 dB";
+            default: return "as the host sends it";
+        }
+    }
 
     /** Wire size, id included, of the haptic output reports the host forwards (sc26_usb.h); 0 for others. */
     private static int outputSize(int id) {

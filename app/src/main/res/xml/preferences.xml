@@ -388,6 +388,24 @@
             android:summary="@string/summary_steam_controller_rumble_method"
             android:title="@string/title_steam_controller_rumble_method"
             app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="output"
+            android:dependency="checkbox_steam_controller_ble"
+            android:entries="@array/steam_controller_haptic_path_names"
+            android:entryValues="@array/steam_controller_haptic_path_values"
+            android:key="steam_controller_haptic_path"
+            android:summary="@string/summary_steam_controller_haptic_path"
+            android:title="@string/title_steam_controller_haptic_path"
+            app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="host"
+            android:dependency="checkbox_steam_controller_ble"
+            android:entries="@array/steam_controller_haptic_gain_names"
+            android:entryValues="@array/steam_controller_haptic_gain_values"
+            android:key="steam_controller_haptic_gain"
+            android:summary="@string/summary_steam_controller_haptic_gain"
+            android:title="@string/title_steam_controller_haptic_gain"
+            app:iconSpaceReserved="false" />
         <CheckBoxPreference
             android:defaultValue="false"
             android:key="checkbox_steam_controller_stick_stretch"

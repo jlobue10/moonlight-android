@@ -234,6 +234,24 @@
         <item>rumble</item>
         <item>pulse</item>
     </string-array>
+    <string-array name="steam_controller_haptic_path_names">
+        <item>@string/steam_controller_haptic_path_output</item>
+        <item>@string/steam_controller_haptic_path_with_id</item>
+    </string-array>
+    <string-array name="steam_controller_haptic_path_values" translatable="false">
+        <item>output</item>
+        <item>with_id</item>
+    </string-array>
+    <string-array name="steam_controller_haptic_gain_names">
+        <item>@string/steam_controller_haptic_gain_host</item>
+        <item>@string/steam_controller_haptic_gain_usb</item>
+        <item>@string/steam_controller_haptic_gain_plus6</item>
+    </string-array>
+    <string-array name="steam_controller_haptic_gain_values" translatable="false">
+        <item>host</item>
+        <item>usb</item>
+        <item>plus6</item>
+    </string-array>
     <string-array name="xr_screen_width_values" translatable="false">
         <item>1.0</item>
         <item>1.5</item>

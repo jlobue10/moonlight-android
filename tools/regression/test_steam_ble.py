@@ -87,8 +87,8 @@ STUBS = {
  public void onCharacteristicRead(BluetoothGatt g,BluetoothGattCharacteristic c,int s){}
  public void onCharacteristicChanged(BluetoothGatt g,BluetoothGattCharacteristic c){} }''',
  'com/limelight/LimeLog.java': '''package com.limelight; public class LimeLog {
- public static volatile java.util.function.Consumer<String> warningHook;
- public static void info(String s){} public static void warning(String s){if(warningHook!=null)warningHook.accept(s);} }''',
+ public static volatile java.util.function.Consumer<String> warningHook, infoHook;
+ public static void info(String s){if(infoHook!=null)infoHook.accept(s);} public static void warning(String s){if(warningHook!=null)warningHook.accept(s);} }''',
 }
 TEST = r'''import java.lang.reflect.*; import java.util.*; import android.bluetooth.*; import android.content.*; import android.os.*;
 import com.limelight.binding.input.driver.*; import com.limelight.binding.input.driver.ble.*;
@@ -102,13 +102,14 @@ public class BleRegression {
  static void battery(SteamControllerBle d,int chargeState,int percent)throws Exception{
   Method m=null;for(Class<?> c=d.getClass();c!=null;c=c.getSuperclass()){try{m=c.getDeclaredMethod("handleBattery",byte[].class);break;}catch(NoSuchMethodException ignored){}}m.setAccessible(true);
   batteryState=-1;batteryPercent=-1;m.invoke(d,(Object)new byte[]{(byte)chargeState,(byte)percent});}
- static SteamControllerBle create(BluetoothDevice device)throws Exception{
+ static SteamControllerBle create(BluetoothDevice device)throws Exception{return createWith(device,0,0);}
+ static SteamControllerBle createWith(BluetoothDevice device,int hapticPath,int hapticGain)throws Exception{
   SteamControllerBle d=new SteamControllerBle(1,new UsbDriverListener(){
    public void reportControllerState(int i,int b,float x,float y,float z,float w,float l,float r){states++;}
    public void reportControllerMotion(int i,byte t,float x,float y,float z){}
    public void deviceRemoved(AbstractController c){} public void deviceAdded(AbstractController c){added++;}
    public void reportControllerBattery(int i,byte s,byte p){batteryState=s;batteryPercent=p;}
-  },new Context(),device,false,false,0,0,0,false);return d;
+  },new Context(),device,false,false,0,0,0,hapticPath,hapticGain,false);return d;
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
  static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",8);}
@@ -788,6 +789,49 @@ public class BleRegression {
          "draining reset traffic leaves lizard/watchdog disabled and the configured IMU mode"+context);
    hs.stop();
   }
+  // fork.111 diagnostics: the haptic path and gain preferences, and per-id host samples.
+  {BluetoothGattCharacteristic outPulse2=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",12);
+   BluetoothGattCharacteristic outCmd2=new BluetoothGattCharacteristic("100f6cb7-1735-4313-b402-38567131e5f3",12);
+   SteamControllerBle hd=createWith(new BluetoothDevice(),SteamControllerBle.HAPTIC_PATH_OUTPUT_WITH_ID,SteamControllerBle.HAPTIC_GAIN_USB);hd.start();
+   BluetoothGatt hg=(BluetoothGatt)get(hd,"gatt");BluetoothGattCharacteristic feat=command();
+   hg.service.chars.add(outPulse2);hg.service.chars.add(outCmd2);hg.service.chars.add(feat);hg.service.chars.add(notify);
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(hd,"gattCallback");cb.onServicesDiscovered(hg,0);
+   cb.onCharacteristicWrite(hg,feat,0);cb.onCharacteristicWrite(hg,feat,0);
+   hd.steamHaptic(click);int w=hg.writes.size()-1;
+   check(w==2&&hg.targets.get(w)==outPulse2&&Arrays.equals(hg.writes.get(w),click),
+         "the with-id haptic path writes a 0x81 pulse to B6 with its report id from the first write");
+   cb.onCharacteristicWrite(hg,outPulse2,0);
+   hd.steamHaptic(new byte[]{(byte)0x82,1,1,0});w=hg.writes.size()-1;
+   check(w==3&&hg.targets.get(w)==outCmd2&&Arrays.equals(hg.writes.get(w),new byte[]{(byte)0x82,1,1,(byte)0xfd}),
+         "the USB gain override turns a 0 dB tick into the wired unit's -3 dB");
+   cb.onCharacteristicWrite(hg,outCmd2,0);
+   hd.steamHaptic(new byte[]{(byte)0x82,0,2,0});w=hg.writes.size()-1;
+   check(w==4&&Arrays.equals(hg.writes.get(w),new byte[]{(byte)0x82,0,2,(byte)0xf2}),
+         "the USB gain override turns a 0 dB click into the wired unit's -14 dB");
+   cb.onCharacteristicWrite(hg,outCmd2,0);
+   hd.steamHaptic(new byte[]{(byte)0x82,0,0,0});w=hg.writes.size()-1;
+   check(w==5&&Arrays.equals(hg.writes.get(w),new byte[]{(byte)0x82,0,0,0}),"the gain override leaves a 0x82 stop alone");
+   check((int)get(hd,"hostGainOverrides")==2,"gain overrides are counted for the 10 s summary");
+   hd.stop();
+   SteamControllerBle pd=createWith(new BluetoothDevice(),SteamControllerBle.HAPTIC_PATH_OUTPUT,SteamControllerBle.HAPTIC_GAIN_PLUS6);pd.start();
+   BluetoothGatt pg=(BluetoothGatt)get(pd,"gatt");BluetoothGattCharacteristic feat2=command();
+   pg.service.chars.add(outCmd2);pg.service.chars.add(feat2);pg.service.chars.add(notify);
+   cb=(BluetoothGattCallback)get(pd,"gattCallback");cb.onServicesDiscovered(pg,0);
+   cb.onCharacteristicWrite(pg,feat2,0);cb.onCharacteristicWrite(pg,feat2,0);
+   pd.steamHaptic(new byte[]{(byte)0x82,1,1,(byte)0xfd});w=pg.writes.size()-1;
+   check(w==2&&pg.targets.get(w)==outCmd2&&Arrays.equals(pg.writes.get(w),new byte[]{1,1,6}),
+         "the +6 dB override applies to a tick written without its report id");
+   pd.stop();
+   List<String> infos=new ArrayList<>();com.limelight.LimeLog.infoHook=infos::add;
+   SteamControllerBle sd=make();set(sd,"writeChar",command());
+   for(int i=0;i<30;i++)sd.steamHaptic(click);
+   sd.steamHaptic(new byte[]{(byte)0x82,1,1,0});
+   com.limelight.LimeLog.infoHook=null;
+   long pulses=infos.stream().filter(s->s.contains("host haptic report")&&s.contains(": 81 ")).count();
+   boolean cmdLogged=infos.stream().anyMatch(s->s.contains("host haptic report")&&s.endsWith(": 82 01 01 00"));
+   check(pulses==12&&cmdLogged,"host haptic samples are logged per report id, so a 0x82 after 30 pulses still appears");
+   sd.stop();
+  }
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
@@ -810,7 +854,7 @@ public class ManagerHarness {
  private static final String[] NAME_HINTS = {"steam controller", "steam ctrl", "steamcontroller"};
  public final Map<String,SteamControllerBle> drivers=new HashMap<>();int nextDeviceId;
  public Context context=new Context();UsbDriverListener listener;boolean motionEnabled,splitPads,stickRim;
- int gripsMode,rumbleHoldMs,rumbleMethod;BroadcastReceiver aclReceiver;
+ int gripsMode,rumbleHoldMs,rumbleMethod,hapticPath,hapticGain;BroadcastReceiver aclReceiver;
  static boolean hasPermission(Context c){return true;}
  public void start(BluetoothDevice d){startDriver(d);}
 """ + '\n'.join(manager_methods).replace('SteamControllerBleManager.this', 'ManagerHarness.this') + '}'

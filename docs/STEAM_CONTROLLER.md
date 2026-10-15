@@ -280,6 +280,37 @@ serial and start at defaults for the virtual unit); `host 0x81` present but `wri
 nothing felt means the firmware takes the report but does not act on it over BLE, and the
 report-id framing or the gain path is the next suspect.
 
+### fork.111: haptic framing and gain knobs
+
+fork.110 on the headset (stream_21, 2026-10-14) carried Steam's settings writes through
+(`host settings 0x87: 7=7 8=7 82=3 ...`, every block the USB capture shows), and the haptics
+felt no different, so the settings were never the lever. The remaining difference between the
+wired capture and the stream is one byte: Steam's 0x82 commands reach the wired unit as
+`82 <side> 01 FD` (tick, −3 dB) and `82 <side> 02 F2` (click, −14 dB), but the stream_20 log
+shows `82 01 01 00`. Every hop copies the report verbatim (driver, Vibepollo, common-c, this
+client), so that 0 comes from Steam itself, and Steam never reads settings back from the device,
+so it is Steam-side state (its per-controller haptics intensity is the likely source). The other
+unverified piece is the id-less framing on the output characteristics, which only a lack of GATT
+errors has validated so far. fork.111 adds two diagnostic preferences and better logging:
+
+- **Bluetooth haptic report framing**: `output` (default, without the report id) or `with_id`
+  (every output report carries its id from the first write; a refusal with the id falls back to
+  the feature commands, which the firmware refuses, so haptics would go silent for that id).
+- **Bluetooth haptic gain**: `host` (default, as sent), `usb` (ticks −3 dB, clicks −14 dB, as the
+  wired capture) or `plus6` (+6 dB). Only the gain byte of a 0x82 tick or click is rewritten;
+  0x82 stops, 0x81 pulses and 0x80 rumble are untouched. The 10 s summary counts the rewrites
+  (`0x82 gain overridden x59`).
+- Host haptic samples are logged per report id (12 each) instead of 24 in total, so the 0x82
+  commands always show (`host haptic report #n at +t ms: 82 01 01 00`), and the link logs its
+  configuration at setup (`haptic path: output reports without their id; 0x82 gain: ...`).
+
+How to use it: run Steam's controller test once per setting and compare feel. If `usb` or `plus6`
+changes the pads, the gain byte is the lever and the question moves to why Steam sends 0 for the
+streamed controller (open Steam's controller settings for it and change its haptics intensity
+while streaming: the sampled 0x82 bytes show whether that is the knob). If `with_id` changes the
+feel, the default framing was wrong. If nothing changes, the firmware acts on these reports the
+same way over BLE and the remaining difference is the round trip each tick takes.
+
 ### fork.100: connection-attempt races and small MTUs
 
 An audit of the driver (round 42) found three lifecycle gaps, none of them seen on the Galaxy
