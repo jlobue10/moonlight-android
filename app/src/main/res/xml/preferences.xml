@@ -389,22 +389,31 @@
             android:title="@string/title_steam_controller_rumble_method"
             app:iconSpaceReserved="false" />
         <ListPreference
-            android:defaultValue="output"
+            android:defaultValue="0"
             android:dependency="checkbox_steam_controller_ble"
-            android:entries="@array/steam_controller_haptic_path_names"
-            android:entryValues="@array/steam_controller_haptic_path_values"
-            android:key="steam_controller_haptic_path"
-            android:summary="@string/summary_steam_controller_haptic_path"
-            android:title="@string/title_steam_controller_haptic_path"
+            android:entries="@array/steam_controller_haptic_boost_names"
+            android:entryValues="@array/steam_controller_haptic_boost_values"
+            android:key="steam_controller_haptic_boost"
+            android:summary="@string/summary_steam_controller_haptic_boost"
+            android:title="@string/title_steam_controller_haptic_boost"
             app:iconSpaceReserved="false" />
         <ListPreference
-            android:defaultValue="host"
+            android:defaultValue="100"
             android:dependency="checkbox_steam_controller_ble"
-            android:entries="@array/steam_controller_haptic_gain_names"
-            android:entryValues="@array/steam_controller_haptic_gain_values"
-            android:key="steam_controller_haptic_gain"
-            android:summary="@string/summary_steam_controller_haptic_gain"
-            android:title="@string/title_steam_controller_haptic_gain"
+            android:entries="@array/steam_controller_haptic_pulse_scale_names"
+            android:entryValues="@array/steam_controller_haptic_pulse_scale_values"
+            android:key="steam_controller_haptic_pulse_scale"
+            android:summary="@string/summary_steam_controller_haptic_pulse_scale"
+            android:title="@string/title_steam_controller_haptic_pulse_scale"
+            app:iconSpaceReserved="false" />
+        <ListPreference
+            android:defaultValue="off"
+            android:dependency="checkbox_steam_controller_ble"
+            android:entries="@array/steam_controller_haptic_master_gain_names"
+            android:entryValues="@array/steam_controller_haptic_master_gain_values"
+            android:key="steam_controller_haptic_master_gain"
+            android:summary="@string/summary_steam_controller_haptic_master_gain"
+            android:title="@string/title_steam_controller_haptic_master_gain"
             app:iconSpaceReserved="false" />
         <CheckBoxPreference
             android:defaultValue="false"

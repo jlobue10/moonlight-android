@@ -1899,8 +1899,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     prefConfig.steamControllerSplitPads, SteamControllerBleManager.gripsModeFromPref(prefConfig.steamControllerGrips),
                     SteamControllerBleManager.rumbleHoldFromPref(prefConfig.steamControllerRumbleHold),
                     SteamControllerBleManager.rumbleMethodFromPref(prefConfig.steamControllerRumbleMethod),
-                    SteamControllerBleManager.hapticPathFromPref(prefConfig.steamControllerHapticPath),
-                    SteamControllerBleManager.hapticGainFromPref(prefConfig.steamControllerHapticGain),
+                    SteamControllerBleManager.hapticBoostFromPref(prefConfig.steamControllerHapticBoost),
+                    SteamControllerBleManager.pulseScaleFromPref(prefConfig.steamControllerHapticPulseScale),
+                    SteamControllerBleManager.masterGainFromPref(prefConfig.steamControllerHapticMasterGain),
                     prefConfig.steamControllerStickRim);
             steamControllerBle.start();
         }

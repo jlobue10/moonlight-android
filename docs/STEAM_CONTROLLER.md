@@ -311,6 +311,34 @@ while streaming: the sampled 0x82 bytes show whether that is the knob). If `with
 feel, the default framing was wrong. If nothing changes, the firmware acts on these reports the
 same way over BLE and the remaining difference is the round trip each tick takes.
 
+### fork.112: what fork.111 showed, and three haptic knobs
+
+fork.111 on the headset (stream_22, 2026-10-15), gain forced to +6 dB: the clicks Steam sent
+through the stream were `82 00 02 f2`, byte for byte what the wired unit gets, and the ticks
+`82 01 01 00` (the wired unit gets -3 dB), so the host is not the difference. But +6 dB on both
+was *noticeably stronger*, so the firmware's gain byte works over BLE and the baseline is simply
+too low for this transport. With the report id on the output characteristics nothing was felt at
+all (the writes were accepted): the id-less framing is right, and that knob is gone.
+
+fork.112 replaces the two diagnostics with three knobs, all under the Steam Controller settings:
+
+- **Bluetooth pad click boost** (`steam_controller_haptic_boost`: 0, 6, 12, 20 dB): added to the
+  signed gain byte of Steam's 0x82 tick and click commands, clamped to the firmware's +6 dB
+  ceiling (hid-steam documents -24..+6). +6 keeps Steam's click/tick balance (-8 / +6), +20 puts
+  both at the ceiling, which is what fork.111's "+6 dB" setting did. Stops are untouched.
+- **Bluetooth pad slide pulse length** (`steam_controller_haptic_pulse_scale`: 100, 150, 200,
+  300 %): Steam's slide texture is single 400 µs 0x81 pulses with no gain field, so the only way
+  to make them stronger is to lengthen the on-time. Zero-repeat and zero-duration stops stay.
+- **Bluetooth haptic master gain** (`steam_controller_haptic_master_gain`: off, 6, 12 dB): writes
+  `SETTING_HAPTIC_MASTER_GAIN_DB` (76) in the link's own setup command (and so after every host
+  reset and keep-alive). Steam never writes it; if the firmware honours it over BLE, everything
+  including the slide pulses gets stronger and the two knobs above become unnecessary.
+
+The link logs its configuration at setup (`haptics: 0x82 gain boost +6 dB (ceiling +6 dB), 0x81
+pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts the rewritten
+reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
+done); otherwise boost +6 with pulse 2x, then adjust each to taste.
+
 ### fork.100: connection-attempt races and small MTUs
 
 An audit of the driver (round 42) found three lifecycle gaps, none of them seen on the Galaxy
