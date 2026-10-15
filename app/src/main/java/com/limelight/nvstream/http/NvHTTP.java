@@ -990,22 +990,39 @@ public class NvHTTP {
             }
         }
 
-        String xmlStr = openHttpConnectionToString(httpClientLongConnectNoReadTimeout, getHttpsUrl(true), verb,
-            "appid=" + appId +
-            (appUUID == null ? "" : ("&appuuid=" + appUUID)) +
-            "&mode=" + context.negotiatedWidth + "x" + context.negotiatedHeight + "x" + fpsInt +
-            "&scaleFactor=" + context.streamConfig.getResolutionScaleFactor() +
-            "&additionalStates=1&sops=" + (enableSops ? 1 : 0) +
-            "&rikey="+bytesToHex(context.riKey.getEncoded()) +
-            "&rikeyid="+context.riKeyId +
-            (!enableHdr ? "" : "&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0") +
-            "&virtualDisplay=" + (context.streamConfig.getVirtualDisplay() ? 1 : 0) +
-            "&localAudioPlayMode=" + (context.streamConfig.getPlayLocalAudio() ? 1 : 0) +
-            "&surroundAudioInfo=" + context.streamConfig.getAudioConfiguration().getSurroundAudioInfo() +
-            "&remoteControllersBitmap=" + context.streamConfig.getAttachedGamepadMask() +
-            "&gcmap=" + context.streamConfig.getAttachedGamepadMask() +
-            "&gcpersist="+(context.streamConfig.getPersistGamepadsAfterDisconnect() ? 1 : 0) +
-            MoonBridge.getLaunchUrlQueryParameters());
+        // The launch and resume requests run without a read timeout (the host may take a
+        // while to start the app), so bracket them in the log: a request that hangs is
+        // otherwise invisible in the stream log until the user gives up.
+        HttpUrl launchUrl = getHttpsUrl(true);
+        String launchHost = launchUrl.host() + ":" + launchUrl.port();
+        LimeLog.info("Sending " + verb + " request for app id " + appId
+                + (appUUID == null ? "" : " (uuid " + appUUID + ")") + " to " + launchHost + " (no read timeout)");
+        long launchStartMs = System.currentTimeMillis();
+        String xmlStr;
+        try {
+            xmlStr = openHttpConnectionToString(httpClientLongConnectNoReadTimeout, launchUrl, verb,
+                "appid=" + appId +
+                (appUUID == null ? "" : ("&appuuid=" + appUUID)) +
+                "&mode=" + context.negotiatedWidth + "x" + context.negotiatedHeight + "x" + fpsInt +
+                "&scaleFactor=" + context.streamConfig.getResolutionScaleFactor() +
+                "&additionalStates=1&sops=" + (enableSops ? 1 : 0) +
+                "&rikey="+bytesToHex(context.riKey.getEncoded()) +
+                "&rikeyid="+context.riKeyId +
+                (!enableHdr ? "" : "&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0") +
+                "&virtualDisplay=" + (context.streamConfig.getVirtualDisplay() ? 1 : 0) +
+                "&localAudioPlayMode=" + (context.streamConfig.getPlayLocalAudio() ? 1 : 0) +
+                "&surroundAudioInfo=" + context.streamConfig.getAudioConfiguration().getSurroundAudioInfo() +
+                "&remoteControllersBitmap=" + context.streamConfig.getAttachedGamepadMask() +
+                "&gcmap=" + context.streamConfig.getAttachedGamepadMask() +
+                "&gcpersist="+(context.streamConfig.getPersistGamepadsAfterDisconnect() ? 1 : 0) +
+                MoonBridge.getLaunchUrlQueryParameters());
+        } catch (IOException e) {
+            LimeLog.warning("The " + verb + " request for app id " + appId + " to " + launchHost + " failed after "
+                    + (System.currentTimeMillis() - launchStartMs) + " ms: " + e);
+            throw e;
+        }
+        LimeLog.info("The " + verb + " request for app id " + appId + " to " + launchHost + " returned after "
+                + (System.currentTimeMillis() - launchStartMs) + " ms");
         if ((verb.equals("launch") && !getXmlString(xmlStr, "gamesession", true).equals("0") ||
                 (verb.equals("resume") && !getXmlString(xmlStr, "resume", true).equals("0")))) {
             // sessionUrl0 will be missing for older GFE versions

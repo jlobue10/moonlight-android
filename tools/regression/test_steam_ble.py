@@ -870,6 +870,42 @@ public class BleRegression {
     td.stop();
    }
   }
+  // fork.115: the feature-report fallback for a 0x82 command derives its side mask from the measured numbering (side 0 = left).
+  {Method th=SteamControllerBle.class.getDeclaredMethod("triggerHaptic",byte.class,byte.class,byte.class);th.setAccessible(true);
+   byte[] left=(byte[])th.invoke(null,(byte)0,(byte)2,(byte)6),right=(byte[])th.invoke(null,(byte)1,(byte)2,(byte)6),both=(byte[])th.invoke(null,(byte)2,(byte)2,(byte)6);
+   check(left[2]==0x01&&right[2]==0x02&&both[2]==0x03&&left[3]==2&&left[5]==6,
+         "triggerHaptic maps 0x82 side 0 to the left-pad mask 0x01 and side 1 to the right-pad mask 0x02, anything else to both");
+  }
+  // fork.115: a self-test schedule belongs to the link it was made for; link loss removes it and a
+  // reconnect gets a fresh schedule, so the two never interleave on the replacement link.
+  {BluetoothGattCharacteristic outPulse5=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",12);
+   BluetoothGattCharacteristic outCmd5=new BluetoothGattCharacteristic("100f6cb7-1735-4313-b402-38567131e5f3",12);
+   java.util.function.ToIntFunction<BluetoothGatt> selfTestWrites=g->{int n=0;for(byte[] w:g.writes){
+    if(Arrays.equals(w,new byte[]{1,2,6})||Arrays.equals(w,new byte[]{0,2,6})||Arrays.equals(w,new byte[]{1,1,6})||Arrays.equals(w,new byte[]{0,1,6})
+       ||Arrays.equals(w,new byte[]{0,(byte)0xd0,7,0,0,1,0})||Arrays.equals(w,new byte[]{1,(byte)0xd0,7,0,0,1,0}))n++;}return n;};
+   BluetoothDevice dev=new BluetoothDevice();SteamControllerBle td=createWith(dev,0,100,0,true);td.start();
+   BluetoothGatt first=dev.next;BluetoothGattCharacteristic feat=command();
+   first.service.chars.add(outPulse5);first.service.chars.add(outCmd5);first.service.chars.add(feat);first.service.chars.add(notify);
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(td,"gattCallback");cb.onServicesDiscovered(first,0);
+   cb.onCharacteristicWrite(first,feat,0);cb.onCharacteristicWrite(first,feat,0);
+   Handler h=(Handler)get(td,"handler");
+   List<Runnable> lostSched=new ArrayList<>();for(Runnable r:h.delayed)if(r.getClass().getSimpleName().equals("SelfTestReport"))lostSched.add(r);
+   check(lostSched.size()==18,"the self-test schedule exists once the first link is set up");
+   cb.onConnectionStateChange(first,8,BluetoothProfile.STATE_DISCONNECTED);
+   boolean noneLeft=true;for(Runnable r:h.delayed)if(r.getClass().getSimpleName().equals("SelfTestReport"))noneLeft=false;
+   check(get(td,"gatt")==null&&noneLeft,"link loss removes the pending self-test reports from the handler");
+   BluetoothGatt replacement5=new BluetoothGatt();dev.next=replacement5;td.start();
+   replacement5.service.chars.add(outPulse5);replacement5.service.chars.add(outCmd5);replacement5.service.chars.add(feat);replacement5.service.chars.add(notify);
+   cb.onServicesDiscovered(replacement5,0);cb.onCharacteristicWrite(replacement5,feat,0);cb.onCharacteristicWrite(replacement5,feat,0);
+   List<Runnable> freshSched=new ArrayList<>();for(Runnable r:h.delayed)if(r.getClass().getSimpleName().equals("SelfTestReport"))freshSched.add(r);
+   boolean disjoint=true;for(Runnable r:freshSched)if(lostSched.contains(r))disjoint=false;
+   check(get(td,"gatt")==replacement5&&freshSched.size()==18&&disjoint,"the replacement link gets its own self-test schedule");
+   for(Runnable r:lostSched){r.run();int c=0;while(get(td,"inFlight")!=null&&c++<4){Object p=get(td,"inFlight");cb.onCharacteristicWrite(replacement5,(BluetoothGattCharacteristic)get(p,"ch"),0);}}
+   check(selfTestWrites.applyAsInt(replacement5)==0&&get(td,"gatt")==replacement5,"the lost link's self-test reports write nothing to the replacement link");
+   for(Runnable r:freshSched){h.delayed.remove(r);r.run();int c=0;while(get(td,"inFlight")!=null&&c++<4){Object p=get(td,"inFlight");cb.onCharacteristicWrite(replacement5,(BluetoothGattCharacteristic)get(p,"ch"),0);}}
+   check(selfTestWrites.applyAsInt(replacement5)==18,"the replacement link's own schedule still writes all 18 reports");
+   td.stop();
+  }
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''

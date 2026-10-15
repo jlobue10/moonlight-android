@@ -344,8 +344,21 @@ public class NvConnection {
     {
         NvHTTP h = new NvHTTP(context.serverAddress, context.httpsPort, uniqueId, context.serverCert, cryptoProvider);
 
-        String serverInfo = h.getServerInfo(true);
-        
+        // Bracket the serverinfo request in the log as well: it is the first thing the start
+        // path waits on, and a stall here looks the same as a stalled launch from the outside.
+        LimeLog.info("Requesting serverinfo from " + context.serverAddress);
+        long serverInfoStartMs = System.currentTimeMillis();
+        String serverInfo;
+        try {
+            serverInfo = h.getServerInfo(true);
+        } catch (IOException | XmlPullParserException e) {
+            LimeLog.warning("The serverinfo request to " + context.serverAddress + " failed after "
+                    + (System.currentTimeMillis() - serverInfoStartMs) + " ms: " + e);
+            throw e;
+        }
+        LimeLog.info("The serverinfo request to " + context.serverAddress + " returned after "
+                + (System.currentTimeMillis() - serverInfoStartMs) + " ms");
+
         context.serverAppVersion = h.getServerVersion(serverInfo);
         if (context.serverAppVersion == null) {
             context.connListener.displayMessage("Server version malformed");
@@ -435,6 +448,7 @@ public class NvConnection {
         if (h.getCurrentGame(serverInfo) != 0 || (h.getCurrentGameUUID(serverInfo) != null && !h.getCurrentGameUUID(serverInfo).isEmpty())) {
             try {
                 if (h.getCurrentGame(serverInfo) == app.getAppId() || Objects.equals(h.getCurrentGameUUID(serverInfo), app.getAppUUID())) {
+                    LimeLog.info("Resuming app \"" + app.getAppName() + "\" (id " + app.getAppId() + ") on " + context.serverAddress);
                     if (!h.launchApp(context, "resume", app.getAppUUID(), app.getAppId(), context.negotiatedHdr)) {
                         context.connListener.displayMessage("Failed to resume existing session");
                         return false;
@@ -496,7 +510,9 @@ public class NvConnection {
     private boolean launchNotRunningApp(NvHTTP h, ConnectionContext context)
             throws IOException, XmlPullParserException {
         // Launch the app since it's not running
-        if (!h.launchApp(context, "launch", context.streamConfig.getApp().getAppUUID(), context.streamConfig.getApp().getAppId(), context.negotiatedHdr)) {
+        NvApp app = context.streamConfig.getApp();
+        LimeLog.info("Launching app \"" + app.getAppName() + "\" (id " + app.getAppId() + ") on " + context.serverAddress);
+        if (!h.launchApp(context, "launch", app.getAppUUID(), app.getAppId(), context.negotiatedHdr)) {
             context.connListener.displayMessage("Failed to launch application");
             return false;
         }
