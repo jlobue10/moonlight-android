@@ -234,23 +234,39 @@
         <item>rumble</item>
         <item>pulse</item>
     </string-array>
-    <string-array name="steam_controller_haptic_path_names">
-        <item>@string/steam_controller_haptic_path_output</item>
-        <item>@string/steam_controller_haptic_path_with_id</item>
+    <string-array name="steam_controller_haptic_boost_names">
+        <item>@string/steam_controller_haptic_boost_0</item>
+        <item>@string/steam_controller_haptic_boost_6</item>
+        <item>@string/steam_controller_haptic_boost_12</item>
+        <item>@string/steam_controller_haptic_boost_20</item>
     </string-array>
-    <string-array name="steam_controller_haptic_path_values" translatable="false">
-        <item>output</item>
-        <item>with_id</item>
+    <string-array name="steam_controller_haptic_boost_values" translatable="false">
+        <item>0</item>
+        <item>6</item>
+        <item>12</item>
+        <item>20</item>
     </string-array>
-    <string-array name="steam_controller_haptic_gain_names">
-        <item>@string/steam_controller_haptic_gain_host</item>
-        <item>@string/steam_controller_haptic_gain_usb</item>
-        <item>@string/steam_controller_haptic_gain_plus6</item>
+    <string-array name="steam_controller_haptic_pulse_scale_names">
+        <item>@string/steam_controller_haptic_pulse_scale_100</item>
+        <item>@string/steam_controller_haptic_pulse_scale_150</item>
+        <item>@string/steam_controller_haptic_pulse_scale_200</item>
+        <item>@string/steam_controller_haptic_pulse_scale_300</item>
     </string-array>
-    <string-array name="steam_controller_haptic_gain_values" translatable="false">
-        <item>host</item>
-        <item>usb</item>
-        <item>plus6</item>
+    <string-array name="steam_controller_haptic_pulse_scale_values" translatable="false">
+        <item>100</item>
+        <item>150</item>
+        <item>200</item>
+        <item>300</item>
+    </string-array>
+    <string-array name="steam_controller_haptic_master_gain_names">
+        <item>@string/steam_controller_haptic_master_gain_off</item>
+        <item>@string/steam_controller_haptic_master_gain_6</item>
+        <item>@string/steam_controller_haptic_master_gain_12</item>
+    </string-array>
+    <string-array name="steam_controller_haptic_master_gain_values" translatable="false">
+        <item>off</item>
+        <item>6</item>
+        <item>12</item>
     </string-array>
     <string-array name="xr_screen_width_values" translatable="false">
         <item>1.0</item>

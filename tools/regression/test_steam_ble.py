@@ -102,14 +102,14 @@ public class BleRegression {
  static void battery(SteamControllerBle d,int chargeState,int percent)throws Exception{
   Method m=null;for(Class<?> c=d.getClass();c!=null;c=c.getSuperclass()){try{m=c.getDeclaredMethod("handleBattery",byte[].class);break;}catch(NoSuchMethodException ignored){}}m.setAccessible(true);
   batteryState=-1;batteryPercent=-1;m.invoke(d,(Object)new byte[]{(byte)chargeState,(byte)percent});}
- static SteamControllerBle create(BluetoothDevice device)throws Exception{return createWith(device,0,0);}
- static SteamControllerBle createWith(BluetoothDevice device,int hapticPath,int hapticGain)throws Exception{
+ static SteamControllerBle create(BluetoothDevice device)throws Exception{return createWith(device,0,100,0);}
+ static SteamControllerBle createWith(BluetoothDevice device,int boostDb,int pulseScale,int masterGainDb)throws Exception{
   SteamControllerBle d=new SteamControllerBle(1,new UsbDriverListener(){
    public void reportControllerState(int i,int b,float x,float y,float z,float w,float l,float r){states++;}
    public void reportControllerMotion(int i,byte t,float x,float y,float z){}
    public void deviceRemoved(AbstractController c){} public void deviceAdded(AbstractController c){added++;}
    public void reportControllerBattery(int i,byte s,byte p){batteryState=s;batteryPercent=p;}
-  },new Context(),device,false,false,0,0,0,hapticPath,hapticGain,false);return d;
+  },new Context(),device,false,false,0,0,0,boostDb,pulseScale,masterGainDb,false);return d;
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
  static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",8);}
@@ -789,38 +789,47 @@ public class BleRegression {
          "draining reset traffic leaves lizard/watchdog disabled and the configured IMU mode"+context);
    hs.stop();
   }
-  // fork.111 diagnostics: the haptic path and gain preferences, and per-id host samples.
+  // fork.112 diagnostics: the haptic boost, pulse scale and master gain preferences, and per-id host samples.
   {BluetoothGattCharacteristic outPulse2=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",12);
    BluetoothGattCharacteristic outCmd2=new BluetoothGattCharacteristic("100f6cb7-1735-4313-b402-38567131e5f3",12);
-   SteamControllerBle hd=createWith(new BluetoothDevice(),SteamControllerBle.HAPTIC_PATH_OUTPUT_WITH_ID,SteamControllerBle.HAPTIC_GAIN_USB);hd.start();
+   SteamControllerBle hd=createWith(new BluetoothDevice(),6,200,0);hd.start();
    BluetoothGatt hg=(BluetoothGatt)get(hd,"gatt");BluetoothGattCharacteristic feat=command();
    hg.service.chars.add(outPulse2);hg.service.chars.add(outCmd2);hg.service.chars.add(feat);hg.service.chars.add(notify);
    BluetoothGattCallback cb=(BluetoothGattCallback)get(hd,"gattCallback");cb.onServicesDiscovered(hg,0);
    cb.onCharacteristicWrite(hg,feat,0);cb.onCharacteristicWrite(hg,feat,0);
+   check(Arrays.equals(hg.writes.get(1),new byte[]{(byte)0x87,9,9,0,0,71,0,0,48,0,0}),"master gain off leaves the link setup command unchanged");
    hd.steamHaptic(click);int w=hg.writes.size()-1;
-   check(w==2&&hg.targets.get(w)==outPulse2&&Arrays.equals(hg.writes.get(w),click),
-         "the with-id haptic path writes a 0x81 pulse to B6 with its report id from the first write");
+   check(w==2&&hg.targets.get(w)==outPulse2&&Arrays.equals(hg.writes.get(w),new byte[]{1,(byte)0x20,3,0,0,1,0}),
+         "pulse scale 2x doubles the on-time of a host click pulse (400 us to 800 us) and keeps the rest");
+   cb.onCharacteristicWrite(hg,outPulse2,0);
+   hd.steamHaptic(new byte[]{(byte)0x81,1,0,0,0,0,0,0});w=hg.writes.size()-1;
+   check(w==3&&Arrays.equals(hg.writes.get(w),new byte[]{1,0,0,0,0,0,0}),"pulse scale leaves a zero stop pulse alone");
    cb.onCharacteristicWrite(hg,outPulse2,0);
    hd.steamHaptic(new byte[]{(byte)0x82,1,1,0});w=hg.writes.size()-1;
-   check(w==3&&hg.targets.get(w)==outCmd2&&Arrays.equals(hg.writes.get(w),new byte[]{(byte)0x82,1,1,(byte)0xfd}),
-         "the USB gain override turns a 0 dB tick into the wired unit's -3 dB");
+   check(w==4&&hg.targets.get(w)==outCmd2&&Arrays.equals(hg.writes.get(w),new byte[]{1,1,6}),"boost +6 lifts a 0 dB tick to the +6 dB ceiling");
    cb.onCharacteristicWrite(hg,outCmd2,0);
-   hd.steamHaptic(new byte[]{(byte)0x82,0,2,0});w=hg.writes.size()-1;
-   check(w==4&&Arrays.equals(hg.writes.get(w),new byte[]{(byte)0x82,0,2,(byte)0xf2}),
-         "the USB gain override turns a 0 dB click into the wired unit's -14 dB");
+   hd.steamHaptic(new byte[]{(byte)0x82,0,2,(byte)0xf2});w=hg.writes.size()-1;
+   check(w==5&&Arrays.equals(hg.writes.get(w),new byte[]{0,2,(byte)0xf8}),"boost +6 lifts a -14 dB click to -8 dB, keeping Steam's balance");
    cb.onCharacteristicWrite(hg,outCmd2,0);
    hd.steamHaptic(new byte[]{(byte)0x82,0,0,0});w=hg.writes.size()-1;
-   check(w==5&&Arrays.equals(hg.writes.get(w),new byte[]{(byte)0x82,0,0,0}),"the gain override leaves a 0x82 stop alone");
-   check((int)get(hd,"hostGainOverrides")==2,"gain overrides are counted for the 10 s summary");
+   check(w==6&&Arrays.equals(hg.writes.get(w),new byte[]{0,0,0}),"the boost leaves a 0x82 stop alone");
+   check((int)get(hd,"hostHapticsAdjusted")==3,"adjusted reports are counted for the 10 s summary");
    hd.stop();
-   SteamControllerBle pd=createWith(new BluetoothDevice(),SteamControllerBle.HAPTIC_PATH_OUTPUT,SteamControllerBle.HAPTIC_GAIN_PLUS6);pd.start();
+   SteamControllerBle pd=createWith(new BluetoothDevice(),20,100,6);pd.start();
    BluetoothGatt pg=(BluetoothGatt)get(pd,"gatt");BluetoothGattCharacteristic feat2=command();
    pg.service.chars.add(outCmd2);pg.service.chars.add(feat2);pg.service.chars.add(notify);
    cb=(BluetoothGattCallback)get(pd,"gattCallback");cb.onServicesDiscovered(pg,0);
+   byte[] setupGain={(byte)0x87,12,9,0,0,71,0,0,48,0,0,76,6,0};
    cb.onCharacteristicWrite(pg,feat2,0);cb.onCharacteristicWrite(pg,feat2,0);
-   pd.steamHaptic(new byte[]{(byte)0x82,1,1,(byte)0xfd});w=pg.writes.size()-1;
-   check(w==2&&pg.targets.get(w)==outCmd2&&Arrays.equals(pg.writes.get(w),new byte[]{1,1,6}),
-         "the +6 dB override applies to a tick written without its report id");
+   check(Arrays.equals(pg.writes.get(1),setupGain),"master gain +6 dB is written as setting 76 in the link setup command");
+   pd.steamHaptic(new byte[]{(byte)0x82,0,2,(byte)0xf2});w=pg.writes.size()-1;
+   check(w==2&&pg.targets.get(w)==outCmd2&&Arrays.equals(pg.writes.get(w),new byte[]{0,2,6}),"boost +20 clamps a -14 dB click at the +6 dB ceiling");
+   cb.onCharacteristicWrite(pg,outCmd2,0);
+   pd.steamSettings((byte)0x8E,new byte[0]);
+   int completions=0;
+   while(get(pd,"inFlight")!=null&&completions++<12)cb.onCharacteristicWrite(pg,feat2,0);
+   int n=pg.writes.size();
+   check(n>=5&&(pg.writes.get(n-2)[0]&255)==0x8E&&Arrays.equals(pg.writes.get(n-1),setupGain),"a host reset is followed by the setup command including the master gain");
    pd.stop();
    List<String> infos=new ArrayList<>();com.limelight.LimeLog.infoHook=infos::add;
    SteamControllerBle sd=make();set(sd,"writeChar",command());
@@ -854,7 +863,7 @@ public class ManagerHarness {
  private static final String[] NAME_HINTS = {"steam controller", "steam ctrl", "steamcontroller"};
  public final Map<String,SteamControllerBle> drivers=new HashMap<>();int nextDeviceId;
  public Context context=new Context();UsbDriverListener listener;boolean motionEnabled,splitPads,stickRim;
- int gripsMode,rumbleHoldMs,rumbleMethod,hapticPath,hapticGain;BroadcastReceiver aclReceiver;
+ int gripsMode,rumbleHoldMs,rumbleMethod,hapticBoostDb,pulseScalePercent,masterGainDb;BroadcastReceiver aclReceiver;
  static boolean hasPermission(Context c){return true;}
  public void start(BluetoothDevice d){startDriver(d);}
 """ + '\n'.join(manager_methods).replace('SteamControllerBleManager.this', 'ManagerHarness.this') + '}'

@@ -69,8 +69,9 @@ public class PreferenceConfiguration {
     private static final String STEAM_CONTROLLER_GRIPS_PREF_STRING = "steam_controller_grips";
     private static final String STEAM_CONTROLLER_RUMBLE_HOLD_PREF_STRING = "steam_controller_rumble_hold";
     private static final String STEAM_CONTROLLER_RUMBLE_METHOD_PREF_STRING = "steam_controller_rumble_method";
-    private static final String STEAM_CONTROLLER_HAPTIC_PATH_PREF_STRING = "steam_controller_haptic_path";
-    private static final String STEAM_CONTROLLER_HAPTIC_GAIN_PREF_STRING = "steam_controller_haptic_gain";
+    private static final String STEAM_CONTROLLER_HAPTIC_BOOST_PREF_STRING = "steam_controller_haptic_boost";
+    private static final String STEAM_CONTROLLER_HAPTIC_PULSE_SCALE_PREF_STRING = "steam_controller_haptic_pulse_scale";
+    private static final String STEAM_CONTROLLER_HAPTIC_MASTER_GAIN_PREF_STRING = "steam_controller_haptic_master_gain";
     private static final String STEAM_CONTROLLER_STICK_RIM_PREF_STRING = "checkbox_steam_controller_stick_stretch";
     private static final String VIDEO_FORMAT_PREF_STRING = "video_format";
     private static final String ONSCREEN_CONTROLLER_PREF_STRING = "checkbox_show_onscreen_controls";
@@ -271,8 +272,9 @@ public class PreferenceConfiguration {
     public String steamControllerGrips;      // paddles | ds4 | off
     public String steamControllerRumbleHold; // milliseconds, "0" = until the host says stop
     public String steamControllerRumbleMethod; // "rumble" (firmware rumble command) or "pulse" (pulse trains)
-    public String steamControllerHapticPath;   // "output" (reports without their id) or "with_id" (diagnostic)
-    public String steamControllerHapticGain;   // "host" (as sent), "usb" (wired unit's values) or "plus6" (diagnostic)
+    public String steamControllerHapticBoost;      // dB added to Steam's pad click/tick gain, "0" = as sent
+    public String steamControllerHapticPulseScale; // percent of Steam's pad slide pulse on-time, "100" = as sent
+    public String steamControllerHapticMasterGain; // dB written as the firmware's haptic master gain, "off" = not written
     public boolean steamControllerStickRim;  // rescale the BLE sticks so a full push reaches the rim
     public String depthModel;              // DepthModel.prefValue
     public boolean depthGuidedUpsampling;
@@ -940,8 +942,9 @@ private static int getFramePacingValue(Context context) {
         config.steamControllerGrips = prefs.getString(STEAM_CONTROLLER_GRIPS_PREF_STRING, "paddles");
         config.steamControllerRumbleHold = prefs.getString(STEAM_CONTROLLER_RUMBLE_HOLD_PREF_STRING, "500");
         config.steamControllerRumbleMethod = prefs.getString(STEAM_CONTROLLER_RUMBLE_METHOD_PREF_STRING, "rumble");
-        config.steamControllerHapticPath = prefs.getString(STEAM_CONTROLLER_HAPTIC_PATH_PREF_STRING, "output");
-        config.steamControllerHapticGain = prefs.getString(STEAM_CONTROLLER_HAPTIC_GAIN_PREF_STRING, "host");
+        config.steamControllerHapticBoost = prefs.getString(STEAM_CONTROLLER_HAPTIC_BOOST_PREF_STRING, "0");
+        config.steamControllerHapticPulseScale = prefs.getString(STEAM_CONTROLLER_HAPTIC_PULSE_SCALE_PREF_STRING, "100");
+        config.steamControllerHapticMasterGain = prefs.getString(STEAM_CONTROLLER_HAPTIC_MASTER_GAIN_PREF_STRING, "off");
         config.steamControllerStickRim = prefs.getBoolean(STEAM_CONTROLLER_STICK_RIM_PREF_STRING, false);
         config.fullScreen = prefs.getBoolean(FULL_SCREEN_PREF_STRING, DEFAULT_FULL_SCREEN);
 

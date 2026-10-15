@@ -40,8 +40,9 @@ public final class SteamControllerBleManager {
     private final int gripsMode;
     private final int rumbleHoldMs;
     private final int rumbleMethod;
-    private final int hapticPath;
-    private final int hapticGain;
+    private final int hapticBoostDb;
+    private final int pulseScalePercent;
+    private final int masterGainDb;
     private final boolean stickRim;
     private final Map<String, SteamControllerBle> drivers = new HashMap<>();
     private int nextDeviceId = BASE_DEVICE_ID;
@@ -49,7 +50,7 @@ public final class SteamControllerBleManager {
 
     public SteamControllerBleManager(Context context, UsbDriverListener listener, boolean motionEnabled,
                                      boolean splitPads, int gripsMode, int rumbleHoldMs, int rumbleMethod,
-                                     int hapticPath, int hapticGain, boolean stickRim) {
+                                     int hapticBoostDb, int pulseScalePercent, int masterGainDb, boolean stickRim) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.motionEnabled = motionEnabled;
@@ -57,8 +58,9 @@ public final class SteamControllerBleManager {
         this.gripsMode = gripsMode;
         this.rumbleHoldMs = rumbleHoldMs;
         this.rumbleMethod = rumbleMethod;
-        this.hapticPath = hapticPath;
-        this.hapticGain = hapticGain;
+        this.hapticBoostDb = hapticBoostDb;
+        this.pulseScalePercent = pulseScalePercent;
+        this.masterGainDb = masterGainDb;
         this.stickRim = stickRim;
     }
 
@@ -77,17 +79,27 @@ public final class SteamControllerBleManager {
         return SteamControllerBle.RUMBLE_METHOD_RUMBLE_CMD;
     }
 
-    /** Maps the steam_controller_haptic_path preference value to a SteamControllerBle.HAPTIC_PATH_* constant. */
-    public static int hapticPathFromPref(String value) {
-        if ("with_id".equals(value)) return SteamControllerBle.HAPTIC_PATH_OUTPUT_WITH_ID;
-        return SteamControllerBle.HAPTIC_PATH_OUTPUT;
+    private static int intPref(String value, int fallback, int min, int max) {
+        try {
+            return Math.max(min, Math.min(max, Integer.parseInt(value)));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
-    /** Maps the steam_controller_haptic_gain preference value to a SteamControllerBle.HAPTIC_GAIN_* constant. */
-    public static int hapticGainFromPref(String value) {
-        if ("usb".equals(value)) return SteamControllerBle.HAPTIC_GAIN_USB;
-        if ("plus6".equals(value)) return SteamControllerBle.HAPTIC_GAIN_PLUS6;
-        return SteamControllerBle.HAPTIC_GAIN_HOST;
+    /** Maps the steam_controller_haptic_boost preference value (dB added to Steam's 0x82 gain byte). */
+    public static int hapticBoostFromPref(String value) {
+        return intPref(value, 0, 0, 30);
+    }
+
+    /** Maps the steam_controller_haptic_pulse_scale preference value (percent of Steam's 0x81 pulse on-time). */
+    public static int pulseScaleFromPref(String value) {
+        return intPref(value, 100, 100, 400);
+    }
+
+    /** Maps the steam_controller_haptic_master_gain preference value (dB written as setting 76; "off" = not written). */
+    public static int masterGainFromPref(String value) {
+        return intPref(value, 0, 0, 24);
     }
 
     /** Maps the steam_controller_grips preference value to a SteamControllerBle.GRIPS_* constant. */
@@ -208,7 +220,7 @@ public final class SteamControllerBleManager {
             }
             return;
         }
-        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, rumbleMethod, hapticPath, hapticGain, stickRim);
+        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, rumbleMethod, hapticBoostDb, pulseScalePercent, masterGainDb, stickRim);
         drivers.put(address, driver);
         if (!driver.start()) {
             drivers.remove(address);
