@@ -74,10 +74,9 @@ public class SteamControllerBle extends SteamControllerInput {
     private static final int OUTPUT_REPORT_COUNT = (int) (WRITE_SHORT_HIGH - WRITE_SHORT_LOW + 1);
     private static final byte REPORT_RUMBLE = (byte) 0x80;
     private static final byte REPORT_PULSE = (byte) 0x81;
-    /** Output report framing on the air: payload only (as the notifications), or with the id. */
-    private static final int OUTPUT_FRAMING_PAYLOAD = 0;
-    private static final int OUTPUT_FRAMING_WITH_ID = 1;
-    private static final int OUTPUT_FRAMING_UNUSABLE = 2;
+    // Output reports go on the air without their report id, as the notifications arrive. There is
+    // no other framing: with the id the firmware accepts the report and silently ignores it
+    // (fork.112), and the feature-command forms of the haptic reports are refused (fork.96).
     private static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     private static final int DESIRED_MTU = 100;
     /** Below this the 45-byte state report cannot fit one notification. */
@@ -190,11 +189,16 @@ public class SteamControllerBle extends SteamControllerInput {
     private boolean stateSubscribed;
     // The output report characteristics by (id - 0x80); guarded by this.
     private final BluetoothGattCharacteristic[] outputChars = new BluetoothGattCharacteristic[OUTPUT_REPORT_COUNT];
-    // Per link and report id: how that output report is framed, learned from the first refusal.
-    private final int[] outputFraming = new int[OUTPUT_REPORT_COUNT];
     // Per link and report id: the first write went with a response, so the firmware's verdict
     // on that report is in the log (haptics otherwise go without response and cannot be refused).
     private final boolean[] outputProbed = new boolean[OUTPUT_REPORT_COUNT];
+    // Per link and report id: a refused write was already re-sent once, and when that refusal was.
+    // A refusal within WRITE_WATCHDOG_MS of the previous one drops the report; a later one is a
+    // fresh transient and is retried again. The id-less framing is never given up (fork.116).
+    private final boolean[] outputRetried = new boolean[OUTPUT_REPORT_COUNT];
+    private final long[] outputRefusedMs = new long[OUTPUT_REPORT_COUNT];
+    // Per link and report id: how many writes the controller refused (for the 10 s summary).
+    private final int[] outputRefusals = new int[OUTPUT_REPORT_COUNT];
     // Haptic diagnostics for the 10 s summary line; guarded by this.
     private final int[] hostReports = new int[OUTPUT_REPORT_COUNT];
     private final int[] writtenReports = new int[OUTPUT_REPORT_COUNT];
@@ -234,6 +238,9 @@ public class SteamControllerBle extends SteamControllerInput {
     // The current link reached CONNECTED; cleared when it is retired. Guarded by this.
     private boolean linkConnected;
     private boolean announced;
+    // onReady ran for the current link: a late or duplicate descriptor-write completion calls it
+    // again (nothing left to subscribe), and one setup per link is enough (fork.116).
+    private boolean linkReady;
     // One warning per link when state reports arrive truncated (an MTU that stayed at 23).
     private int shortReportsLogged;
     /** Set after a with-response write was refused and the characteristic allows no-response. */
@@ -502,6 +509,7 @@ public class SteamControllerBle extends SteamControllerInput {
             // announcement can land after this point.
             wasAnnounced = announced;
             announced = false;
+            linkReady = false;
             pendingSelfTest.clear();
         }
         handler.removeCallbacksAndMessages(null);
@@ -750,7 +758,6 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             Pending failed;
             boolean withResponse;
-            int framing = OUTPUT_FRAMING_PAYLOAD;
             int index = -1;
             synchronized (SteamControllerBle.this) {
                 // Link loss can retire g after the check above while this callback
@@ -768,12 +775,11 @@ public class SteamControllerBle extends SteamControllerInput {
                 withResponse = inFlightWithResponse;
                 if (failed != null && failed.output) {
                     index = failed.id() - OUTPUT_REPORT_FIRST;
-                    framing = outputFraming[index];
                     if (withResponse && !outputProbed[index]) {
                         outputProbed[index] = true;
                         LimeLog.info("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
                                 + (status == BluetoothGatt.GATT_SUCCESS ? " accepted" : " refused (status " + status + ")")
-                                + " by the controller " + (framing == OUTPUT_FRAMING_PAYLOAD ? "without" : "with") + " its report id");
+                                + " by the controller without its report id");
                     }
                     if (status == BluetoothGatt.GATT_SUCCESS) {
                         writtenReports[index]++;
@@ -781,76 +787,83 @@ public class SteamControllerBle extends SteamControllerInput {
                 }
             }
             boolean retryWithoutResponse = false;
-            int newFraming = framing;
-            Pending retry = null;
+            // A refused output report is re-sent once, id-less again, after the write retry delay.
+            boolean retryLater = false;
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 LimeLog.warning("Steam Controller BLE: write failed, status " + status + describeCommand(failed)
                         + (withResponse ? " (with response)" : " (without response)"));
-                if (failed != null && failed.output && status > 0 && status < 0x80) {
-                    // An ATT error from the controller itself (not a stack/link code): the
-                    // firmware refused the report as framed. Try it once with its report id;
-                    // if that is refused too, this report id goes back to the feature-command
-                    // conversion for the rest of the link (where one exists).
-                    if (framing == OUTPUT_FRAMING_PAYLOAD) {
-                        newFraming = OUTPUT_FRAMING_WITH_ID;
-                        retry = failed;
-                        LimeLog.warning("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
-                                + " refused without its id; retrying with the report id");
-                    } else if (framing == OUTPUT_FRAMING_WITH_ID) {
-                        newFraming = OUTPUT_FRAMING_UNUSABLE;
-                        retry = featureFallback(failed.bytes);
-                        LimeLog.warning("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
-                                + " refused with its id too; it goes as a feature command for this link"
-                                + (retry == null ? " (none known: dropped)" : ""));
+                // An ATT error (1..0x7F) comes from the controller itself; 0x80 and up are
+                // stack/link codes (133 = GATT_ERROR, 0x8f = congested, 257 = GATT_FAILURE).
+                boolean peerRefusal = status > 0 && status < 0x80;
+                if (failed != null && failed.output && peerRefusal) {
+                    // The firmware refused the report. It keeps its id-less framing: with the id
+                    // on the air the firmware accepts and silently ignores it (fork.112), and the
+                    // feature-command forms are refused (fork.96), so neither is a fallback. The
+                    // first refusal is retried once in case it was transient; a second one within
+                    // the retry window drops the report, and the framing is unchanged either way.
+                    long now = SystemClock.uptimeMillis();
+                    boolean again;
+                    synchronized (SteamControllerBle.this) {
+                        if (g != gatt) {
+                            return;
+                        }
+                        outputRefusals[index]++;
+                        again = outputRetried[index] && now - outputRefusedMs[index] < WRITE_WATCHDOG_MS;
+                        if (!again) {
+                            outputRetried[index] = true;
+                            outputRefusedMs[index] = now;
+                            // The retry is a probe again: with a response, so the firmware's second
+                            // verdict reaches the log (a Write Command cannot be refused by the peer).
+                            outputProbed[index] = false;
+                        }
                     }
-                } else if (withResponse && failed != null
+                    if (again) {
+                        LimeLog.warning("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
+                                + " refused again without its id; dropped (the framing stays id-less: with the id the firmware ignores the report)");
+                    } else {
+                        retryLater = true;
+                        LimeLog.warning("Steam Controller BLE: output report 0x" + Integer.toHexString(failed.id())
+                                + " refused without its id; retrying once in " + WRITE_RETRY_MS + " ms");
+                    }
+                } else if (failed != null && peerRefusal) {
+                    // The firmware refused the feature command itself (status 4 for a message it
+                    // does not know). Nothing to re-send, and the write type stays: switching this
+                    // link to write-without-response would hide every later verdict on the
+                    // settings writes, and the command characteristic offers both types.
+                    LimeLog.warning("Steam Controller BLE: the controller refused" + describeCommand(failed) + "; dropped");
+                } else if (withResponse && failed != null && !peerRefusal
                         && (ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-                    // Some stacks/firmware refuse a write request on a characteristic that only
-                    // really serves write-without-response: switch this link over and re-send.
+                    // A stack/link code: some stacks/firmware refuse a write request on a
+                    // characteristic that only really serves write-without-response. Switch
+                    // this link over and re-send.
                     LimeLog.warning("Steam Controller BLE: switching to write-without-response for this link");
                     retryWithoutResponse = true;
                 }
             }
             boolean drained;
             synchronized (SteamControllerBle.this) {
-                // Failure logging and fallback selection run outside the lock.
+                // Failure logging and retry selection run outside the lock.
                 // A reconnect there must keep its write slot and watchdog.
                 if (g != gatt) {
                     return;
                 }
                 disarmWriteWatchdog();
                 writeBusy = false;
-                if (retryWithoutResponse) {
-                    forceNoResponse = true;
+                if (retryWithoutResponse || retryLater) {
+                    forceNoResponse |= retryWithoutResponse;
                     writeQueue.addFirst(failed);
-                } else if (newFraming != framing) {
-                    outputFraming[index] = newFraming;
-                    // The first write in a new framing is a probe again: it goes with a
-                    // response so the firmware's verdict reaches the log, and so a second
-                    // refusal can be seen at all (a Write Command cannot be refused by the
-                    // peer, so the feature fallback would otherwise never engage).
-                    outputProbed[index] = false;
-                    if (newFraming == OUTPUT_FRAMING_UNUSABLE) {
-                        // Reports of this id queued for the output endpoint go the feature way too.
-                        final int id = failed.id();
-                        ArrayDeque<Pending> kept = new ArrayDeque<>();
-                        for (Pending queued : writeQueue) {
-                            Pending replacement = queued.output && queued.id() == id ? featureFallback(queued.bytes) : queued;
-                            if (replacement != null) {
-                                kept.add(replacement);
-                            }
-                        }
-                        writeQueue.clear();
-                        writeQueue.addAll(kept);
-                    }
-                    if (retry != null) {
-                        writeQueue.addFirst(retry);
-                    }
                 }
                 drained = closing && writeQueue.isEmpty();
             }
             if (drained) {
                 handler.post(closeLink);
+                return;
+            }
+            if (retryLater) {
+                // The same pacing as a write the stack refused: the head of the queue goes
+                // out again after WRITE_RETRY_MS.
+                handler.removeCallbacks(retryFlush);
+                handler.postDelayed(retryFlush, WRITE_RETRY_MS);
                 return;
             }
             flushWrites();
@@ -956,6 +969,15 @@ public class SteamControllerBle extends SteamControllerInput {
             onLinkLost(g);
             return;
         }
+        synchronized (this) {
+            // A late or duplicate descriptor-write completion lands here again (subscribeNext has
+            // nothing left): the keep-alive would be re-armed, the reconnect budget reset and a
+            // second haptic self-test scheduled over the first. One setup per link (fork.116).
+            if (linkReady) {
+                return;
+            }
+            linkReady = true;
+        }
         reconnectAttempts = 0;
         disarmSetupWatchdog();
         LimeLog.info("Steam Controller BLE: haptics: 0x82 gain boost +" + hapticBoostDb + " dB (ceiling +" + HAPTIC_GAIN_MAX_DB
@@ -992,6 +1014,11 @@ public class SteamControllerBle extends SteamControllerInput {
             // The listener now owns a fresh context. States received during setup,
             // or delivered to the previous connection, cannot satisfy this one.
             reportedStateValid = false;
+            // Pad touches decoded during setup (the state characteristic is subscribed first)
+            // reached a listener with no context for this controller, so the host never saw
+            // their DOWN. Forget them, without an UP, so the next report sends a DOWN rather
+            // than a MOVE for a pointer the host does not know (fork.116).
+            forgetTouches();
         }
     }
 
@@ -1070,6 +1097,7 @@ public class SteamControllerBle extends SteamControllerInput {
             inFlight = null;
             wasAnnounced = announced;
             announced = false;
+            linkReady = false;
         }
         if (wasAnnounced) {
             // Release any touches the host still thinks are down
@@ -1268,8 +1296,8 @@ public class SteamControllerBle extends SteamControllerInput {
 
     /**
      * Queues a HID output report (id first) on that report's own characteristic. False when
-     * this link offers none for it, or its output endpoints refused the framing (then the
-     * caller falls back to the feature-command form, where one exists).
+     * this link offers none for it (then the caller falls back to the feature-command form,
+     * where one exists).
      */
     private boolean enqueueOutput(byte[] report) {
         Pending p = outputPending(report);
@@ -1285,10 +1313,10 @@ public class SteamControllerBle extends SteamControllerInput {
         return ch == null ? null : new Pending(ch, report, true);
     }
 
-    /** The output characteristic for a report id on this link, if offered and not refused. */
+    /** The output characteristic for a report id on this link, if offered. */
     private synchronized BluetoothGattCharacteristic outputChar(int id) {
         int index = id - OUTPUT_REPORT_FIRST;
-        if (index < 0 || index >= outputChars.length || outputFraming[index] == OUTPUT_FRAMING_UNUSABLE) {
+        if (index < 0 || index >= outputChars.length) {
             return null;
         }
         return outputChars[index];
@@ -1419,13 +1447,12 @@ public class SteamControllerBle extends SteamControllerInput {
             }
             writeBusy = true;
             attempt = ++writeAttempt;
-            // An output report goes without its id, as the notifications arrive, unless the
-            // firmware refused that framing on this link. Its first write on a link goes with
-            // a response, so the firmware's verdict on the report reaches the log.
+            // An output report goes without its id, as the notifications arrive (with the id
+            // the firmware accepts and ignores it: fork.112). Its first write on a link goes
+            // with a response, so the firmware's verdict on the report reaches the log.
             if (p.output) {
                 int index = p.id() - OUTPUT_REPORT_FIRST;
-                value = outputFraming[index] == OUTPUT_FRAMING_PAYLOAD
-                        ? Arrays.copyOfRange(p.bytes, 1, p.bytes.length) : p.bytes;
+                value = Arrays.copyOfRange(p.bytes, 1, p.bytes.length);
                 probe = !outputProbed[index]
                         && (p.ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0;
             } else {
@@ -1754,12 +1781,14 @@ public class SteamControllerBle extends SteamControllerInput {
     }
 
     /**
-     * New link: every output report starts without its id and unprobed, and the counters restart.
+     * New link: every output report starts unprobed and unrefused, and the counters restart.
      * (Reports written with their id are accepted and silently ignored by the firmware: fork.111.)
      */
     private synchronized void resetOutputState() {
-        Arrays.fill(outputFraming, OUTPUT_FRAMING_PAYLOAD);
         Arrays.fill(outputProbed, false);
+        Arrays.fill(outputRetried, false);
+        Arrays.fill(outputRefusedMs, 0);
+        Arrays.fill(outputRefusals, 0);
         Arrays.fill(hostReports, 0);
         Arrays.fill(writtenReports, 0);
         Arrays.fill(hostLeft, 0);
@@ -1820,11 +1849,19 @@ public class SteamControllerBle extends SteamControllerInput {
             if (stopped || gatt == null) {
                 return;
             }
-            StringBuilder host = new StringBuilder(), written = new StringBuilder();
+            StringBuilder host = new StringBuilder(), written = new StringBuilder(), framing = new StringBuilder();
             int stops, ignored, evicted, acks, adjusted;
             byte[] ack;
             synchronized (SteamControllerBle.this) {
                 for (int i = 0; i < hostReports.length; i++) {
+                    // Per offered output report, for the link: whether the controller has accepted
+                    // or refused it id-less (so a silent link can be told from a refusing one).
+                    if (outputChars[i] != null) {
+                        framing.append(framing.length() == 0 ? "" : ", ").append("0x")
+                                .append(Integer.toHexString(OUTPUT_REPORT_FIRST + i))
+                                .append(outputRefusals[i] != 0 ? " refused x" + outputRefusals[i] + (outputProbed[i] ? "" : " (retry pending)")
+                                        : outputProbed[i] ? " accepted" : " not written");
+                    }
                     if (hostReports[i] != 0) {
                         host.append(host.length() == 0 ? "" : ", ").append("0x")
                                 .append(Integer.toHexString(OUTPUT_REPORT_FIRST + i)).append(" x").append(hostReports[i]);
@@ -1854,7 +1891,8 @@ public class SteamControllerBle extends SteamControllerInput {
                         + (host.length() == 0 ? "none" : host) + " (" + stops + " stops, " + ignored + " ignored); written "
                         + (written.length() == 0 ? "none" : written) + "; evicted " + evicted + "; acks " + acks
                         + (ack != null ? " (last " + hex(ack) + ")" : "")
-                        + (adjusted != 0 ? "; boosted x" + adjusted : ""));
+                        + (adjusted != 0 ? "; boosted x" + adjusted : "")
+                        + "; id-less framing: " + (framing.length() == 0 ? "no output characteristics" : framing));
             }
             handler.postDelayed(this, HAPTIC_STATS_INTERVAL_MS);
         }

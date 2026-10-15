@@ -108,7 +108,18 @@ public abstract class SteamControllerInput extends AbstractController {
         if (calibrationKey == null) {
             leftExtentX = leftExtentY = rightExtentX = rightExtentY = STICK_EXTENT_FLOOR;
         }
+        forgetTouches();
+    }
+
+    /**
+     * Forgets the pad touches without sending an UP: for touches the host never saw go down
+     * (reports decoded before the controller was announced), so the next report sends a DOWN.
+     */
+    protected void forgetTouches() {
         leftPadTouched = rightPadTouched = false;
+        for (int pad = 0; pad < 2; pad++) {
+            lastTouchX[pad] = lastTouchY[pad] = lastTouchPressure[pad] = 0;
+        }
     }
 
     // ----- report parsing -----

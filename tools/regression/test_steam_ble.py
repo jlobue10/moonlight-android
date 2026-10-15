@@ -93,7 +93,7 @@ STUBS = {
 TEST = r'''import java.lang.reflect.*; import java.util.*; import android.bluetooth.*; import android.content.*; import android.os.*;
 import com.limelight.binding.input.driver.*; import com.limelight.binding.input.driver.ble.*;
 public class BleRegression {
- static int failed,checks,states,added,batteryState=-1,batteryPercent=-1;
+ static int failed,checks,states,added,batteryState=-1,batteryPercent=-1,touchDowns,touchMoves,touchUps;
  static void check(boolean ok,String name){checks++;System.out.println((ok?"PASS ":"FAIL ")+name);if(!ok)failed++;}
  static Field field(Class<?> c,String name)throws Exception{for(;c!=null;c=c.getSuperclass()){try{return c.getDeclaredField(name);}catch(NoSuchFieldException e){}}throw new NoSuchFieldException(name);}
  static Object get(Object o,String name)throws Exception{Field f=field(o.getClass(),name);f.setAccessible(true);return f.get(o);}
@@ -108,6 +108,8 @@ public class BleRegression {
   SteamControllerBle d=new SteamControllerBle(1,new UsbDriverListener(){
    public void reportControllerState(int i,int b,float x,float y,float z,float w,float l,float r){states++;}
    public void reportControllerMotion(int i,byte t,float x,float y,float z){}
+   public void reportControllerTouch(int i,byte pad,byte type,int pointer,float x,float y,float p){
+    if(type==com.limelight.nvstream.jni.MoonBridge.LI_TOUCH_EVENT_DOWN)touchDowns++;else if(type==com.limelight.nvstream.jni.MoonBridge.LI_TOUCH_EVENT_UP)touchUps++;else touchMoves++;}
    public void deviceRemoved(AbstractController c){} public void deviceAdded(AbstractController c){added++;}
    public void reportControllerBattery(int i,byte s,byte p){batteryState=s;batteryPercent=p;}
   },new Context(),device,false,false,0,0,0,boostDb,pulseScale,masterGainDb,selfTest,false);return d;
@@ -304,7 +306,7 @@ public class BleRegression {
   // without the report id, as the USB transport writes them to the wired unit; Steam's
   // trackpad clicks are 0x81/0x82 reports. The feature conversion (0xEB/0x8F/0xEA on 34),
   // which the firmware refused with GATT status 4 for 0x8F and 0xEA (fork.96 stream log), is
-  // only for links without those endpoints or whose endpoints refuse the report.
+  // only for links without those endpoints (fork.116: a refused output report is never re-framed).
   byte[] click={(byte)0x81,1,(byte)0x90,1,0,0,1,0};
   BluetoothGattCharacteristic outRumble=new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",8);
   BluetoothGattCharacteristic outPulse=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",12);
@@ -339,47 +341,72 @@ public class BleRegression {
    check(old.writes.size()==7,"a report with neither an offered characteristic nor a feature form is dropped");
    d.stop();w=old.writes.size()-1;
    check(w==7&&old.targets.get(w)==outRumble&&Arrays.equals(old.writes.get(w),new byte[9]),"stop() sends its motors-off as a zero 0x80 on B5");}
-  // A refusal from the controller (an ATT error, status < 0x80) re-frames the report with its
-  // id once, then falls back to the feature commands; a stack/link status does neither.
+  // A stack/link status (0x80 and up, here 133) on a write request switches the link to
+  // write-without-response and re-sends; it is not a refusal by the controller.
   {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
    old.service.chars.add(outPulse);old.service.chars.add(feat);old.service.chars.add(notify);
    callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
    callback.onCharacteristicWrite(old,feat,0);callback.onCharacteristicWrite(old,feat,0);
    d.steamHaptic(click);callback.onCharacteristicWrite(old,outPulse,133);int w=old.writes.size()-1;
-   check(w==3&&old.targets.get(w)==outPulse&&old.writes.get(w).length==7&&((int[])get(d,"outputFraming"))[1]==0&&(boolean)get(d,"forceNoResponse"),
-         "a link-level write status re-sends without response and leaves the output framing alone");
+   check(w==3&&old.targets.get(w)==outPulse&&old.writes.get(w).length==7&&((int[])get(d,"outputRefusals"))[1]==0&&(boolean)get(d,"forceNoResponse"),
+         "a link-level write status re-sends without response and counts no refusal");
    callback.onCharacteristicWrite(old,outPulse,0);d.stop();}
-  // The refusal ladder on a characteristic that offers both write types (the headset's 0xe
-  // properties): the probe is refused, the retry with the id is a probe again (with a
-  // response, so the firmware can refuse it and the verdict is logged), a second refusal
-  // engages the feature fallback for that id (A33-01). refuse() throws if the harness were
-  // to refuse a Write Command, which no peer can do.
+  // fork.116: an ATT refusal of a feature command (the firmware answers unknown messages with
+  // status 4) is the controller's verdict, not a stack problem, even though the command
+  // characteristic offers write-without-response: the command is dropped, the link keeps
+  // writing feature commands as write requests, and nothing is re-queued.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",12);
+   old.service.chars.add(feat);old.service.chars.add(notify);
+   callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
+   check(old.writes.size()==1&&(old.writes.get(0)[0]&255)==0x81,"setup starts with the clear-mappings command as a write request");
+   refuse(callback,old,feat,4);
+   check(old.writes.size()==2&&(old.writes.get(1)[0]&255)==0x87&&!(boolean)get(d,"forceNoResponse")
+         &&feat.writeTypes.get(1)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT&&((Deque<?>)get(d,"writeQueue")).isEmpty(),
+         "a feature command refused with ATT error 4 is dropped; the settings write still goes as a write request");
+   refuse(callback,old,feat,4);
+   check(old.writes.size()==2&&!(boolean)get(d,"writeBusy")&&!(boolean)get(d,"forceNoResponse")&&((Deque<?>)get(d,"writeQueue")).isEmpty(),
+         "a refused settings write is not re-queued and leaves the write type alone");
+   d.stop();}
+  // fork.116: a refusal from the controller (an ATT error, status < 0x80) of an id-less output
+  // report is retried once, id-less again and with a response, after the write retry delay; a
+  // second refusal drops the report and the framing stays id-less (with the id the firmware
+  // accepts and ignores the report, fork.112; the feature forms are refused, fork.96). refuse()
+  // throws if the harness were to refuse a Write Command, which no peer can do.
   {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
    BluetoothGattCharacteristic pulse3=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",14);
    BluetoothGattCharacteristic rumble3=new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",14);
    old.service.chars.add(rumble3);old.service.chars.add(pulse3);old.service.chars.add(feat);old.service.chars.add(notify);
    callback=(BluetoothGattCallback)get(d,"gattCallback");callback.onServicesDiscovered(old,0);
    callback.onCharacteristicWrite(old,feat,0);callback.onCharacteristicWrite(old,feat,0);
-   d.steamHaptic(click);refuse(callback,old,pulse3,4);int w=old.writes.size()-1;
-   check(w==3&&old.targets.get(w)==pulse3&&Arrays.equals(old.writes.get(w),click),"a refused output report is retried with its report id");
-   check(pulse3.writeTypes.size()==2&&pulse3.writeTypes.get(1)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-         "the retry with the report id goes with a response so the firmware's verdict is logged");
+   Handler h3=(Handler)get(d,"handler");Runnable retry3=(Runnable)get(d,"retryFlush");
+   d.steamHaptic(click);refuse(callback,old,pulse3,4);
+   check(old.writes.size()==3&&h3.delayed.contains(retry3)&&!(boolean)get(d,"writeBusy")&&!((boolean[])get(d,"outputProbed"))[1],
+         "a refused output report is not re-sent at once: its retry waits for the write retry delay, as a probe again");
+   h3.delayed.remove(retry3);retry3.run();int w=old.writes.size()-1;
+   check(w==3&&old.targets.get(w)==pulse3&&Arrays.equals(old.writes.get(w),Arrays.copyOfRange(click,1,click.length))
+         &&pulse3.writeTypes.get(1)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+         "the retry goes id-less again, with a response so the firmware's verdict is logged, never with the report id");
    d.steamHaptic(click); // queued behind the in-flight retry
    refuse(callback,old,pulse3,4);w=old.writes.size()-1;
-   check(w==4&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f&&old.writes.get(w).length==10,
-         "a report refused with its id too is replayed as the feature pulse");
-   callback.onCharacteristicWrite(old,feat,0);w=old.writes.size()-1;
-   check(w==5&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f,"a report queued for the output endpoint goes the feature way after the switch");
-   callback.onCharacteristicWrite(old,feat,0);
+   check(w==4&&old.targets.get(w)==pulse3&&old.writes.get(w).length==7&&pulse3.writeTypes.get(2)==BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+         &&!h3.delayed.contains(retry3)&&((int[])get(d,"outputRefusals"))[1]==2,
+         "a second refusal drops the report; the next queued one goes id-less without response, not as a feature command");
+   callback.onCharacteristicWrite(old,pulse3,0);
    d.steamHaptic(click);w=old.writes.size()-1;
-   check(w==6&&old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0x8f,"later reports on that link go as feature commands");
-   callback.onCharacteristicWrite(old,feat,0);
-   // The fallback is per report id: 0x80 is still probed on B5 after 0x81 fell back.
+   check(w==5&&old.targets.get(w)==pulse3&&old.writes.get(w).length==7,"later reports on that link keep the id-less output endpoint");
+   callback.onCharacteristicWrite(old,pulse3,0);
+   boolean noFeature=true;for(byte[] b:old.writes)if((b[0]&255)==0x8f)noFeature=false;
+   check(noFeature,"no refused output report is replayed as a feature pulse");
+   // Refusals are per report id: 0x80 is still probed on B5 with a response after 0x81's.
    d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0x10,0x27,0,0x10,0x27,0});w=old.writes.size()-1;
-   check(w==7&&old.targets.get(w)==rumble3&&old.writes.get(w).length==9&&((int[])get(d,"outputFraming"))[1]==2&&((int[])get(d,"outputFraming"))[0]==0
+   check(w==6&&old.targets.get(w)==rumble3&&old.writes.get(w).length==9&&((int[])get(d,"outputRefusals"))[0]==0
          &&rumble3.writeTypes.size()==1&&rumble3.writeTypes.get(0)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-         "a refused 0x81 falls back to the feature pulse for 0x81 only; 0x80 still goes to B5");
+         "refusals are counted per report id; 0x80 is still probed on B5");
    callback.onCharacteristicWrite(old,rumble3,0);
+   List<String> framingInfos=new ArrayList<>();com.limelight.LimeLog.infoHook=framingInfos::add;
+   ((Runnable)get(d,"hapticStats")).run();com.limelight.LimeLog.infoHook=null;
+   check(framingInfos.stream().anyMatch(s->s.contains("id-less framing: 0x80 accepted, 0x81 refused x2")),
+         "the 10 s summary shows each offered report's verdict, so a refusing link can be told from a silent one");
    d.stop();}
   // No output characteristics at all: the fork.27 feature conversion as before.
   {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
@@ -391,8 +418,7 @@ public class BleRegression {
    callback.onCharacteristicWrite(old,feat,0);d.stop();w=old.writes.size()-1;
    check(old.targets.get(w)==feat&&(old.writes.get(w)[0]&255)==0xeb,"stop() on such a link sends the feature motors-off");}
   // The first write of each output report on a link goes with a response (the firmware's verdict
-  // is logged); later ones go without. A refusal re-frames only that report id: 0x81 falling
-  // back to the feature pulse leaves 0x80 on B5.
+  // is logged); later ones go without. Each report id is probed on its own.
   {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();
    BluetoothGattCharacteristic pulse2=new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",14);
    BluetoothGattCharacteristic rumble2=new BluetoothGattCharacteristic("100f6cb5-1735-4313-b402-38567131e5f3",14);
@@ -408,7 +434,7 @@ public class BleRegression {
    check(rumble2.writeTypes.size()==1&&rumble2.writeTypes.get(0)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,"each report id is probed with a response once");
    callback.onCharacteristicWrite(old,rumble2,0);d.steamHaptic(new byte[]{(byte)0x80,0,0,0,0,0,0,0,0,0});callback.onCharacteristicWrite(old,rumble2,0);
    // (A refusal of an already-probed report is a Write Command the peer cannot refuse: the
-   // per-id fallback is pinned in the ladder block above, where the probe itself is refused.)
+   // per-id retry is pinned in the refusal block above, where the probe itself is refused.)
    // 0x44 acknowledgements on 79 are counted; the summary line runs without a link error.
    BluetoothGattCharacteristic ackCh=new BluetoothGattCharacteristic("100f6c79-1735-4313-b402-38567131e5f3",16);ackCh.value=new byte[]{4,2,0,0,0};
    callback.onCharacteristicChanged(old,ackCh);
@@ -435,8 +461,12 @@ public class BleRegression {
    final BluetoothGatt g=old;final BluetoothGattCallback cb=(BluetoothGattCallback)get(d,"gattCallback");
    g.beforeWriteReturn=()->completeOnWorker(cb,g,pulse,4);
    d.steamHaptic(click);
-   check(g.writes.size()==2&&Arrays.equals(g.writes.get(1),click),"an early failed completion retries the correct report with its id");
-   check(!((boolean[])get(d,"outputProbed"))[1],"the framing change makes the early-refused report's retry a probe again (A33-01)");
+   Handler eh=(Handler)get(d,"handler");Runnable eretry=(Runnable)get(d,"retryFlush");Object queuedRetry=((Deque<?>)get(d,"writeQueue")).peekFirst();
+   check(g.writes.size()==1&&eh.delayed.contains(eretry)&&queuedRetry!=null&&Arrays.equals((byte[])get(queuedRetry,"bytes"),click)&&!(boolean)get(d,"writeBusy"),
+         "an early failed completion queues the correct report for its delayed retry");
+   check(!((boolean[])get(d,"outputProbed"))[1],"the early-refused report's retry is a probe again (A33-01)");
+   eh.delayed.remove(eretry);eretry.run();
+   check(g.writes.size()==2&&Arrays.equals(g.writes.get(1),Arrays.copyOfRange(click,1,click.length)),"the delayed retry re-sends the refused report id-less");
    cb.onCharacteristicWrite(g,pulse,0);
    check(((boolean[])get(d,"outputProbed"))[1],"the retry's completion records the actual with-response probe mode");
    check(get(d,"inFlight")==null&&!(boolean)get(d,"writeBusy"),"the early-completion retry drains without retaining the original write");
@@ -451,8 +481,11 @@ public class BleRegression {
    d.steamHaptic(click);
    check(g.writes.size()==2&&g.targets.get(1)==cmd,"an early completion dispatches the next queued report");
    cb.onCharacteristicWrite(g,cmd,4);
-   check(g.writes.size()==3&&g.targets.get(2)==cmd&&Arrays.equals(g.writes.get(2),next),
+   Object queuedNext=((Deque<?>)get(d,"writeQueue")).peekFirst();
+   check(g.writes.size()==2&&queuedNext!=null&&Arrays.equals((byte[])get(queuedNext,"bytes"),next),
          "the earlier call returning cannot overwrite the next report's retry identity");
+   Handler nh=(Handler)get(d,"handler");Runnable nretry=(Runnable)get(d,"retryFlush");nh.delayed.remove(nretry);nretry.run();
+   check(g.writes.size()==3&&g.targets.get(2)==cmd&&Arrays.equals(g.writes.get(2),Arrays.copyOfRange(next,1,next.length)),"the delayed retry re-sends it id-less");
    cb.onCharacteristicWrite(g,cmd,0);d.stop();}
   {d=make();old=(BluetoothGatt)get(d,"gatt");BluetoothGattCharacteristic feat=command();set(d,"writeChar",feat);
    final BluetoothGatt g=old;final BluetoothGattCallback cb=(BluetoothGattCallback)get(d,"gattCallback");
@@ -906,6 +939,42 @@ public class BleRegression {
    check(selfTestWrites.applyAsInt(replacement5)==18,"the replacement link's own schedule still writes all 18 reports");
    td.stop();
   }
+  // fork.116: a pad touch decoded before the controller is announced (the state characteristic
+  // is subscribed first, so reports arrive during setup) went to a listener without a context,
+  // so the host never saw its DOWN. After the announcement the same report must send a DOWN,
+  // not a MOVE for a pointer the host does not know, and no UP is sent for it.
+  {d=make();old=(BluetoothGatt)get(d,"gatt");callback=(BluetoothGattCallback)get(d,"gattCallback");
+   BluetoothGattCharacteristic state16=new BluetoothGattCharacteristic("100f6c7a-1735-4313-b402-38567131e5f3",16);
+   state16.value=new byte[45];state16.value[4]=2;state16.value[17]=0x34;state16.value[18]=0x12;state16.value[21]=0x10; // left pad touched
+   int downs=touchDowns,moves=touchMoves,ups=touchUps;
+   callback.onCharacteristicChanged(old,state16);
+   check(touchDowns==downs+1&&(boolean)get(d,"leftPadTouched"),"a touch during setup is decoded (the handler drops it for want of a context)");
+   old.service.chars.add(command());old.service.chars.add(state16);before=added;
+   callback.onServicesDiscovered(old,0);
+   check(added==before+1&&touchUps==ups&&!(boolean)get(d,"leftPadTouched"),"the announcement forgets the setup-time touch without an UP the host never saw go down");
+   callback.onCharacteristicChanged(old,state16);
+   check(touchDowns==downs+2&&touchMoves==moves,"the first report after the announcement sends a DOWN for the held finger, not a MOVE");
+   state16.value[18]=0x13;callback.onCharacteristicChanged(old,state16);
+   check(touchMoves==moves+1&&touchDowns==downs+2,"a later movement of that finger is a MOVE");
+   d.stop();}
+  // fork.116: a late or duplicate descriptor-write completion used to run onReady again: the
+  // keep-alive re-armed, the reconnect budget reset, the setup re-queued and a second self-test
+  // schedule interleaved with the first.
+  {BluetoothDevice dev=new BluetoothDevice();SteamControllerBle td=createWith(dev,0,100,0,true);td.start();
+   BluetoothGatt tg=dev.next;BluetoothGattCharacteristic feat=command();
+   BluetoothGattCharacteristic state6=new BluetoothGattCharacteristic("100f6c7a-1735-4313-b402-38567131e5f3",16);state6.descriptor=new BluetoothGattDescriptor(state6);
+   tg.service.chars.add(feat);tg.service.chars.add(state6);
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(td,"gattCallback");Handler h=(Handler)get(td,"handler");
+   int addedBefore=added;cb.onServicesDiscovered(tg,0);cb.onDescriptorWrite(tg,state6.descriptor,0);
+   java.util.function.IntSupplier selfTests=()->{int n=0;for(Runnable r:h.delayed)if(r.getClass().getSimpleName().equals("SelfTestReport"))n++;return n;};
+   Object keepAliveRunnable=get(td,"keepAlive");
+   java.util.function.IntSupplier keepAlives=()->{int n=0;for(Runnable r:h.delayed)if(r==keepAliveRunnable)n++;return n;};
+   check(added==addedBefore+1&&selfTests.getAsInt()==18&&keepAlives.getAsInt()==1,"the first descriptor-write completion sets the link up once");
+   int queued=((Deque<?>)get(td,"writeQueue")).size();set(td,"reconnectAttempts",3);
+   cb.onDescriptorWrite(tg,state6.descriptor,0);
+   check(added==addedBefore+1&&selfTests.getAsInt()==18&&keepAlives.getAsInt()==1&&(int)get(td,"reconnectAttempts")==3&&((Deque<?>)get(td,"writeQueue")).size()==queued,
+         "a duplicate descriptor-write completion neither re-arms the keep-alive, resets the reconnect budget, re-queues the setup nor schedules a second self-test");
+   td.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''

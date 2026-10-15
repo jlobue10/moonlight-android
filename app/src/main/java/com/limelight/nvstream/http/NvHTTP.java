@@ -951,6 +951,21 @@ public class NvHTTP {
     }
 
     final private static char[] hexArray = "0123456789ABCDEF".toCharArray();
+    /**
+     * A failed request for the log: the exception class and, for a host response, its HTTP
+     * status. Never the message: a 404 is a {@link FileNotFoundException} whose message is the
+     * full URL, which for launch and resume carries the session key and the unique id.
+     */
+    public static String describeFailure(Exception e) {
+        if (e instanceof HostHttpResponseException) {
+            return "HostHttpResponseException (HTTP " + ((HostHttpResponseException) e).getErrorCode() + ")";
+        }
+        if (e instanceof FileNotFoundException) {
+            return "FileNotFoundException (404 Not Found)";
+        }
+        return e.getClass().getSimpleName();
+    }
+
     private static String bytesToHex(byte[] bytes) {
         char[] hexChars = new char[bytes.length * 2];
         for ( int j = 0; j < bytes.length; j++ ) {
@@ -1017,8 +1032,10 @@ public class NvHTTP {
                 "&gcpersist="+(context.streamConfig.getPersistGamepadsAfterDisconnect() ? 1 : 0) +
                 MoonBridge.getLaunchUrlQueryParameters());
         } catch (IOException e) {
+            // Never the exception's message: a 404 is a FileNotFoundException carrying the
+            // whole URL, with the session key (rikey), its id and the unique id.
             LimeLog.warning("The " + verb + " request for app id " + appId + " to " + launchHost + " failed after "
-                    + (System.currentTimeMillis() - launchStartMs) + " ms: " + e);
+                    + (System.currentTimeMillis() - launchStartMs) + " ms: " + describeFailure(e));
             throw e;
         }
         LimeLog.info("The " + verb + " request for app id " + appId + " to " + launchHost + " returned after "
