@@ -53,7 +53,7 @@ public class BleStartLifecycle {
  void bindService(Intent i,Object c,int f){++binds;} void unbindService(Object c){++unbinds;}
  void bindUsbDriverIfEnabled(){prefConfig.usbDriver=true;bindUsbDriver();}
  static class Build {static class VERSION {static int SDK_INT=35;}static class VERSION_CODES {static final int M=23;}}
- static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerStickRim;boolean usbDriver,enableRumble=true;}
+ static class Prefs {Object steamControllerMotion,steamControllerSplitPads,steamControllerGrips,steamControllerRumbleHold,steamControllerRumbleMethod,steamControllerHapticPath,steamControllerHapticGain,steamControllerStickRim;boolean usbDriver,enableRumble=true;}
  static class SteamControllerBleManager {
   static boolean permission=true;static int starts;
   SteamControllerBleManager(Object... args){}void start(){++starts;}
@@ -62,6 +62,8 @@ public class BleStartLifecycle {
   static Object gripsModeFromPref(Object x){return x;}
   static Object rumbleHoldFromPref(Object x){return x;}
   static Object rumbleMethodFromPref(Object x){return x;}
+  static Object hapticPathFromPref(Object x){return x;}
+  static Object hapticGainFromPref(Object x){return x;}
  }
  static int failures;
  static void check(boolean ok,String name){System.out.println((ok?"PASS ":"FAIL ")+name);if(!ok)++failures;}
