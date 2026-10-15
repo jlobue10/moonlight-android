@@ -257,6 +257,15 @@
     <string name="summary_steam_controller_rumble_method">How plain rumble from the host is driven over Bluetooth. The puck and USB cable use native USB rumble reports. The rumble command is the firmware\'s own motor drive; pulse trains are the earlier approach. Steam\'s own haptics on a Steam Controller host are replayed as sent either way.</string>
     <string name="steam_controller_rumble_method_rumble">Rumble command (default)</string>
     <string name="steam_controller_rumble_method_pulse">Haptic pulse trains</string>
+    <string name="title_steam_controller_haptic_path">Bluetooth haptic report framing (diagnostic)</string>
+    <string name="summary_steam_controller_haptic_path">How Steam\'s haptic output reports (pad clicks and ticks) are written to the controller\'s per-report characteristics: without the report id, as the controller\'s own notifications omit theirs (default), or with it. Change only to compare feel; the stream log records which framing the controller accepted.</string>
+    <string name="steam_controller_haptic_path_output">Without the report id (default)</string>
+    <string name="steam_controller_haptic_path_with_id">With the report id</string>
+    <string name="title_steam_controller_haptic_gain">Bluetooth haptic gain (diagnostic)</string>
+    <string name="summary_steam_controller_haptic_gain">The gain byte on Steam\'s tick and click commands for the pads. On a USB cable Steam sends ticks at -3 dB and clicks at -14 dB; through the stream it has only sent 0. Try the wired values or +6 dB to see whether that byte decides how strong the pads feel. Plain rumble is not affected.</string>
+    <string name="steam_controller_haptic_gain_host">As the host sends it (default)</string>
+    <string name="steam_controller_haptic_gain_usb">Wired unit\'s values (-3 dB ticks, -14 dB clicks)</string>
+    <string name="steam_controller_haptic_gain_plus6">+6 dB</string>
     <string name="title_checkbox_steam_controller_stick_rim">Stretch sticks to a full circle</string>
     <string name="summary_checkbox_steam_controller_stick_rim">Learns each stick range from your pushes and stretches it to a perfect circle. Off by default: the wired Steam Controller reports a rounded square, with each axis parked at full deflection, and the Steam controller test accepts that shape but keeps waiting on a perfect circle delivered at 250 reports per second. Turn on only if a stick cannot reach the edge in some direction.</string>
     <string name="toast_steam_controller_permission">Bluetooth permission is needed for the Steam Controller driver. Enable it in the stream settings.</string>

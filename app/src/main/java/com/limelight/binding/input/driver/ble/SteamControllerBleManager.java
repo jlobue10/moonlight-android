@@ -40,6 +40,8 @@ public final class SteamControllerBleManager {
     private final int gripsMode;
     private final int rumbleHoldMs;
     private final int rumbleMethod;
+    private final int hapticPath;
+    private final int hapticGain;
     private final boolean stickRim;
     private final Map<String, SteamControllerBle> drivers = new HashMap<>();
     private int nextDeviceId = BASE_DEVICE_ID;
@@ -47,7 +49,7 @@ public final class SteamControllerBleManager {
 
     public SteamControllerBleManager(Context context, UsbDriverListener listener, boolean motionEnabled,
                                      boolean splitPads, int gripsMode, int rumbleHoldMs, int rumbleMethod,
-                                     boolean stickRim) {
+                                     int hapticPath, int hapticGain, boolean stickRim) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.motionEnabled = motionEnabled;
@@ -55,6 +57,8 @@ public final class SteamControllerBleManager {
         this.gripsMode = gripsMode;
         this.rumbleHoldMs = rumbleHoldMs;
         this.rumbleMethod = rumbleMethod;
+        this.hapticPath = hapticPath;
+        this.hapticGain = hapticGain;
         this.stickRim = stickRim;
     }
 
@@ -71,6 +75,19 @@ public final class SteamControllerBleManager {
     public static int rumbleMethodFromPref(String value) {
         if ("pulse".equals(value)) return SteamControllerBle.RUMBLE_METHOD_PULSES;
         return SteamControllerBle.RUMBLE_METHOD_RUMBLE_CMD;
+    }
+
+    /** Maps the steam_controller_haptic_path preference value to a SteamControllerBle.HAPTIC_PATH_* constant. */
+    public static int hapticPathFromPref(String value) {
+        if ("with_id".equals(value)) return SteamControllerBle.HAPTIC_PATH_OUTPUT_WITH_ID;
+        return SteamControllerBle.HAPTIC_PATH_OUTPUT;
+    }
+
+    /** Maps the steam_controller_haptic_gain preference value to a SteamControllerBle.HAPTIC_GAIN_* constant. */
+    public static int hapticGainFromPref(String value) {
+        if ("usb".equals(value)) return SteamControllerBle.HAPTIC_GAIN_USB;
+        if ("plus6".equals(value)) return SteamControllerBle.HAPTIC_GAIN_PLUS6;
+        return SteamControllerBle.HAPTIC_GAIN_HOST;
     }
 
     /** Maps the steam_controller_grips preference value to a SteamControllerBle.GRIPS_* constant. */
@@ -191,7 +208,7 @@ public final class SteamControllerBleManager {
             }
             return;
         }
-        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, rumbleMethod, stickRim);
+        SteamControllerBle driver = new SteamControllerBle(nextDeviceId++, listener, context, device, motionEnabled, splitPads, gripsMode, rumbleHoldMs, rumbleMethod, hapticPath, hapticGain, stickRim);
         drivers.put(address, driver);
         if (!driver.start()) {
             drivers.remove(address);
