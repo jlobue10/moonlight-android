@@ -21,7 +21,9 @@ import com.limelight.binding.input.driver.UsbDriverListener;
 import com.limelight.nvstream.jni.MoonBridge;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -500,6 +502,7 @@ public class SteamControllerBle extends SteamControllerInput {
             // announcement can land after this point.
             wasAnnounced = announced;
             announced = false;
+            pendingSelfTest.clear();
         }
         handler.removeCallbacksAndMessages(null);
         saveStickExtents();
@@ -962,7 +965,7 @@ public class SteamControllerBle extends SteamControllerInput {
         // All settings in one command: keep-alive deduplication must not discard the IMU setup.
         enqueueWrite(linkSettings());
         if (hapticSelfTest) {
-            scheduleHapticSelfTest();
+            scheduleHapticSelfTest(g);
         }
         if (batteryChar != null) {
             // After the setup writes have had their turn: a read is refused while a write
@@ -1049,6 +1052,7 @@ public class SteamControllerBle extends SteamControllerInput {
             disarmWriteWatchdog();
             handler.removeCallbacks(batteryRead);
             disarmSetupWatchdog();
+            cancelHapticSelfTest();
             writeQueue.clear();
             writeBusy = false;
             writeRejectedSinceMs = -1;
@@ -1133,14 +1137,18 @@ public class SteamControllerBle extends SteamControllerInput {
      * at the +6 dB ceiling. The two reports number the sides differently (a command's side 1 is
      * the right pad, a pulse's side 0), which the schedule accounts for. Boost and pulse scale
      * do not apply; nothing is logged per write, the 10 s summary shows them as "written".
+     *
+     * The schedule belongs to one link: each report carries the handle it was scheduled for and
+     * is dropped if a different link is up when its time comes, and onLinkLost removes the
+     * pending ones, so a drop and reconnect during the test does not interleave two schedules.
      */
-    private void scheduleHapticSelfTest() {
+    private void scheduleHapticSelfTest(BluetoothGatt link) {
         int t = 1500;
         for (int cmd = HAPTIC_CMD_CLICK; cmd >= HAPTIC_CMD_TICK; cmd--) {
             for (int pad = 0; pad <= 1; pad++) {
                 byte side = pad == 0 ? CMD_SIDE_RIGHT : CMD_SIDE_LEFT;
                 for (int i = 0; i < 3; i++, t += 300) {
-                    postSelfTestReport(t, new byte[]{(byte) 0x82, side, (byte) cmd, (byte) HAPTIC_GAIN_MAX_DB});
+                    postSelfTestReport(link, t, new byte[]{(byte) 0x82, side, (byte) cmd, (byte) HAPTIC_GAIN_MAX_DB});
                 }
                 t += 700;
             }
@@ -1148,7 +1156,7 @@ public class SteamControllerBle extends SteamControllerInput {
         for (int pad = 0; pad <= 1; pad++) {
             byte side = pad == 0 ? SIDE_RIGHT : SIDE_LEFT;
             for (int i = 0; i < 3; i++, t += 300) {
-                postSelfTestReport(t, new byte[]{(byte) 0x81, side, (byte) 0xD0, 0x07, 0, 0, 1, 0});  // 2000 us once
+                postSelfTestReport(link, t, new byte[]{(byte) 0x81, side, (byte) 0xD0, 0x07, 0, 0, 1, 0});  // 2000 us once
             }
             t += 700;
         }
@@ -1157,22 +1165,43 @@ public class SteamControllerBle extends SteamControllerInput {
                 + "(command side 1 = right pad, pulse side 0 = right pad); " + t / 1000 + " s in all");
     }
 
-    private void postSelfTestReport(int delayMs, byte[] report) {
-        handler.postDelayed(new SelfTestReport(report), delayMs);
+    /** The self-test reports still to be written, so a lost link can take its schedule with it. */
+    private final List<SelfTestReport> pendingSelfTest = new ArrayList<>();
+
+    private void postSelfTestReport(BluetoothGatt link, int delayMs, byte[] report) {
+        SelfTestReport r = new SelfTestReport(link, report);
+        synchronized (this) {
+            pendingSelfTest.add(r);
+        }
+        handler.postDelayed(r, delayMs);
+    }
+
+    /** Drops the self-test reports not yet written; called under the driver lock. */
+    private void cancelHapticSelfTest() {
+        for (SelfTestReport r : pendingSelfTest) {
+            handler.removeCallbacks(r);
+        }
+        pendingSelfTest.clear();
     }
 
     /** One self-test report, written like a host's when its time comes (a class, so the harness can pick them out). */
     private final class SelfTestReport implements Runnable {
+        private final BluetoothGatt link;
         private final byte[] report;
 
-        SelfTestReport(byte[] report) {
+        SelfTestReport(BluetoothGatt link, byte[] report) {
+            this.link = link;
             this.report = report;
         }
 
         @Override
         public void run() {
-            if (stopped || gatt == null || writeChar == null) {
-                return;
+            synchronized (SteamControllerBle.this) {
+                pendingSelfTest.remove(this);
+                // Scheduled for a link that has since been lost: the next link gets its own schedule.
+                if (stopped || link != gatt || writeChar == null) {
+                    return;
+                }
             }
             enqueueOutput(report);
         }
@@ -1878,8 +1907,9 @@ public class SteamControllerBle extends SteamControllerInput {
 
     /** ID_TRIGGER_HAPTIC_CMD: MsgTriggerHaptic from a 0x82 report {side, command, gain_db}. */
     private static byte[] triggerHaptic(byte side, byte command, byte gainDb) {
-        // The output report numbers the sides 1 = left, 0 = right; the message wants a mask.
-        byte sideMask = side == 1 ? (byte) 0x01 : side == 0 ? (byte) 0x02 : (byte) 0x03;
+        // The 0x82 report numbers its sides 0 = left, 1 = right (measured; see isLeftPad); the
+        // message wants a mask, assumed here to be bit 0 = left pad, bit 1 = right pad.
+        byte sideMask = isLeftPad(0x82, side) ? (byte) 0x01 : side == CMD_SIDE_RIGHT ? (byte) 0x02 : (byte) 0x03;
         byte[] msg = new byte[2 + 19];
         msg[0] = ID_TRIGGER_HAPTIC_CMD;
         msg[1] = 19;

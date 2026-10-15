@@ -339,6 +339,33 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.115: launch logging, the feature-report command mask, and the self-test across a drop
+
+Three fixes from an audit of fork.114, none of them changing what a working link sends.
+
+- A launch that hangs was not visible in the stream log: this morning's log was silent for 23 s
+  between `Surface is available, starting connection...` and the user giving up, because the
+  launch and resume requests run without a read timeout and nothing was logged until they
+  returned. The start path now logs the serverinfo request and the launch or resume request
+  when it is sent (host address, app name and id) and again when it returns or fails, with the
+  elapsed milliseconds. The requests themselves are unchanged, still with no read timeout.
+- `triggerHaptic`, which rewrites a host's `0x82` command into the `ID_TRIGGER_HAPTIC_CMD`
+  feature message when the output characteristic is missing, still assumed side 1 = left,
+  which fork.114 corrected elsewhere. It now takes the pad from `isLeftPad()`, the measured mapping
+  from fork.114: side 0 is the left pad (mask `0x01`), side 1 the right pad (`0x02`), anything
+  else both. The mask's own bit assignment (bit 0 = left) is the existing assumption and has
+  not been measured. This path is only taken when the output characteristic is missing or
+  refuses the write.
+- The haptic self-test's reports survived a link loss: `onLinkLost` removed every other
+  callback but left the pending self-test runnables on the handler, and the next link's
+  `onReady` scheduled a fresh set, so a drop and reconnect during the test played two
+  interleaved schedules. Each report now carries the link it was scheduled for and does
+  nothing if a different link is up when it runs, and `onLinkLost` removes the pending ones.
+  `stop()` is unchanged.
+
+The harness covers the mask for both sides and the schedule across a simulated drop and
+reconnect: the lost link's reports write nothing to the replacement, which gets its own 18.
+
 ### fork.114: the side byte differs between the pulse and the command report
 
 Measured on the author's controller on 2026-10-15, over USB (HID output reports through the
