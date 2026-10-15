@@ -362,6 +362,22 @@ compare against those direct rates on the next stream run.
   (`82 01 ..` then `82 00 ..`; `81 00 ..` then `81 01 ..`); fork.113 played its clicks and ticks
   on the opposite pad from its pulses.
 
+**Resolved (stream_26, fork.114, boost 0).** On the host's desktop, with the right pad as a
+mouse, Steam sends the streamed controller the same dense tick texture it sends a directly
+connected one (`82 01 01 f7` at about 48 per second: `0x82 x475 (L 38 R 437)` then
+`x567 (L 85 R 482)` per 10 s, all written, none evicted), and it feels as expected. The haptic
+pipeline is at parity end to end, and the boost, pulse-scale and master-gain preferences are
+no longer needed for slides (they stay, default off).
+
+**Do not judge slide haptics on Big Picture's controller test page.** Every earlier "no slide
+haptics" run (stream_23, 24, 25) was taken there. Steam puts a wired, and therefore also the
+virtual, controller into a raw test mode on that page and sends no slide haptics for it (a
+cable on the author's PC produced nothing for a right-pad slide there either). A controller
+connected directly over Bluetooth keeps its desktop mouse ticks on that page only because one
+of Steam's mode messages fails over Bluetooth (ATT error 4 in the capture), which made the
+direct connection look like the reference when it was a side effect. Compare slide haptics on
+the desktop or in a game layout with a mouse on the trackpad.
+
 ### fork.113: haptic self-test and per-side counts
 
 fork.112 on the headset (stream_23, boost +6 dB, pulses 2x): "right pad has no haptic feedback
