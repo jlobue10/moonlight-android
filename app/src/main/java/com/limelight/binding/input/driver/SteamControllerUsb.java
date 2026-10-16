@@ -37,6 +37,9 @@ public final class SteamControllerUsb {
     private static final int STALE_STATE_MS = 3000;
     private static final int MAX_OUTPUTS = 32;
     private static final int OUTPUT_RETRY_MS = 40;
+    // Firmware settings written through feature report 1 (ids as in SteamControllerBle).
+    private static final byte SETTING_LIZARD_MODE = 9, SETTING_IMU_MODE = 48, SETTING_STEAM_WATCHDOG_ENABLE = 71;
+    private static final byte IMU_MODE_RAW = 0x18;   // RAW_ACCEL | RAW_GYRO
 
     private final UsbDevice device;
     private final UsbDeviceConnection connection;
@@ -201,27 +204,46 @@ public final class SteamControllerUsb {
                     if (!slot.connected) continue;
                     generation = slot.generation;
                 }
-                if (configure(slot, true)) slot.writeSucceeded(); else slot.writeFailed(generation);
+                boolean ok = configure(slot, true);
+                synchronized (slot) {
+                    if (slot.connected && slot.generation == generation && slot.configureState != (ok ? 1 : 2)) logLinkSettings(slot, ok);
+                }
+                if (ok) slot.writeSucceeded(); else slot.writeFailed(generation);
             }
             if (!stopped) outputHandler.postDelayed(this, KEEPALIVE_MS);
         }
     };
 
     private boolean configure(Slot slot, boolean active) {
-        // Enable the firmware watchdog even if a previous BLE/Steam session disabled it:
-        // if Android dies, lizard mode can recover.
-        // HID feature report 1: SET_SETTINGS_VALUES(0x87), three (id,u16) triples.
+        // HID feature report 1: SET_SETTINGS_VALUES(0x87), three (id,u16) triples, framed as
+        // Steam frames it on the wire (SET_REPORT, wValue 0x0301, 64 bytes starting 01 87).
+        // Lizard mode off and the raw IMU on while active; lizard mode back on and the IMU
+        // off at stop. The firmware's Steam watchdog (71) stays disabled, which is the unit's
+        // default and what Steam's own USB session and the BLE link leave it at. Up to
+        // fork.118 this transport armed it ("if Android dies, lizard mode can recover"): a
+        // watchdog that waits for Steam's heartbeat and never sees it reverts the settings,
+        // which turns the IMU off until the next keep-alive re-arms it, and the
+        // cable-connected unit was the one path whose gyro did not follow Steam's glyph
+        // (fork.119; the puck's receiver keeps its own radio traffic, BLE never armed it).
         byte[] feature = new byte[64];
         feature[0] = 1; feature[1] = (byte) 0x87; feature[2] = 9;
-        feature[3] = 9; feature[4] = (byte) (active ? 0 : 1);
-        feature[6] = 48; feature[7] = (byte) (active && slot.motionEnabled ? 0x18 : 0);
-        feature[9] = 71; feature[10] = 1;
+        feature[3] = SETTING_LIZARD_MODE; feature[4] = (byte) (active ? 0 : 1);
+        feature[6] = SETTING_IMU_MODE; feature[7] = (byte) (active && slot.motionEnabled ? IMU_MODE_RAW : 0);
+        feature[9] = SETTING_STEAM_WATCHDOG_ENABLE; feature[10] = 0;
         try {
             return connection.controlTransfer(0x21, 0x09, 0x0301, slot.iface.getId(),
                     feature, feature.length, IO_TIMEOUT_MS) == feature.length;
         } catch (RuntimeException e) {
             return false;
         }
+    }
+
+    /** Once per connect and whenever the write's result changes: what this transport asked of the firmware. */
+    private void logLinkSettings(Slot slot, boolean ok) {
+        slot.configureState = (byte) (ok ? 1 : 2);
+        LimeLog.info("Steam Controller USB slot " + slot.iface.getId() + ": link settings (feature report 1, interface "
+                + slot.iface.getId() + "): lizard mode 0, IMU mode 0x" + Integer.toHexString(slot.motionEnabled ? IMU_MODE_RAW : 0)
+                + ", Steam watchdog 0 -> " + (ok ? "accepted" : "write failed"));
     }
 
     private boolean writeOutput(Slot slot, byte[] report) {
@@ -270,6 +292,7 @@ public final class SteamControllerUsb {
         long lastStateMs, retryAtMs;
         final ArrayDeque<byte[]> outputs = new ArrayDeque<>();
         boolean drainScheduled;
+        byte configureState;   // settings write for this generation: 0 not logged yet, 1 accepted, 2 failed
         byte[] repeatingRumble;
         long rumbleDeadline;
 
@@ -322,7 +345,11 @@ public final class SteamControllerUsb {
                 synchronized (Slot.this) {
                     if (!connected || stopped || current != generation) return;
                 }
-                if (!configure(Slot.this, true)) writeFailed(current);
+                boolean ok = configure(Slot.this, true);
+                synchronized (Slot.this) {
+                    if (connected && current == generation && configureState != (ok ? 1 : 2)) logLinkSettings(Slot.this, ok);
+                }
+                if (!ok) writeFailed(current);
             });
         }
 
@@ -337,6 +364,7 @@ public final class SteamControllerUsb {
             generation++;
             outputs.clear();
             drainScheduled = false;
+            configureState = 0;
             repeatingRumble = null;
             outputFailures = 0;
             strikedReport = null;

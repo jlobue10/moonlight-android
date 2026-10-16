@@ -47,8 +47,10 @@ firmware acceptance or haptic feel. No latency advantage over Bluetooth has been
 - Decode state 0x42 (54 bytes), 0x45 and timestamped-pad 0x47 (46 bytes); handle wireless
   0x79/0x46 and battery 0x43. Ignore truncated/unknown reports and haptic acknowledgements.
 - Configure feature report 1 with settings opcode 0x87: lizard mode off and raw accel/gyro
-  enabled. Refresh configuration every second, keep the firmware watchdog enabled, and
-  restore lizard mode/stop haptics on normal shutdown. Silent input expires after 3 seconds.
+  enabled. Refresh configuration every second, leave the firmware's Steam watchdog disabled
+  (fork.119; fork.6..118 armed it, which only the cable-connected unit appears to have acted
+  on), and restore lizard mode/stop haptics on normal shutdown. Silent input expires after
+  3 seconds.
 - Use native interrupt OUT, or HID SET_REPORT(output) if no OUT endpoint exists. Validate
   exact 0x80..0x85 report sizes. Refresh held rumble every 40 ms until the configured hold
   limit (500 ms default); select unlimited only when the host reliably sends a stop.
