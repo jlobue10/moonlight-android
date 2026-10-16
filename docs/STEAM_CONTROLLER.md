@@ -345,6 +345,14 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.122: retired-link attribute callbacks (ChatGPT audit 60)
+
+- ControllerHandler now drops an attribute callback whose object is no longer the driver's
+  current cached reading. The BLE driver announces outside its lifetime lock (fork.121), so an
+  announcement delayed across a disconnect and reconnect could otherwise reach the replacement
+  controller's host slot with the retired unit's firmware and serial. The check reads the volatile
+  cache and takes no driver lock, so the fork.121 lock order is unchanged.
+
 ### fork.121: attribute delivery fixes (ChatGPT audit 59 + lock order)
 
 - Wired and puck slots announce before their attribute queries finish; the USB driver service
