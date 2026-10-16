@@ -1012,10 +1012,13 @@ public class SteamControllerBle extends SteamControllerInput {
                     }
                     noteAttributeReply(query, ch.getValue(), status);
                     done = attributeReadFinished();
-                    // Publish while this link still owns the lifetime lock. Otherwise
+                    // Cache while this link still owns the lifetime lock. Otherwise
                     // onLinkLost() can clear the cache before this callback restores it.
+                    // The listener callout waits until the lock is released (lock order).
                     if (done != null && !stopped) {
-                        publishSteamAttributes(done);
+                        cacheSteamAttributes(done);
+                    } else {
+                        done = null;
                     }
                     drained = closing && writeQueue.isEmpty();
                 }
@@ -1025,6 +1028,9 @@ public class SteamControllerBle extends SteamControllerInput {
                     handleBattery(ch.getValue());
                 }
                 return;
+            }
+            if (done != null) {
+                announceSteamAttributes(done);
             }
             if (drained) {
                 handler.post(closeLink);
@@ -1580,11 +1586,14 @@ public class SteamControllerBle extends SteamControllerInput {
             if (p != null) {
                 writeQueue.add(p);
             }
-            // Queue pressure can finish the last read too; keep that publication
-            // in the same lifetime boundary as a normal read completion.
+            // Queue pressure can finish the last read too; cache it in the same
+            // lifetime boundary as a normal read completion, announce after the lock.
             if (done != null) {
-                publishSteamAttributes(done);
+                cacheSteamAttributes(done);
             }
+        }
+        if (done != null) {
+            announceSteamAttributes(done);
         }
         flushWrites();
     }
