@@ -107,6 +107,9 @@ touchpad and gyro, and Steam Input handles it well. Consequences, and the settin
   keep paddles for hosts that emulate a pad with them.
 - The Steam button arrives as the PS button and opens Big Picture.
 - To get an Xbox pad instead, set `gamepad = x360` on the host; touchpads and gyro are then dropped.
+- A Vibepollo host with the Steam Controller profile answers Steam's firmware-attribute queries for the
+  virtual controller with what this client read from the real one (fork.120), so Steam's "firmware
+  update available" notice there refers to your controller. NEVER start a controller firmware update from Steam while streaming. The update would target the virtual controller on the host, not the real controller; it cannot succeed and may leave Steam confused. Update firmware with the controller connected directly to a PC running Steam.
 
 ## Sources
 
@@ -341,6 +344,51 @@ The link logs its configuration at setup (`haptics: 0x82 gain boost +6 dB (ceili
 pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts the rewritten
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
+
+### fork.120: the real controller's firmware attributes reach the host
+
+Steam on the host showed "controller firmware update available" for the streamed controller. The
+host's virtual Steam Controller (libvirtualgamepad `steam_controller` profile) answers Steam's
+`GET_ATTRIBUTES_VALUES` (0x83) and `GET_DEVICE_INFO` (0xF2 sub 0) with constants captured from one wired
+unit on 2026-10-05 (firmware build 0x6A4D85E3 = 2026-07-07 23:04 UTC, build id placeholder), so Steam
+judged that unit's firmware, not yours, and nothing forwarded the real values.
+
+- Each transport now reads the real unit's attributes once per link, after its setup writes, the way
+  Steam asks for them: `83 00` (firmware/bootloader build time, board revision, capabilities; a puck
+  may add radio tag 5 / dongle tag 8), `F2 01 00` (the 12-character build id), `AE 15 01` and
+  `AE 15 00` (unit and board serial). Over the cable and the puck: SET_REPORT of the command on
+  feature report 1 (wValue 0x0301, wIndex = the slot's interface, 64 bytes `01 <type> <len> ...`),
+  then GET_REPORT of the same report for the reply (`01 <type> <len> payload`); over the puck the
+  exchange reaches the paired controller. Over Bluetooth: the command is written to the feature
+  characteristic 0x100f6c34 with a response and the reply is read back from the same characteristic,
+  both through the serialized write queue (a read holds the write slot and the write watchdog like a
+  write), 750 ms after setup so the settings writes and the battery read go first. The firmware answers
+  these three over BLE (0x8F and 0xEA are the ones it refuses with status 4). A refused command, an
+  unusable reply or a failed read only leaves that query's fields out of the valid mask.
+- The arrival event advertises `LI_CCAP_STEAM_ATTRIBUTES` (0x4000) on all three transports, and a new
+  packet (`LiSendSteamControllerAttributesEvent`, magic 0x55000008, 84 bytes; moonlight-common-c
+  pyrowave #59) follows the arrival on the same reliable channel with the transport (usb/ble/puck), the
+  valid mask, the six u32 values and the three strings (15 printable ASCII characters at most). When the
+  read finishes after the controller was announced, the packet is sent then; the host applies a late
+  packet. A link loss or a puck slot change forgets the attributes and the next link reads again.
+  Stock hosts ignore the packet; nothing else in the arrival changes.
+- Stream log, once per link: `Steam Controller <transport>: firmware build 2026-07-07 23:04Z
+  (0x6a4d85e3), bootloader 2025-09-23 ..., board rev 74, capabilities 0x0, build id 26e1f7ef1955, serial
+  FXA... (board MXA...), radio fw n/a, dongle fw n/a`, followed by the warning below; a unit that answers
+  nothing logs `no firmware attributes read (the host keeps its defaults)` and sends nothing. Whether the
+  puck's receiver adds the dongle firmware build time (tag 8) to the 0x83 reply is not known from the
+  wired capture; the log line shows it.
+- The Steam Controller driver option's help text describes the pass-through and carries the warning.
+
+**NEVER start a controller firmware update from Steam while streaming. The update would target the virtual controller on the host, not the real controller; it cannot succeed and may leave Steam confused. Update firmware with the controller connected directly to a PC running Steam.**
+
+Harnesses: `test_steam_usb.py` 78 -> 89 checks (the four queries and their GET_REPORTs on the slot's
+interface after the settings write, the decoded values of the real unit's replies, transport puck vs.
+usb, a partial answer, a silent unit, the kept/forgotten attributes across a wireless drop, the log
+line and the warning); `test_steam_ble.py` 190 -> 212 checks (the scheduled query, four write/read
+pairs through the queue with a response, the decoded values, the battery read's own path, link loss,
+a refused command, an unusable reply, a failed read and a stack-refused read retried like a write,
+partial results). versionCode 177.
 
 ### fork.119: wired IMU, the firmware watchdog, and IMU diagnostics
 
