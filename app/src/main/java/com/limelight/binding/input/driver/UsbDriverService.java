@@ -20,6 +20,7 @@ import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.R;
+import com.limelight.nvstream.input.SteamControllerAttributes;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.binding.input.driver.ble.SteamControllerBleManager;
 
@@ -90,6 +91,12 @@ public class UsbDriverService extends Service implements UsbDriverListener {
     public void reportControllerBattery(int id, byte state, byte percentage) {
         UsbDriverListener current = listener;
         if (current != null) current.reportControllerBattery(id, state, percentage);
+    }
+
+    @Override
+    public void reportControllerSteamAttributes(int id, SteamControllerAttributes attributes) {
+        UsbDriverListener current = listener;
+        if (current != null) current.reportControllerSteamAttributes(id, attributes);
     }
 
     @Override

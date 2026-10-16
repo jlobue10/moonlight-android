@@ -66,12 +66,12 @@ STUBS = {
  public boolean writeCharacteristic(BluetoothGattCharacteristic c){if(!acceptWrite)return false;writes.add(c.value.clone());targets.add(c);
   if(beforeWriteReturn!=null){Runnable r=beforeWriteReturn;beforeWriteReturn=null;r.run();}return true;}
  public List<BluetoothGattCharacteristic> reads=new ArrayList<>(); public boolean acceptRead=true;
- public boolean readCharacteristic(BluetoothGattCharacteristic c){reads.add(c);return acceptRead;}
+ public boolean readCharacteristic(BluetoothGattCharacteristic c){if((c.getProperties()&BluetoothGattCharacteristic.PROPERTY_READ)==0)return false;reads.add(c);return acceptRead;}
  public void close(){closed=true;} public void disconnect(){} }''',
  'android/bluetooth/BluetoothGattService.java': '''package android.bluetooth; import java.util.*; public class BluetoothGattService {
  public List<BluetoothGattCharacteristic> chars=new ArrayList<>(); public List<BluetoothGattCharacteristic> getCharacteristics(){return chars;} }''',
  'android/bluetooth/BluetoothGattCharacteristic.java': '''package android.bluetooth; import java.util.*; public class BluetoothGattCharacteristic {
- public static final int PROPERTY_NOTIFY=16, PROPERTY_WRITE=8, PROPERTY_WRITE_NO_RESPONSE=4, WRITE_TYPE_NO_RESPONSE=1, WRITE_TYPE_DEFAULT=2;
+ public static final int PROPERTY_READ=2, PROPERTY_NOTIFY=16, PROPERTY_WRITE=8, PROPERTY_WRITE_NO_RESPONSE=4, WRITE_TYPE_NO_RESPONSE=1, WRITE_TYPE_DEFAULT=2;
  public UUID uuid; public int props; public byte[] value; public BluetoothGattDescriptor descriptor;
  public BluetoothGattCharacteristic(String u,int p){uuid=UUID.fromString(u);props=p;}
  public UUID getUuid(){return uuid;} public int getProperties(){return props;} public BluetoothGattDescriptor getDescriptor(UUID u){return descriptor;}
@@ -119,7 +119,7 @@ public class BleRegression {
   },new Context(),device,false,false,0,0,0,boostDb,pulseScale,masterGainDb,selfTest,false);return d;
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
- static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",8);}
+ static BluetoothGattCharacteristic command(){return new BluetoothGattCharacteristic("100f6c34-1735-4313-b402-38567131e5f3",BluetoothGattCharacteristic.PROPERTY_WRITE|BluetoothGattCharacteristic.PROPERTY_READ);}
  static void completeOnWorker(BluetoothGattCallback cb,BluetoothGatt g,BluetoothGattCharacteristic ch,int status){
   Thread t=new Thread(()->cb.onCharacteristicWrite(g,ch,status));t.setDaemon(true);t.start();
   try{t.join(3000);}catch(InterruptedException e){throw new AssertionError(e);}
@@ -172,6 +172,30 @@ public class BleRegression {
   }finally{
    resume.countDown();com.limelight.LimeLog.warningHook=null;driver.stop();
   }
+ }
+ static void retiredAttributePublication()throws Exception{
+  SteamControllerBle driver=make();BluetoothGatt link=(BluetoothGatt)get(driver,"gatt");
+  BluetoothGattCharacteristic fc=command();set(driver,"writeChar",fc);
+  BluetoothGattCallback cb=(BluetoothGattCallback)get(driver,"gattCallback");
+  ((Runnable)get(driver,"attributeQuery")).run();
+  for(int i=0;i<3;i++){
+   int query=fc.value[0]&255;cb.onCharacteristicWrite(link,fc,0);
+   fc.value=i==0?hex("830504e3854d6a"):new byte[]{(byte)query,0};cb.onCharacteristicRead(link,fc,0);
+  }
+  cb.onCharacteristicWrite(link,fc,0);fc.value=hex("ae03004d58");
+  java.util.concurrent.CountDownLatch publishing=new java.util.concurrent.CountDownLatch(1),resume=new java.util.concurrent.CountDownLatch(1);
+  com.limelight.LimeLog.infoHook=message->{if(message.startsWith("Steam Controller BLE: firmware build")){publishing.countDown();await(resume);}};
+  Thread completion=new Thread(()->cb.onCharacteristicRead(link,fc,0));completion.setDaemon(true);
+  Thread retirement=new Thread(()->cb.onConnectionStateChange(link,0,BluetoothProfile.STATE_DISCONNECTED));retirement.setDaemon(true);
+  try{
+   completion.start();await(publishing);retirement.start();
+   // Let retirement either finish or wait on the publication's lifetime lock.
+   for(int i=0;i<1000&&retirement.getState()!=Thread.State.BLOCKED&&retirement.getState()!=Thread.State.TERMINATED;i++)Thread.sleep(1);
+  }finally{resume.countDown();completion.join(3000);retirement.join(3000);com.limelight.LimeLog.infoHook=null;}
+  check(!completion.isAlive()&&!retirement.isAlive()&&get(driver,"gatt")==null,"attribute publication and concurrent link retirement both complete");
+  check(driver.getSteamAttributes()==null,"a final attribute callback cannot restore the retired link's cached attributes after disconnect");
+  ((BluetoothDevice)get(driver,"device")).next=new BluetoothGatt();driver.start();
+  check(driver.getSteamAttributes()==null,"a replacement BLE link starts without the retired link's attributes");driver.stop();
  }
  public static void main(String[] args)throws Exception{
   staleWriteCompletion(false);staleWriteCompletion(true);
@@ -1081,6 +1105,21 @@ public class BleRegression {
    check(attrs.size()==1&&attrs.get(0).validMask==com.limelight.nvstream.jni.MoonBridge.LI_SCATTR_SERIALS&&attrs.get(0).unitSerial.equals("FXA9962403787")&&attrs.get(0).boardSerial.equals("MXA2G623065D4")&&attrs.get(0).firmwareBuildTime==0&&attrs.get(0).buildId.isEmpty(),"the new link reports only what it could read: both serials, nothing else");
    check(attrLog.size()==1&&attrLog.get(0).contains("firmware build n/a")&&attrLog.get(0).contains("serial FXA9962403787 (board MXA2G623065D4)"),"the log line marks the unread fields n/a");
    com.limelight.LimeLog.infoHook=null;com.limelight.LimeLog.warningHook=null;a.stop();}
+  // Discovery permits write-only command/fallback characteristics. Optional reads
+  // must not keep retrying an operation Android rejects locally for PROPERTY_READ.
+  {SteamControllerBle wo=make();BluetoothGatt wg=(BluetoothGatt)get(wo,"gatt");BluetoothGattCharacteristic wc=command();wc.props=BluetoothGattCharacteristic.PROPERTY_WRITE;
+   wg.service.chars.add(wc);wg.service.chars.add(new BluetoothGattCharacteristic("100f6c7a-1735-4313-b402-38567131e5f3",16));
+   BluetoothGattCallback wcb=(BluetoothGattCallback)get(wo,"gattCallback");wcb.onServicesDiscovered(wg,0);
+   wcb.onCharacteristicWrite(wg,wc,0);wcb.onCharacteristicWrite(wg,wc,0);int beforeQueries=wg.writes.size();
+   ((Runnable)get(wo,"attributeQuery")).run();
+   check(wg.writes.size()==beforeQueries&&wg.reads.isEmpty(),"write-only BLE links skip optional attribute commands and reads");
+   if(wg.writes.size()>beforeQueries)wcb.onCharacteristicWrite(wg,wc,0);
+   Handler wh=(Handler)get(wo,"handler");Runnable retry=(Runnable)get(wo,"retryFlush");
+   if(wh.delayed.contains(retry)){SystemClock.now+=2001;retry.run();}
+   check(get(wo,"gatt")==wg&&!wg.closed,"unreadable optional attributes do not recycle a working BLE input link");
+   int beforePulse=wg.writes.size();wo.steamHaptic(new byte[]{(byte)0x81,0,1,0,1,0,1,0});
+   check(wg.writes.size()==beforePulse+1,"a write-only link still sends haptics after skipping attributes");wo.stop();}
+  retiredAttributePublication();
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''

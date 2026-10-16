@@ -345,6 +345,21 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.121: attribute delivery fixes (ChatGPT audit 59 + lock order)
+
+- Wired and puck slots announce before their attribute queries finish; the USB driver service
+  did not forward the late attribute callback to the stream listener, so the host never got the
+  values the log line showed. It forwards now, like battery and touch events.
+- A transient failure of the first settings write no longer skips the attribute queries for the
+  whole connection: the first successful keep-alive runs them once per slot generation.
+- A BLE link whose command characteristic lacks `PROPERTY_READ` skips the optional queries instead
+  of retrying a read Android rejects locally until the watchdog recycled a working link.
+- The final BLE reply caches the attributes while the link still holds its lifetime lock, so a
+  concurrent link loss cannot be undone by a late completion. The listener callout happens after
+  the lock is released: ControllerHandler's controller lock already orders before the driver's
+  lock on the removal path (`destroy()` -> `rumble(0, 0)`), so calling the listener under the
+  driver lock could deadlock a disconnect that coincides with the last attribute read.
+
 ### fork.120: the real controller's firmware attributes reach the host
 
 Steam on the host showed "controller firmware update available" for the streamed controller. The

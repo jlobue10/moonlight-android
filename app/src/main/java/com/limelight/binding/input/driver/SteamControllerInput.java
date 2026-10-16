@@ -140,6 +140,27 @@ public abstract class SteamControllerInput extends AbstractController {
      * already (the host applies a late packet). Nothing is sent when no query answered.
      */
     protected void publishSteamAttributes(SteamControllerAttributes attributes) {
+        cacheSteamAttributes(attributes);
+        announceSteamAttributes(attributes);
+    }
+
+    /**
+     * The cache half of publishSteamAttributes(): safe under the transport's own lock because it
+     * calls nothing outside this object. A transport whose link lifetime is guarded by that lock
+     * caches here while it still holds it (so a concurrent link loss cannot be undone by a late
+     * completion) and calls announceSteamAttributes() after releasing it: the listener takes
+     * ControllerHandler's controller lock, which already orders before this driver's lock on the
+     * removal path (destroy() -> rumble(0, 0)), so calling it under the driver lock would deadlock.
+     */
+    protected void cacheSteamAttributes(SteamControllerAttributes attributes) {
+        if (attributes == null || attributes.isEmpty()) {
+            return;
+        }
+        steamAttributes = attributes;
+    }
+
+    /** The log-and-send half of publishSteamAttributes(); never call it while holding a lock. */
+    protected void announceSteamAttributes(SteamControllerAttributes attributes) {
         if (attributes == null) {
             return;
         }
@@ -148,7 +169,6 @@ public abstract class SteamControllerInput extends AbstractController {
             return;
         }
         LimeLog.warning("Steam Controller " + transportName + ": " + FIRMWARE_UPDATE_WARNING);
-        steamAttributes = attributes;
         reportSteamAttributes(attributes);
     }
 

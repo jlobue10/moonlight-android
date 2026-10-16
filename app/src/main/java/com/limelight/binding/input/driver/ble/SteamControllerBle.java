@@ -404,6 +404,13 @@ public class SteamControllerBle extends SteamControllerInput {
             if (stopped || gatt == null || ch == null) {
                 return;
             }
+            // Discovery also supports write-only command/fallback characteristics.
+            // Android rejects their reads locally; an optional query must not stall
+            // the output queue and make its retry watchdog recycle a working link.
+            if ((ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_READ) == 0) {
+                LimeLog.info("Steam Controller BLE: firmware attributes unavailable on a write-only characteristic");
+                return;
+            }
             synchronized (SteamControllerBle.this) {
                 attributeDraft = new SteamControllerAttributes(MoonBridge.LI_SCATTR_TRANSPORT_BLE);
                 attributeReadsLeft = 4;
@@ -1005,6 +1012,14 @@ public class SteamControllerBle extends SteamControllerInput {
                     }
                     noteAttributeReply(query, ch.getValue(), status);
                     done = attributeReadFinished();
+                    // Cache while this link still owns the lifetime lock. Otherwise
+                    // onLinkLost() can clear the cache before this callback restores it.
+                    // The listener callout waits until the lock is released (lock order).
+                    if (done != null && !stopped) {
+                        cacheSteamAttributes(done);
+                    } else {
+                        done = null;
+                    }
                     drained = closing && writeQueue.isEmpty();
                 }
             }
@@ -1014,8 +1029,8 @@ public class SteamControllerBle extends SteamControllerInput {
                 }
                 return;
             }
-            if (done != null && !stopped) {
-                publishSteamAttributes(done);
+            if (done != null) {
+                announceSteamAttributes(done);
             }
             if (drained) {
                 handler.post(closeLink);
@@ -1571,9 +1586,14 @@ public class SteamControllerBle extends SteamControllerInput {
             if (p != null) {
                 writeQueue.add(p);
             }
+            // Queue pressure can finish the last read too; cache it in the same
+            // lifetime boundary as a normal read completion, announce after the lock.
+            if (done != null) {
+                cacheSteamAttributes(done);
+            }
         }
         if (done != null) {
-            publishSteamAttributes(done);
+            announceSteamAttributes(done);
         }
         flushWrites();
     }
