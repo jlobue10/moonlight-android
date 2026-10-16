@@ -799,6 +799,56 @@ public class BleRegression {
    hs=make();hg=(BluetoothGatt)get(hs,"gatt");hfeat=command();set(hs,"writeChar",hfeat);
    hs.steamSettings((byte)0x89,new byte[]{45,100,0});
    check(hg.writes.isEmpty(),"an unknown host settings command is ignored");hs.stop();}
+  // A haptic burst must not discard settings already accepted from the host.
+  // Exercise both output-characteristic and burstFeature-fallback traffic, then drain
+  // real GATT completions and inspect the writes rather than only queue tags.
+  for(boolean outputEndpoint:new boolean[]{false,true}){
+   SteamControllerBle hs=make();BluetoothGatt hg=(BluetoothGatt)get(hs,"gatt");
+   BluetoothGattCharacteristic burstFeature=command();set(hs,"writeChar",burstFeature);
+   if(outputEndpoint)((BluetoothGattCharacteristic[])get(hs,"outputChars"))[1]=
+     new BluetoothGattCharacteristic("100f6cb6-1735-4313-b402-38567131e5f3",12);
+   byte[] pulse={(byte)0x81,0,1,0,1,0,1,0};hs.steamHaptic(pulse);
+   byte[][] chunks={{7,1,0},{8,2,0},{24,3,0}};
+   for(byte[] chunk:chunks)hs.steamSettings((byte)0x87,chunk);
+   for(int i=0;i<80;i++)hs.steamHaptic(pulse);
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(hs,"gattCallback");
+   int completions=0;Object pending;
+   while((pending=get(hs,"inFlight"))!=null&&completions++<40)
+    cb.onCharacteristicWrite(hg,(BluetoothGattCharacteristic)get(pending,"ch"),0);
+   List<byte[]> settingsWrites=new ArrayList<>();
+   for(byte[] wire:hg.writes)if((wire[0]&255)==0x87)settingsWrites.add(wire);
+   boolean complete=settingsWrites.size()==chunks.length;
+   for(int i=0;complete&&i<chunks.length;i++)complete=Arrays.equals(settingsWrites.get(i),
+     new byte[]{(byte)0x87,3,chunks[i][0],chunks[i][1],chunks[i][2]});
+   check(complete,"a haptic burst preserves every settings chunk in wire order (output endpoint="+outputEndpoint+")");
+   check(get(hs,"inFlight")==null,"settings and haptics drain without wedging the GATT queue");hs.stop();
+  }
+  {SteamControllerBle hs=make();BluetoothGatt hg=(BluetoothGatt)get(hs,"gatt");
+   BluetoothGattCharacteristic burstFeature=command();set(hs,"writeChar",burstFeature);
+   hs.steamSettings((byte)0x8E,new byte[0]); // Reset is in flight; its restoration is queued.
+   for(int i=0;i<80;i++)hs.steamHaptic(new byte[]{(byte)0x81,0,1,0,1,0,1,0});
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(hs,"gattCallback");
+   cb.onCharacteristicWrite(hg,burstFeature,0);
+   check(hg.writes.size()==2&&Arrays.equals(hg.writes.get(1),new byte[]{(byte)0x87,9,9,0,0,71,0,0,48,0,0}),
+         "a haptic burst cannot evict the link restoration after an in-flight host reset");hs.stop();
+  }
+  {SteamControllerBle hs=make();BluetoothGatt hg=(BluetoothGatt)get(hs,"gatt");
+   BluetoothGattCharacteristic burstFeature=command();set(hs,"writeChar",burstFeature);
+   hs.steamHaptic(new byte[]{(byte)0x81,0,1,0,1,0,1,0});
+   hs.steamHaptic(new byte[]{(byte)0x81,0,0,0,0,0,0,0});
+   for(int i=0;i<200;i++)hs.steamSettings((byte)0x87,new byte[]{7,(byte)i,0});
+   int queuedSettings=0,stops=0;
+   for(Object p:(Deque<?>)get(hs,"writeQueue")){
+    if((boolean)get(p,"hostSettings"))queuedSettings++;
+    byte[] b=(byte[])get(p,"bytes");if((b[0]&255)==0x8F&&b[3]==0&&b[4]==0)stops++;
+   }
+   check(queuedSettings<=16&&stops==1,"settings floods have their own bound and preserve a pending haptic stop");
+   BluetoothGattCallback cb=(BluetoothGattCallback)get(hs,"gattCallback");int completions=0;Object pending;
+   while((pending=get(hs,"inFlight"))!=null&&completions++<40)
+    cb.onCharacteristicWrite(hg,(BluetoothGattCharacteristic)get(pending,"ch"),0);
+   check(get(hs,"inFlight")==null&&Arrays.equals(hg.writes.get(hg.writes.size()-1),new byte[]{(byte)0x87,3,7,(byte)199,0}),
+         "bounded settings traffic still applies the newest setting");hs.stop();
+  }
   // A keep-alive before LOAD_DEFAULT_SETTINGS cannot satisfy the setup required
   // after it. Drive the real queue through completion and inspect the wire order,
   // including repeated resets while a haptic write holds the GATT slot.

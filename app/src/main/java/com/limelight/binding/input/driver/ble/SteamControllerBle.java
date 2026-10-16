@@ -160,6 +160,10 @@ public class SteamControllerBle extends SteamControllerInput {
     /** Retry delay after the stack refused a write (one operation outstanding at a time). */
     private static final long WRITE_RETRY_MS = 50;
     private static final int MAX_PENDING_WRITES = 32;
+    // Host settings have a separate budget so haptic bursts cannot discard a
+    // settings chunk or the link setup following LOAD_DEFAULT_SETTINGS. Sixteen
+    // leaves room for every output/feature stop key and ordinary effects.
+    private static final int MAX_PENDING_HOST_SETTINGS = 16;
     /** stop(): how long to wait for the restore writes to complete before closing anyway. */
     private static final long CLOSE_FALLBACK_MS = 400;
 
@@ -1375,12 +1379,27 @@ public class SteamControllerBle extends SteamControllerInput {
                     }
                 }
             }
+            if (p.hostSettings) {
+                int count = 0;
+                Pending oldest = null;
+                for (Pending queued : writeQueue) {
+                    if (queued.hostSettings) {
+                        if (oldest == null) oldest = queued;
+                        count++;
+                    }
+                }
+                // Only a settings flood can evict an older settings command.
+                if (count >= MAX_PENDING_HOST_SETTINGS) {
+                    writeQueue.remove(oldest);
+                    evictedWrites++;
+                }
+            }
             if (writeQueue.size() >= MAX_PENDING_WRITES) {
-                // Drop the oldest command that is not a motors-off, so a stall cannot
-                // leave a pad buzzing by evicting the stop and keeping the start.
+                // Preserve both motor stops and host settings. Drop the oldest
+                // ordinary command; if none remains, refuse the incoming effect.
                 Pending victim = null;
                 for (Pending queued : writeQueue) {
-                    if (stopKey(queued) < 0) {
+                    if (!queued.hostSettings && stopKey(queued) < 0) {
                         victim = queued;
                         break;
                     }
