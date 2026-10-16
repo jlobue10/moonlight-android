@@ -18,6 +18,7 @@ import android.os.SystemClock;
 import com.limelight.LimeLog;
 import com.limelight.binding.input.driver.SteamControllerInput;
 import com.limelight.binding.input.driver.UsbDriverListener;
+import com.limelight.nvstream.input.SteamControllerAttributes;
 import com.limelight.nvstream.jni.MoonBridge;
 
 import java.util.ArrayDeque;
@@ -87,6 +88,15 @@ public class SteamControllerBle extends SteamControllerInput {
     private static final byte ID_SET_DEFAULT_DIGITAL_MAPPINGS = (byte) 0x85;
     private static final byte ID_SET_SETTINGS_VALUES = (byte) 0x87;
     private static final byte ID_LOAD_DEFAULT_SETTINGS = (byte) 0x8E;
+    // Queries answered by reading the feature characteristic back after the write (the firmware
+    // answers these three over BLE; 0x8F and 0xEA are the ones it refuses with GATT status 4).
+    private static final byte ID_GET_ATTRIBUTES_VALUES = (byte) 0x83;
+    private static final byte ID_GET_STRING_ATTRIBUTE = (byte) 0xAE;
+    private static final byte ID_GET_DEVICE_INFO = (byte) 0xF2;
+    // Steam's length byte on GET_STRING_ATTRIBUTE; the command is padded to it.
+    private static final int STRING_ATTRIBUTE_REQUEST_LENGTH = 0x15;
+    // After the setup writes (and the battery read at 500 ms) have had their turn.
+    private static final long ATTRIBUTE_QUERY_DELAY_MS = 750;
     private static final byte ID_TRIGGER_HAPTIC_PULSE = (byte) 0x8F;
     // Deck-era haptic engine commands (SDL controller_constants.h); the Triton's output reports
     // 0x80 and 0x82 carry the same fields, so they are what a host's report is replayed with.
@@ -264,16 +274,23 @@ public class SteamControllerBle extends SteamControllerInput {
         final boolean output;
         /** Part of applying a host settings write; must not be coalesced as a keep-alive. */
         final boolean hostSettings;
+        /** A readCharacteristic of ch for the reply to the command in bytes (written just before). */
+        final boolean read;
 
         Pending(BluetoothGattCharacteristic ch, byte[] bytes, boolean output) {
-            this(ch, bytes, output, false);
+            this(ch, bytes, output, false, false);
         }
 
         Pending(BluetoothGattCharacteristic ch, byte[] bytes, boolean output, boolean hostSettings) {
+            this(ch, bytes, output, hostSettings, false);
+        }
+
+        Pending(BluetoothGattCharacteristic ch, byte[] bytes, boolean output, boolean hostSettings, boolean read) {
             this.ch = ch;
             this.bytes = bytes;
             this.output = output;
             this.hostSettings = hostSettings;
+            this.read = read;
         }
 
         int id() {
@@ -368,6 +385,97 @@ public class SteamControllerBle extends SteamControllerInput {
             }
         }
     };
+
+    // The attribute reads of the current link (guarded by this): the draft being filled and how
+    // many reads are still to complete or be dropped; published when the last one is.
+    private SteamControllerAttributes attributeDraft;
+    private int attributeReadsLeft;
+
+    /**
+     * The real unit's firmware attributes for the host, once per link, after the setup writes and
+     * the battery read have had their turn: each command goes to the feature characteristic with a
+     * response and its reply is read back from the same characteristic, both through the write
+     * queue so no two GATT operations overlap. A failed step leaves its fields out of the mask.
+     */
+    private final Runnable attributeQuery = new Runnable() {
+        @Override
+        public void run() {
+            BluetoothGattCharacteristic ch = writeChar;
+            if (stopped || gatt == null || ch == null) {
+                return;
+            }
+            synchronized (SteamControllerBle.this) {
+                attributeDraft = new SteamControllerAttributes(MoonBridge.LI_SCATTR_TRANSPORT_BLE);
+                attributeReadsLeft = 4;
+            }
+            query(ch, new byte[]{ID_GET_ATTRIBUTES_VALUES, 0});
+            query(ch, new byte[]{ID_GET_DEVICE_INFO, 1, 0});
+            query(ch, stringAttributeQuery(1));
+            query(ch, stringAttributeQuery(0));
+        }
+
+        private void query(BluetoothGattCharacteristic ch, byte[] command) {
+            enqueue(new Pending(ch, command, false, false, false));
+            enqueue(new Pending(ch, command, false, false, true));
+        }
+
+        private byte[] stringAttributeQuery(int tag) {
+            byte[] command = new byte[2 + STRING_ATTRIBUTE_REQUEST_LENGTH];
+            command[0] = ID_GET_STRING_ATTRIBUTE;
+            command[1] = (byte) STRING_ATTRIBUTE_REQUEST_LENGTH;
+            command[2] = (byte) tag;
+            return command;
+        }
+    };
+
+    /** Lock held: one of the link's attribute reads completed or was dropped; the draft once all have. */
+    private SteamControllerAttributes attributeReadFinished() {
+        if (attributeDraft == null || attributeReadsLeft == 0 || --attributeReadsLeft > 0) {
+            return null;
+        }
+        SteamControllerAttributes done = attributeDraft;
+        attributeDraft = null;
+        return done;
+    }
+
+    /** Lock held: one attribute reply, [type][len][payload] as the command was written, into the draft. */
+    private void noteAttributeReply(Pending query, byte[] value, int status) {
+        SteamControllerAttributes draft = attributeDraft;
+        int id = query.id();
+        if (draft == null) {
+            return;
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS || value == null) {
+            LimeLog.warning("Steam Controller BLE: reading the reply to attribute query 0x" + Integer.toHexString(id)
+                    + " failed (status " + status + ")");
+            return;
+        }
+        if (value.length < 2 || (value[0] & 0xFF) != id) {
+            LimeLog.warning("Steam Controller BLE: unexpected reply to attribute query 0x" + Integer.toHexString(id)
+                    + ": " + hex(value));
+            return;
+        }
+        int length = Math.min(value[1] & 0xFF, value.length - 2);
+        boolean parsed;
+        switch (id) {
+            case ID_GET_ATTRIBUTES_VALUES & 0xFF:
+                parsed = draft.parseAttributeValues(value, 2, length) > 0;
+                break;
+            case ID_GET_DEVICE_INFO & 0xFF:
+                parsed = draft.parseDeviceInfo(value, 2, length);
+                break;
+            case ID_GET_STRING_ATTRIBUTE & 0xFF:
+                parsed = draft.parseStringAttribute(value, 2, length);
+                break;
+            default:
+                parsed = false;
+                break;
+        }
+        if (!parsed) {
+            LimeLog.warning("Steam Controller BLE: attribute query 0x" + Integer.toHexString(id)
+                    + " answered with nothing usable: " + hex(value));
+        }
+    }
 
     private final Runnable keepAlive = new Runnable() {
         @Override
@@ -875,12 +983,45 @@ public class SteamControllerBle extends SteamControllerInput {
 
         @Override
         public void onCharacteristicRead(BluetoothGatt g, BluetoothGattCharacteristic ch, int status) {
-            if (stopped || g != gatt) {
+            if (g != gatt) {
                 return;
             }
-            if (status == BluetoothGatt.GATT_SUCCESS && shortUuid(ch.getUuid()) == BATTERY_SHORT) {
-                handleBattery(ch.getValue());
+            Pending query = null;
+            SteamControllerAttributes done = null;
+            boolean drained = false;
+            synchronized (SteamControllerBle.this) {
+                if (g != gatt) {
+                    return;
+                }
+                // A queued read owns the write slot like a write does: free it and move the queue on.
+                if (inFlight != null && inFlight.read && inFlight.ch == ch) {
+                    query = inFlight;
+                    inFlight = null;
+                    writeRejectedSinceMs = -1;
+                    disarmWriteWatchdog();
+                    writeBusy = false;
+                    if (stopped && !closing) {
+                        return;
+                    }
+                    noteAttributeReply(query, ch.getValue(), status);
+                    done = attributeReadFinished();
+                    drained = closing && writeQueue.isEmpty();
+                }
             }
+            if (query == null) {
+                if (!stopped && status == BluetoothGatt.GATT_SUCCESS && shortUuid(ch.getUuid()) == BATTERY_SHORT) {
+                    handleBattery(ch.getValue());
+                }
+                return;
+            }
+            if (done != null && !stopped) {
+                publishSteamAttributes(done);
+            }
+            if (drained) {
+                handler.post(closeLink);
+                return;
+            }
+            flushWrites();
         }
 
         @Override
@@ -1000,6 +1141,9 @@ public class SteamControllerBle extends SteamControllerInput {
             handler.removeCallbacks(batteryRead);
             handler.postDelayed(batteryRead, 500);
         }
+        // The firmware attributes for the host, after the setup writes and the battery read.
+        handler.removeCallbacks(attributeQuery);
+        handler.postDelayed(attributeQuery, ATTRIBUTE_QUERY_DELAY_MS);
         handler.removeCallbacks(keepAlive);
         handler.postDelayed(keepAlive, KEEPALIVE_INTERVAL_MS);
         handler.removeCallbacks(hapticStats);
@@ -1082,6 +1226,10 @@ public class SteamControllerBle extends SteamControllerInput {
             handler.removeCallbacks(retryFlush);
             disarmWriteWatchdog();
             handler.removeCallbacks(batteryRead);
+            handler.removeCallbacks(attributeQuery);
+            attributeDraft = null;
+            attributeReadsLeft = 0;
+            clearSteamAttributes();
             disarmSetupWatchdog();
             cancelHapticSelfTest();
             writeQueue.clear();
@@ -1135,7 +1283,7 @@ public class SteamControllerBle extends SteamControllerInput {
         if (p == null || p.bytes.length == 0) {
             return "";
         }
-        return (p.output ? " (output report 0x" : " (cmd 0x") + Integer.toHexString(p.id()) + ", "
+        return (p.output ? " (output report 0x" : p.read ? " (reply to cmd 0x" : " (cmd 0x") + Integer.toHexString(p.id()) + ", "
                 + p.bytes.length + (p.output ? " bytes with id)" : " bytes)");
     }
 
@@ -1355,6 +1503,7 @@ public class SteamControllerBle extends SteamControllerInput {
     }
 
     private void enqueue(Pending p) {
+        SteamControllerAttributes done = null;
         synchronized (this) {
             if (closing || stopped || gatt == null || writeChar == null) {
                 return;
@@ -1407,11 +1556,24 @@ public class SteamControllerBle extends SteamControllerInput {
                 if (victim != null) {
                     writeQueue.remove(victim);
                     evictedWrites++;
+                    if (victim.read) {
+                        done = attributeReadFinished();
+                    }
                 } else {
-                    return;
+                    // Nothing evictable: the incoming command is refused. A refused
+                    // attribute read still ends its sequence.
+                    if (p.read) {
+                        done = attributeReadFinished();
+                    }
+                    p = null;
                 }
             }
-            writeQueue.add(p);
+            if (p != null) {
+                writeQueue.add(p);
+            }
+        }
+        if (done != null) {
+            publishSteamAttributes(done);
         }
         flushWrites();
     }
@@ -1469,7 +1631,10 @@ public class SteamControllerBle extends SteamControllerInput {
             // An output report goes without its id, as the notifications arrive (with the id
             // the firmware accepts and ignores it: fork.112). Its first write on a link goes
             // with a response, so the firmware's verdict on the report reaches the log.
-            if (p.output) {
+            if (p.read) {
+                value = null;
+                probe = false;
+            } else if (p.output) {
                 int index = p.id() - OUTPUT_REPORT_FIRST;
                 value = Arrays.copyOfRange(p.bytes, 1, p.bytes.length);
                 probe = !outputProbed[index]
@@ -1483,7 +1648,7 @@ public class SteamControllerBle extends SteamControllerInput {
             // reports the write complete, so the one-at-a-time pacing holds either way.
             boolean haptic = p.output || p.bytes[0] == ID_TRIGGER_RUMBLE_CMD || p.bytes[0] == ID_TRIGGER_HAPTIC_CMD
                     || p.bytes[0] == ID_TRIGGER_HAPTIC_PULSE;
-            noResponse = (haptic || forceNoResponse) && !probe
+            noResponse = !p.read && (haptic || forceNoResponse) && !probe
                     && (p.ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0;
             // Binder can complete the write before writeCharacteristic returns.
             // Publish the report and its mode first so the callback owns both.
@@ -1493,10 +1658,15 @@ public class SteamControllerBle extends SteamControllerInput {
         BluetoothGattCharacteristic ch = p.ch;
         boolean accepted = false;
         try {
-            ch.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                    : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
-            ch.setValue(value);
-            accepted = g.writeCharacteristic(ch);
+            if (p.read) {
+                // The reply to the command written just before, from the same characteristic.
+                accepted = g.readCharacteristic(ch);
+            } else {
+                ch.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+                ch.setValue(value);
+                accepted = g.writeCharacteristic(ch);
+            }
         } catch (SecurityException | IllegalStateException ignored) {
         }
         if (accepted) {

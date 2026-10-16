@@ -65,7 +65,8 @@ STUBS = {
  public Runnable beforeWriteReturn;
  public boolean writeCharacteristic(BluetoothGattCharacteristic c){if(!acceptWrite)return false;writes.add(c.value.clone());targets.add(c);
   if(beforeWriteReturn!=null){Runnable r=beforeWriteReturn;beforeWriteReturn=null;r.run();}return true;}
- public boolean readCharacteristic(BluetoothGattCharacteristic c){return true;}
+ public List<BluetoothGattCharacteristic> reads=new ArrayList<>(); public boolean acceptRead=true;
+ public boolean readCharacteristic(BluetoothGattCharacteristic c){reads.add(c);return acceptRead;}
  public void close(){closed=true;} public void disconnect(){} }''',
  'android/bluetooth/BluetoothGattService.java': '''package android.bluetooth; import java.util.*; public class BluetoothGattService {
  public List<BluetoothGattCharacteristic> chars=new ArrayList<>(); public List<BluetoothGattCharacteristic> getCharacteristics(){return chars;} }''',
@@ -94,6 +95,8 @@ TEST = r'''import java.lang.reflect.*; import java.util.*; import android.blueto
 import com.limelight.binding.input.driver.*; import com.limelight.binding.input.driver.ble.*;
 public class BleRegression {
  static int failed,checks,states,added,batteryState=-1,batteryPercent=-1,touchDowns,touchMoves,touchUps;
+ static List<com.limelight.nvstream.input.SteamControllerAttributes> attrs=new ArrayList<>();
+ static byte[] hex(String s){byte[] b=new byte[s.length()/2];for(int i=0;i<b.length;i++)b[i]=(byte)Integer.parseInt(s.substring(2*i,2*i+2),16);return b;}
  static void check(boolean ok,String name){checks++;System.out.println((ok?"PASS ":"FAIL ")+name);if(!ok)failed++;}
  static Field field(Class<?> c,String name)throws Exception{for(;c!=null;c=c.getSuperclass()){try{return c.getDeclaredField(name);}catch(NoSuchFieldException e){}}throw new NoSuchFieldException(name);}
  static Object get(Object o,String name)throws Exception{Field f=field(o.getClass(),name);f.setAccessible(true);return f.get(o);}
@@ -112,6 +115,7 @@ public class BleRegression {
     if(type==com.limelight.nvstream.jni.MoonBridge.LI_TOUCH_EVENT_DOWN)touchDowns++;else if(type==com.limelight.nvstream.jni.MoonBridge.LI_TOUCH_EVENT_UP)touchUps++;else touchMoves++;}
    public void deviceRemoved(AbstractController c){} public void deviceAdded(AbstractController c){added++;}
    public void reportControllerBattery(int i,byte s,byte p){batteryState=s;batteryPercent=p;}
+   public void reportControllerSteamAttributes(int i,com.limelight.nvstream.input.SteamControllerAttributes a){attrs.add(a);}
   },new Context(),device,false,false,0,0,0,boostDb,pulseScale,masterGainDb,selfTest,false);return d;
  }
  static SteamControllerBle make()throws Exception{SteamControllerBle d=create(new BluetoothDevice());d.start();return d;}
@@ -1025,6 +1029,58 @@ public class BleRegression {
    check(added==addedBefore+1&&selfTests.getAsInt()==18&&keepAlives.getAsInt()==1&&(int)get(td,"reconnectAttempts")==3&&((Deque<?>)get(td,"writeQueue")).size()==queued,
          "a duplicate descriptor-write completion neither re-arms the keep-alive, resets the reconnect budget, re-queues the setup nor schedules a second self-test");
    td.stop();}
+  // Firmware attributes over BLE: after setup, four commands each written with a response to the
+  // feature characteristic and read back from it through the write queue; one report at the end.
+  {attrs.clear();List<String> attrLog=new ArrayList<>(),attrWarn=new ArrayList<>();
+   com.limelight.LimeLog.infoHook=m->{if(m.contains("firmware build")||m.contains("no firmware attributes"))attrLog.add(m);};
+   com.limelight.LimeLog.warningHook=m->{if(m.contains("firmware update")||m.contains("attribute query")||m.contains("refused"))attrWarn.add(m);};
+   SteamControllerBle a=make();BluetoothGatt link=(BluetoothGatt)get(a,"gatt");BluetoothGattCharacteristic fc=command();
+   BluetoothGattCharacteristic st=new BluetoothGattCharacteristic("100f6c7a-1735-4313-b402-38567131e5f3",16);
+   link.service.chars.add(fc);link.service.chars.add(st);BluetoothGattCallback acb=(BluetoothGattCallback)get(a,"gattCallback");
+   acb.onServicesDiscovered(link,0);Runnable aq=(Runnable)get(a,"attributeQuery");Handler ah=(Handler)get(a,"handler");
+   check(ah.delayed.contains(aq)&&(((AbstractController)a).getCapabilities()&com.limelight.nvstream.jni.MoonBridge.LI_CCAP_STEAM_ATTRIBUTES)!=0,"setup schedules the attribute query behind the setup writes and advertises LI_CCAP_STEAM_ATTRIBUTES");
+   acb.onCharacteristicWrite(link,fc,0);check(fc.value[0]==(byte)0x87,"the settings write still goes right after clear mappings");
+   aq.run();check(((Deque<?>)get(a,"writeQueue")).size()==8&&link.reads.isEmpty(),"the query enqueues four command/read pairs behind the settings write and issues no read while a write is in flight");
+   acb.onCharacteristicWrite(link,fc,0);
+   check(fc.value.length==2&&fc.value[0]==(byte)0x83&&fc.value[1]==0&&fc.writeTypes.get(fc.writeTypes.size()-1)==BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT&&link.reads.isEmpty(),"GET_ATTRIBUTES_VALUES goes to the feature characteristic as 83 00, with a response");
+   acb.onCharacteristicWrite(link,fc,0);
+   check(link.reads.size()==1&&link.reads.get(0)==fc&&(boolean)get(a,"writeBusy")&&ah.delayed.contains(get(a,"writeWatchdog")),"the command's completion reads the same characteristic back, holding the write slot under the write watchdog");
+   fc.value=hex("831e010213000002000000000a2ef9d26804e3854d6a094a0000000ba00f0000");acb.onCharacteristicRead(link,fc,0);
+   check(fc.value.length==3&&fc.value[0]==(byte)0xF2&&fc.value[1]==1&&fc.value[2]==0&&(boolean)get(a,"writeBusy"),"the reply's arrival frees the slot and GET_DEVICE_INFO sub 0 follows as F2 01 00");
+   acb.onCharacteristicWrite(link,fc,0);fc.value=hex("f22900e3854d6a4a0000003236653166376566313935350000000046584139393632343033373837000000");acb.onCharacteristicRead(link,fc,0);
+   check(fc.value.length==2+0x15&&fc.value[0]==(byte)0xAE&&fc.value[1]==0x15&&fc.value[2]==1,"the unit serial query is AE 15 01, padded to Steam's length byte");
+   acb.onCharacteristicWrite(link,fc,0);fc.value=hex("ae140146584139393632343033373837000000000000");acb.onCharacteristicRead(link,fc,0);
+   check(fc.value[0]==(byte)0xAE&&fc.value[2]==0&&attrs.isEmpty(),"the board serial query is AE 15 00 and nothing is reported before the last reply");
+   acb.onCharacteristicWrite(link,fc,0);fc.value=hex("ae14004d584132473632333036354434000000000000");acb.onCharacteristicRead(link,fc,0);
+   check(attrs.size()==1&&attrs.get(0).transport==com.limelight.nvstream.jni.MoonBridge.LI_SCATTR_TRANSPORT_BLE&&attrs.get(0).validMask==0xCF&&attrs.get(0).firmwareBuildTime==0x6A4D85E3&&attrs.get(0).bootloaderBuildTime==0x68D2F92E&&attrs.get(0).boardRevision==0x4A&&attrs.get(0).capabilities==0&&attrs.get(0).buildId.equals("26e1f7ef1955")&&attrs.get(0).unitSerial.equals("FXA9962403787")&&attrs.get(0).boardSerial.equals("MXA2G623065D4"),
+         "the last reply publishes one BLE attribute set with the real unit's build times, board revision, build id and serials");
+   check(((AbstractController)a).getSteamAttributes()==attrs.get(0)&&link.reads.size()==4&&((Deque<?>)get(a,"writeQueue")).isEmpty()&&!(boolean)get(a,"writeBusy")&&get(a,"attributeDraft")==null,"four reads in all, the queue is drained and idle, and the driver keeps the attributes for a later arrival");
+   check(attrLog.size()==1&&attrLog.get(0).startsWith("Steam Controller BLE: firmware build 2026-07-07 23:04Z (0x6a4d85e3), bootloader 2025-09-23")&&attrLog.get(0).contains("build id 26e1f7ef1955")&&attrLog.get(0).contains("serial FXA9962403787 (board MXA2G623065D4)")&&attrWarn.stream().anyMatch(w->w.contains("NEVER start a controller firmware update from Steam while streaming")),"the stream log shows the forwarded values and the firmware-update warning");
+   // Battery reads keep their own path: a read completion for the battery characteristic is not an attribute reply.
+   BluetoothGattCharacteristic bat=new BluetoothGattCharacteristic("100f6c78-1735-4313-b402-38567131e5f3",16);bat.value=new byte[]{2,55};batteryState=-1;acb.onCharacteristicRead(link,bat,0);
+   check(batteryState==com.limelight.nvstream.jni.MoonBridge.LI_BATTERY_STATE_CHARGING&&batteryPercent==55&&!(boolean)get(a,"writeBusy"),"a battery read completion still decodes and does not touch the write slot");
+   // Link loss forgets the attributes; the next link asks again, and a refused command, an
+   // unusable reply, a failed read and a read the stack refuses only cost their own fields.
+   attrs.clear();attrLog.clear();attrWarn.clear();acb.onConnectionStateChange(link,0,BluetoothProfile.STATE_DISCONNECTED);
+   check(((AbstractController)a).getSteamAttributes()==null&&get(a,"attributeDraft")==null&&!ah.delayed.contains(aq),"link loss forgets the attributes read on it and cancels a pending query");
+   BluetoothGatt link2=new BluetoothGatt();((BluetoothDevice)get(a,"device")).next=link2;a.start();BluetoothGattCharacteristic fc2=command();
+   link2.service.chars.add(fc2);link2.service.chars.add(st);acb=(BluetoothGattCallback)get(a,"gattCallback");acb.onServicesDiscovered(link2,0);
+   check(ah.delayed.contains(aq)&&(BluetoothGatt)get(a,"gatt")==link2,"the replacement link schedules its own query");
+   acb.onCharacteristicWrite(link2,fc2,0);aq.run();acb.onCharacteristicWrite(link2,fc2,0);
+   check(fc2.value[0]==(byte)0x83,"83 00 is in flight on the new link");refuse(acb,link2,fc2,4);
+   check(link2.reads.size()==1&&attrWarn.stream().anyMatch(w->w.contains("refused")&&w.contains("cmd 0x83")),"a command the firmware refuses is dropped and logged, and its read still runs");
+   fc2.value=new byte[]{(byte)0x83,0};acb.onCharacteristicRead(link2,fc2,0);
+   check(fc2.value[0]==(byte)0xF2&&attrWarn.stream().anyMatch(w->w.contains("0x83")&&w.contains("nothing usable")),"an empty 0x83 reply is logged as unusable and the sequence moves on");
+   acb.onCharacteristicWrite(link2,fc2,0);acb.onCharacteristicRead(link2,fc2,4);
+   check(fc2.value[0]==(byte)0xAE&&fc2.value[2]==1&&attrWarn.stream().anyMatch(w->w.contains("0xf2")&&w.contains("status 4")),"a failed read is logged with its status and the sequence moves on");
+   acb.onCharacteristicWrite(link2,fc2,0);fc2.value=hex("ae140146584139393632343033373837000000000000");acb.onCharacteristicRead(link2,fc2,0);
+   link2.acceptRead=false;int readsBefore=link2.reads.size();acb.onCharacteristicWrite(link2,fc2,0);
+   check(link2.reads.size()==readsBefore+1&&!(boolean)get(a,"writeBusy")&&ah.delayed.contains(get(a,"retryFlush"))&&((Deque<?>)get(a,"writeQueue")).size()==1,"a read the stack refuses goes back to the head of the queue and is retried like a refused write");
+   link2.acceptRead=true;((Runnable)get(a,"retryFlush")).run();check(link2.reads.size()==readsBefore+2&&attrs.isEmpty(),"the retry issues the read");
+   fc2.value=hex("ae14004d584132473632333036354434000000000000");acb.onCharacteristicRead(link2,fc2,0);
+   check(attrs.size()==1&&attrs.get(0).validMask==com.limelight.nvstream.jni.MoonBridge.LI_SCATTR_SERIALS&&attrs.get(0).unitSerial.equals("FXA9962403787")&&attrs.get(0).boardSerial.equals("MXA2G623065D4")&&attrs.get(0).firmwareBuildTime==0&&attrs.get(0).buildId.isEmpty(),"the new link reports only what it could read: both serials, nothing else");
+   check(attrLog.size()==1&&attrLog.get(0).contains("firmware build n/a")&&attrLog.get(0).contains("serial FXA9962403787 (board MXA2G623065D4)"),"the log line marks the unread fields n/a");
+   com.limelight.LimeLog.infoHook=null;com.limelight.LimeLog.warningHook=null;a.stop();}
   System.out.println(checks+" checks, "+failed+" failures");if(failed!=0)System.exit(1);
  }
 }'''
@@ -1054,7 +1110,7 @@ public class ManagerHarness {
 
 with tempfile.TemporaryDirectory(prefix='ble-regression-') as directory:
     work = pathlib.Path(directory)
-    constants = re.findall(r'public static final (?:byte|short|int) LI_(?:CCAP|CTYPE|TOUCH_EVENT|BATTERY_STATE|MOTION_TYPE)[^;]+;', (JAVA/'com/limelight/nvstream/jni/MoonBridge.java').read_text())
+    constants = re.findall(r'public static final (?:byte|short|int) LI_(?:CCAP|CTYPE|TOUCH_EVENT|BATTERY_STATE|MOTION_TYPE|SCATTR)[^;]+;', (JAVA/'com/limelight/nvstream/jni/MoonBridge.java').read_text())
     STUBS['com/limelight/nvstream/jni/MoonBridge.java'] = 'package com.limelight.nvstream.jni; public class MoonBridge {' + '\n'.join(constants) + '}'
     STUBS['BleRegression.java'] = TEST
     baseline = '--baseline' in sys.argv
@@ -1069,7 +1125,8 @@ with tempfile.TemporaryDirectory(prefix='ble-regression-') as directory:
         'com/limelight/binding/input/driver/AbstractController.java',
         'com/limelight/binding/input/driver/SteamControllerInput.java',
         'com/limelight/binding/input/driver/UsbDriverListener.java',
-        'com/limelight/nvstream/input/ControllerPacket.java')]
+        'com/limelight/nvstream/input/ControllerPacket.java',
+        'com/limelight/nvstream/input/SteamControllerAttributes.java')]
     if not baseline:
         sources.append(JAVA/'com/limelight/binding/input/driver/ble/SteamControllerBle.java')
     subprocess.run(['java','com.sun.tools.javac.Main','-d',str(work/'classes'),*map(str,sources)],check=True)

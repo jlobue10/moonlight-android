@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.SystemClock;
 import com.limelight.LimeLog;
 import com.limelight.nvstream.input.ControllerPacket;
+import com.limelight.nvstream.input.SteamControllerAttributes;
 import com.limelight.nvstream.jni.MoonBridge;
 import java.util.Locale;
 
@@ -20,6 +21,17 @@ public abstract class SteamControllerInput extends AbstractController {
     private final Context inputContext;
     private final String calibrationKey;
     private final String transportName;
+    // The real unit's firmware attributes read on the current link (null until read / after link
+    // loss). A Vibepollo host echoes them to Steam so its firmware-update notice follows the real
+    // controller instead of the host's captured defaults.
+    private volatile SteamControllerAttributes steamAttributes;
+    /**
+     * Logged once per link with the attributes: a firmware update started from Steam while
+     * streaming targets the host's virtual controller, not the real one.
+     */
+    public static final String FIRMWARE_UPDATE_WARNING = "NEVER start a controller firmware update from Steam while streaming."
+            + " The update would target the virtual controller on the host, not the real controller; it cannot succeed"
+            + " and may leave Steam confused. Update firmware with the controller connected directly to a PC running Steam.";
 
     // Button bit indices inside the 32-bit field at report bytes 2..5 (bit = (byte - 2) * 8 + n)
     private static final int BTN_A = 0, BTN_B = 1, BTN_X = 2, BTN_Y = 3, BTN_QUICK_ACCESS = 4,
@@ -100,7 +112,7 @@ public abstract class SteamControllerInput extends AbstractController {
         capabilities = (short) (MoonBridge.LI_CCAP_ANALOG_TRIGGERS | MoonBridge.LI_CCAP_RUMBLE
                 | MoonBridge.LI_CCAP_TOUCHPAD | (splitPads ? 0 : MoonBridge.LI_CCAP_DUAL_TOUCHPAD)
                 | MoonBridge.LI_CCAP_BATTERY_STATE | MoonBridge.LI_CCAP_GRIP_SENSE | MoonBridge.LI_CCAP_STICK_TOUCH
-                | MoonBridge.LI_CCAP_STEAM_HAPTIC | MoonBridge.LI_CCAP_SC26_BUTTONS
+                | MoonBridge.LI_CCAP_STEAM_HAPTIC | MoonBridge.LI_CCAP_SC26_BUTTONS | MoonBridge.LI_CCAP_STEAM_ATTRIBUTES
                 | (motionEnabled ? (MoonBridge.LI_CCAP_GYRO | MoonBridge.LI_CCAP_ACCEL) : 0));
         supportedButtonFlags = SUPPORTED_BUTTONS;
     }
@@ -112,7 +124,36 @@ public abstract class SteamControllerInput extends AbstractController {
         leftPadTouched = rightPadTouched = false;
     }
 
+    @Override
+    public SteamControllerAttributes getSteamAttributes() {
+        return steamAttributes;
+    }
+
+    /** Link lost or a new controller behind the same slot: the next link reads again. */
+    protected void clearSteamAttributes() {
+        steamAttributes = null;
+    }
+
+    /**
+     * A transport finished its attribute reads for the current link: keep the result for the
+     * arrival event, log what the host will see, and send it now if the controller was announced
+     * already (the host applies a late packet). Nothing is sent when no query answered.
+     */
+    protected void publishSteamAttributes(SteamControllerAttributes attributes) {
+        if (attributes == null) {
+            return;
+        }
+        LimeLog.info("Steam Controller " + transportName + ": " + attributes.describe());
+        if (attributes.isEmpty()) {
+            return;
+        }
+        LimeLog.warning("Steam Controller " + transportName + ": " + FIRMWARE_UPDATE_WARNING);
+        steamAttributes = attributes;
+        reportSteamAttributes(attributes);
+    }
+
     protected void resetInputState() {
+        steamAttributes = null;
         reportedStateValid = false;
         imuSeen = false;
         if (calibrationKey == null) {

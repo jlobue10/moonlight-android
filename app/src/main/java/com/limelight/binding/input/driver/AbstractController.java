@@ -1,5 +1,6 @@
 package com.limelight.binding.input.driver;
 
+import com.limelight.nvstream.input.SteamControllerAttributes;
 import com.limelight.nvstream.jni.MoonBridge;
 
 public abstract class AbstractController {
@@ -68,6 +69,18 @@ public abstract class AbstractController {
 
     protected void reportBattery(byte batteryState, byte batteryPercentage) {
         listener.reportControllerBattery(deviceId, batteryState, batteryPercentage);
+    }
+
+    protected void reportSteamAttributes(SteamControllerAttributes attributes) {
+        listener.reportControllerSteamAttributes(deviceId, attributes);
+    }
+
+    /**
+     * The real Steam Controller's firmware attributes read on the current link, or null for any
+     * other controller and until the read finishes. Sent to the host right after the arrival event.
+     */
+    public SteamControllerAttributes getSteamAttributes() {
+        return null;
     }
 
     public abstract boolean start();

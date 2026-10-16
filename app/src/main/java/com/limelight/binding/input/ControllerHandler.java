@@ -44,6 +44,7 @@ import com.limelight.binding.input.driver.UsbDriverListener;
 import com.limelight.binding.input.driver.UsbDriverService;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.input.ControllerPacket;
+import com.limelight.nvstream.input.SteamControllerAttributes;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
 import com.limelight.preferences.PreferenceConfiguration;
@@ -3199,6 +3200,26 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     @Override
+    public void reportControllerSteamAttributes(int controllerId, SteamControllerAttributes attributes) {
+        synchronized (controllerMaskLock) {
+            if (stopped || attributes == null) {
+                return;
+            }
+            UsbDeviceContext context = usbDeviceContexts.get(controllerId);
+            if (context == null) {
+                return;
+            }
+            if (!context.assignedControllerNumber) {
+                // The arrival goes first on the same channel; sendControllerArrival() sends the
+                // attributes the driver now holds right after it.
+                assignControllerNumberIfNeeded(context);
+                return;
+            }
+            conn.sendSteamControllerAttributesEvent((byte)context.controllerNumber, attributes);
+        }
+    }
+
+    @Override
     public void deviceRemoved(AbstractController controller) {
         synchronized (controllerMaskLock) {
             if (stopped) {
@@ -3726,6 +3747,14 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
             conn.sendControllerArrivalEvent((byte)controllerNumber, getActiveControllerMask(),
                     type, device.getSupportedButtonFlags(), capabilities);
+
+            // A Steam Controller's firmware attributes follow the arrival on the same channel when
+            // the driver has read them already; otherwise the driver reports them when its read
+            // finishes (reportControllerSteamAttributes) and the host applies them late.
+            SteamControllerAttributes attributes = device.getSteamAttributes();
+            if (attributes != null && (capabilities & MoonBridge.LI_CCAP_STEAM_ATTRIBUTES) != 0) {
+                conn.sendSteamControllerAttributesEvent((byte)controllerNumber, attributes);
+            }
         }
     }
 }
