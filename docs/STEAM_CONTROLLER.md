@@ -342,7 +342,7 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
-### fork.119 (pending): wired IMU, the firmware watchdog, and IMU diagnostics
+### fork.119: wired IMU, the firmware watchdog, and IMU diagnostics
 
 Field finding (Galaxy XR, 2026 Steam Controller, fork.117): the gyro follows the glyph on Steam's
 controller test page over Bluetooth and over the puck, but not with the controller on the headset's
