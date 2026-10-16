@@ -3206,7 +3206,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 return;
             }
             UsbDeviceContext context = usbDeviceContexts.get(controllerId);
-            if (context == null) {
+            // BLE announces outside its lifetime lock. While that callback waits, the link
+            // can retire and this ID can be assigned again. Only the currently cached
+            // reading belongs to this context; the volatile getter takes no driver lock.
+            if (context == null || context.device.getSteamAttributes() != attributes) {
                 return;
             }
             if (!context.assignedControllerNumber) {
