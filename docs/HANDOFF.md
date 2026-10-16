@@ -197,6 +197,15 @@ with addenda at the top: 2026-10-13 first, then 2026-10-08).
 - **Frame pacing (audit P1/Q1).** Artemis's "latency profile" block that forced Balanced was
   removed; the five pacing modes work as upstream's render loop defines them, and the LFR checkbox
   now means "force minimum-latency pacing".
+- **Upstream trackpad sync (ClassicOldSong master 6c572009, July 2024).** Merged 2026-10-16 as a
+  history-only merge: upstream's six commits (drop `eventIsMultiTouch`, the SDK < M
+  `getActionButton` guard, the `TrackpadContext` refactor, scroll factors, two-finger-tap right
+  click, drag release in `setPointerCount`) were already here as rebased copies (3179f750,
+  c8d8fd96, 94561522, 2d1f2c58, b0d35903), and the fork's `TrackpadContext` has since added
+  acceleration, flick momentum, the scroll-to-move transition guard, the 3-finger middle click,
+  axis swap/sensitivity and held-button tracking on top. Every conflict hunk resolved to the
+  fork's code and the merge changes no file; later `git merge upstream/master` runs start from
+  6c572009, so these four files will not conflict again.
 
 ## 4. Still open from the audit
 
