@@ -59,6 +59,15 @@ public abstract class SteamControllerInput extends AbstractController {
     private long stickLogDueMs;
     /** OR of every raw 32-bit button word seen since the last extents line: shows which bits this firmware sends. */
     private int stickLogButtonsSeen;
+    // IMU diagnostics (stream log, every 10 s while motion is enabled): the last raw words, the
+    // mapped vectors, the report format, how many reports arrived and how many repeated the
+    // previous IMU words. A block that stays frozen while the controller moves means the
+    // firmware dropped the IMU mode (fork.119: the cable-connected unit's gyro did not follow
+    // Steam's glyph while the BLE and puck paths did; the three paths can now be compared).
+    private long imuLogDueMs;
+    private int imuLogReports, imuLogRepeated, imuLogPeakGyro;
+    private boolean imuSeen;
+    private short imuLastAx, imuLastAy, imuLastAz, imuLastGx, imuLastGy, imuLastGz;
     // Stick stretch (off by default since fork.23): each axis is divided by the largest
     // deflection seen on it and the result is clamped to the unit circle. Extents start at a
     // floor and only grow, and persist per controller. Added in fork.21 because the BLE stick
@@ -105,6 +114,7 @@ public abstract class SteamControllerInput extends AbstractController {
 
     protected void resetInputState() {
         reportedStateValid = false;
+        imuSeen = false;
         if (calibrationKey == null) {
             leftExtentX = leftExtentY = rightExtentX = rightExtentY = STICK_EXTENT_FLOOR;
         }
@@ -232,6 +242,12 @@ public abstract class SteamControllerInput extends AbstractController {
 
         if (motionEnabled) {
             // Raw IMU: gyro full scale 2000 deg/s, accel 2 g. Axis order follows SDL's Triton driver.
+            // The six words sit at the same place in the wired 0x42 report, the 0x45 frame and the
+            // timestamped 0x47 frame (libvirtualgamepad sc26_usb.h: accel at 34, gyro at 40 of the
+            // report with its id; 0x47 shortens the IMU timestamp before them, not this block).
+            // The real unit's wired capture and the BLE capture agree on the frame (right-handed,
+            // aligned with the accelerometer, 1 g on +Z at rest), and the wired words integrate
+            // to the gravity tilt at this full scale (fork.119).
             final float gyroScale = 2000f / 32768f;
             final float accelScale = 2f * 9.80665f / 32768f;
             short gx = s16(p, offset + 39), gy = s16(p, offset + 41), gz = s16(p, offset + 43);
@@ -243,7 +259,37 @@ public abstract class SteamControllerInput extends AbstractController {
             accelY = az * accelScale;
             accelZ = -ay * accelScale;
             reportMotion();
+            trackImu(p, offset, timestampedPads, ax, ay, az, gx, gy, gz);
         }
+    }
+
+    /** IMU diagnostics: see the field comment on imuLogDueMs. */
+    private void trackImu(byte[] p, int offset, boolean timestampedPads,
+                          short ax, short ay, short az, short gx, short gy, short gz) {
+        imuLogReports++;
+        if (imuSeen && ax == imuLastAx && ay == imuLastAy && az == imuLastAz
+                && gx == imuLastGx && gy == imuLastGy && gz == imuLastGz) {
+            imuLogRepeated++;
+        }
+        imuSeen = true;
+        imuLastAx = ax; imuLastAy = ay; imuLastAz = az;
+        imuLastGx = gx; imuLastGy = gy; imuLastGz = gz;
+        imuLogPeakGyro = Math.max(imuLogPeakGyro, Math.max(Math.abs(gx), Math.max(Math.abs(gy), Math.abs(gz))));
+        long now = SystemClock.uptimeMillis();
+        if (now < imuLogDueMs) {
+            return;
+        }
+        // BLE notifications carry no report id; the USB transport passes the report with it.
+        String format = offset == 0 ? (timestampedPads ? "0x47 notification" : "0x45 notification")
+                : String.format(Locale.ROOT, "report 0x%02x", p[0] & 0xFF);
+        LimeLog.info(String.format(Locale.ROOT,
+                "Steam Controller %s: IMU (raw, %s): accel %d %d %d gyro %d %d %d -> gyro x %.1f y %.1f z %.1f deg/s,"
+                        + " accel x %.2f y %.2f z %.2f m/s2; %d reports in window, %d repeated the previous IMU words,"
+                        + " peak |gyro| %d (%.0f deg/s)",
+                transportName, format, ax, ay, az, gx, gy, gz, gyroX, gyroY, gyroZ, accelX, accelY, accelZ,
+                imuLogReports, imuLogRepeated, imuLogPeakGyro, imuLogPeakGyro * (2000f / 32768f)));
+        imuLogDueMs = now + 10_000;
+        imuLogReports = imuLogRepeated = imuLogPeakGyro = 0;
     }
 
     private boolean updatePad(byte pad, boolean wasTouched, boolean touched, short rawX, short rawY, int rawPressure) {

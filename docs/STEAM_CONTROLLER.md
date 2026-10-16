@@ -342,6 +342,54 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.119 (pending): wired IMU, the firmware watchdog, and IMU diagnostics
+
+Field finding (Galaxy XR, 2026 Steam Controller, fork.117): the gyro follows the glyph on Steam's
+controller test page over Bluetooth and over the puck, but not with the controller on the headset's
+USB cable (PID 0x1302, 0x42 reports, `Steam Controller USB slot 0`). What the captures and the
+host-side driver reference rule out, and what they leave:
+
+- Report layout: the six IMU words sit at the same offsets in the wired 0x42 report, the 0x45 frame
+  and the timestamped 0x47 frame (libvirtualgamepad `sc26_usb.h`: accel at 34, gyro at 40 of the
+  report with its id; 0x47 shortens the IMU timestamp in front of them, not the block). The harness
+  now feeds a 0x42, a 0x47 and a 0x45 with the same words and asserts identical gyro/accel vectors.
+- Axis frame and scale: the real unit's USB capture with Steam (libvirtualgamepad
+  `captures/sc26-steam-interrupt.tsv`, 29 953 reports at 4.00 ms) fitted against the accelerometer
+  derivative (`da/dt = -w x a`) gives an identity, right-handed gyro frame (corr 0.73/0.80 on X/Y;
+  Z barely rotated), 1 g on +Z at rest, and the integrated gyro matches the gravity tilt between
+  quasi-static moments with a median ratio of 1.03 at 2000 deg/s full scale. The direct-BLE capture
+  (`run2_input.tsv`, 7.50 ms notifications, 3 845 frames with a live IMU block) gives the same frame
+  (0.52/0.46/0.42) and the same rest vector. The client's x, z, -y mapping is therefore right for both
+  paths, and the words that reach the host over the cable are the ones a wired unit gives Steam.
+- Link setup: the USB path writes the IMU mode Steam writes (48 = 0x18) with Steam's SET_REPORT
+  framing (wValue 0x0301, wIndex = interface, 64 bytes starting `01 87`). The one write that
+  differs from both Steam's USB session and the BLE link is 71, `STEAM_WATCHDOG_ENABLE`: the USB
+  transport armed it (1) with a 1 s keep-alive, Steam never writes it (the unit's
+  GET_SETTINGS_DEFAULTS answer has it at 0) and the BLE link disables it. A firmware watchdog that
+  waits for Steam's own heartbeat (Steam re-writes lizard-off every 3 s and polls the attributes)
+  and never sees it reverts the unit's settings, which turns the IMU mode off: the IMU words freeze
+  until the next keep-alive re-arms them, which is a gyro that does not follow the glyph. The puck
+  receives the same write, but its receiver keeps its own radio traffic to the controller, so the
+  cable-connected unit is the one path where this would show.
+- Change: the USB transport no longer arms the watchdog (71 = 0 while active and at stop; the stop
+  path still restores lizard mode and turns the IMU off). The other triples are unchanged.
+  **Hardware confirmation on the wired path is required**; the diagnostics below exist for that.
+- Diagnostics: every 10 s while motion is enabled each transport logs
+  `Steam Controller <transport>: IMU (raw, <report 0x42 | 0x45/0x47 notification>): accel ... gyro ...`
+  with the last six raw words, the mapped vectors, how many reports arrived in the window, how many
+  repeated the previous IMU words, and the peak |gyro|. The USB transport logs
+  `link settings (feature report 1, interface N): lizard mode 0, IMU mode 0x18, Steam watchdog 0 ->
+  accepted|write failed` once per connect and whenever the result changes.
+- What to check on the headset with the controller on the cable, Steam's test page open:
+  1. the gyro now follows the glyph as over Bluetooth;
+  2. the stream log shows the `link settings ... accepted` line for `USB slot 0`;
+  3. while moving the controller, the `IMU (raw, report 0x42)` lines show about 2 500 reports per
+     window with a small "repeated" count and a peak |gyro| that tracks the motion. A large repeated
+     count while the controller is moving means the IMU words are freezing (the firmware dropped the
+     IMU mode): the watchdog was not the cause, and the raw words in those lines are the next lead;
+  4. the same lines over the puck (`report 0x45` or `0x47`) and over Bluetooth, for the report rate
+     and the words at rest (about `0 0 16384` on the accelerometer), to compare the three paths.
+
 ### fork.118: settings survive haptic bursts on the BLE write queue
 
 - SteamControllerBle keeps a separate 16-deep budget for host settings commands inside the 32-write queue: ordinary haptics can no longer evict a 0x87 chunk, the 0x8E reset, or the link-setup restore that follows it; motor stops stay protected too; only a settings flood evicts older settings. jlobue10/moonlight-android #147 (ChatGPT audit 58).
