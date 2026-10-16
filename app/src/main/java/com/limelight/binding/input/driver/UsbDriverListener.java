@@ -1,5 +1,7 @@
 package com.limelight.binding.input.driver;
 
+import com.limelight.nvstream.input.SteamControllerAttributes;
+
 public interface UsbDriverListener {
     void reportControllerState(int controllerId, int buttonFlags,
                                float leftStickX, float leftStickY,
@@ -11,6 +13,11 @@ public interface UsbDriverListener {
                                        float x, float y, float pressure) {}
     /** Battery state (MoonBridge.LI_BATTERY_STATE_*) and percentage 0..100. */
     default void reportControllerBattery(int controllerId, byte batteryState, byte batteryPercentage) {}
+    /**
+     * The real Steam Controller's firmware attributes, once a transport has read them. The driver
+     * keeps them (AbstractController.getSteamAttributes()) for an arrival announced later.
+     */
+    default void reportControllerSteamAttributes(int controllerId, SteamControllerAttributes attributes) {}
 
     void deviceRemoved(AbstractController controller);
     void deviceAdded(AbstractController controller);

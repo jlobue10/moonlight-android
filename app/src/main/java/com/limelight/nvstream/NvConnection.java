@@ -42,6 +42,7 @@ import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
 import com.limelight.nvstream.http.PairingManager;
 import com.limelight.nvstream.input.MouseButtonPacket;
+import com.limelight.nvstream.input.SteamControllerAttributes;
 import com.limelight.nvstream.jni.MoonBridge;
 
 public class NvConnection {
@@ -798,6 +799,13 @@ public class NvConnection {
 
     public void sendControllerBatteryEvent(byte controllerNumber, byte batteryState, byte batteryPercentage) {
         MoonBridge.sendControllerBatteryEvent(controllerNumber, batteryState, batteryPercentage);
+    }
+
+    /** The real Steam Controller's firmware attributes, after its arrival event (Vibepollo extension). */
+    public int sendSteamControllerAttributesEvent(byte controllerNumber, SteamControllerAttributes a) {
+        return MoonBridge.sendSteamControllerAttributesEvent(controllerNumber, a.transport, (byte) a.validMask,
+                a.firmwareBuildTime, a.bootloaderBuildTime, a.boardRevision, a.capabilities,
+                a.radioFirmwareBuildTime, a.dongleFirmwareBuildTime, a.buildId, a.unitSerial, a.boardSerial);
     }
 
     public void sendUtf8Text(final String text) {

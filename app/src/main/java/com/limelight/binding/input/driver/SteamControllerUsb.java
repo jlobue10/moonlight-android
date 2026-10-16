@@ -12,6 +12,8 @@ import android.os.Process;
 import android.os.SystemClock;
 
 import com.limelight.LimeLog;
+import com.limelight.nvstream.input.SteamControllerAttributes;
+import com.limelight.nvstream.jni.MoonBridge;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -40,6 +42,11 @@ public final class SteamControllerUsb {
     // Firmware settings written through feature report 1 (ids as in SteamControllerBle).
     private static final byte SETTING_LIZARD_MODE = 9, SETTING_IMU_MODE = 48, SETTING_STEAM_WATCHDOG_ENABLE = 71;
     private static final byte IMU_MODE_RAW = 0x18;   // RAW_ACCEL | RAW_GYRO
+    // Feature-report queries answered through GET_REPORT: the real unit's attributes for the host.
+    private static final byte ID_GET_ATTRIBUTES_VALUES = (byte) 0x83, ID_GET_STRING_ATTRIBUTE = (byte) 0xAE,
+            ID_GET_DEVICE_INFO = (byte) 0xF2;
+    // Steam's length byte on GET_STRING_ATTRIBUTE (the firmware reads only the tag).
+    private static final int STRING_ATTRIBUTE_REQUEST_LENGTH = 0x15;
 
     private final UsbDevice device;
     private final UsbDeviceConnection connection;
@@ -246,6 +253,56 @@ public final class SteamControllerUsb {
                 + ", Steam watchdog 0 -> " + (ok ? "accepted" : "write failed"));
     }
 
+    /**
+     * Once per connect, after the settings write: the real unit's firmware attributes for the host
+     * (GET_ATTRIBUTES_VALUES, GET_DEVICE_INFO sub 0, the unit and board serials), each asked the way
+     * Steam asks: SET_REPORT of the command on feature report 1 (wValue 0x0301, wIndex = interface,
+     * 64 bytes starting 01 <type> <len>), then GET_REPORT of the same report for the reply
+     * (01 <type> <len> payload). Over the puck the exchange reaches the paired controller. A failed
+     * query leaves its fields out of the valid mask and does not count against the output budget.
+     */
+    private void readAttributes(Slot slot, int generation) {
+        SteamControllerAttributes attributes = new SteamControllerAttributes(device.getProductId() == PUCK
+                ? MoonBridge.LI_SCATTR_TRANSPORT_PUCK : MoonBridge.LI_SCATTR_TRANSPORT_USB);
+        byte[] reply = featureQuery(slot, ID_GET_ATTRIBUTES_VALUES, 0);
+        if (reply != null) attributes.parseAttributeValues(reply, 0, reply.length);
+        reply = featureQuery(slot, ID_GET_DEVICE_INFO, 1, (byte) 0);
+        if (reply != null) attributes.parseDeviceInfo(reply, 0, reply.length);
+        reply = featureQuery(slot, ID_GET_STRING_ATTRIBUTE, STRING_ATTRIBUTE_REQUEST_LENGTH, (byte) 1);
+        if (reply != null) attributes.parseStringAttribute(reply, 0, reply.length);
+        reply = featureQuery(slot, ID_GET_STRING_ATTRIBUTE, STRING_ATTRIBUTE_REQUEST_LENGTH, (byte) 0);
+        if (reply != null) attributes.parseStringAttribute(reply, 0, reply.length);
+        synchronized (slot) {
+            if (stopped || !slot.connected || slot.generation != generation) return;
+            slot.publishSteamAttributes(attributes);
+        }
+    }
+
+    /** The payload of one feature-report query's reply (after 01 <type> <len>), or null when it failed. */
+    private byte[] featureQuery(Slot slot, byte type, int length, byte... payload) {
+        byte[] command = new byte[64];
+        command[0] = 1; command[1] = type; command[2] = (byte) length;
+        System.arraycopy(payload, 0, command, 3, payload.length);
+        byte[] reply = new byte[64];
+        int read;
+        try {
+            if (connection.controlTransfer(0x21, 0x09, 0x0301, slot.iface.getId(), command, command.length, IO_TIMEOUT_MS) != command.length) {
+                LimeLog.warning("Steam Controller USB slot " + slot.iface.getId() + ": attribute query 0x"
+                        + Integer.toHexString(type & 0xFF) + " not accepted");
+                return null;
+            }
+            read = connection.controlTransfer(0xA1, 0x01, 0x0301, slot.iface.getId(), reply, reply.length, IO_TIMEOUT_MS);
+        } catch (RuntimeException e) {
+            read = -1;
+        }
+        if (read < 3 || reply[0] != 1 || reply[1] != type) {
+            LimeLog.warning("Steam Controller USB slot " + slot.iface.getId() + ": no reply to attribute query 0x"
+                    + Integer.toHexString(type & 0xFF) + (read < 0 ? "" : " (" + read + " bytes)"));
+            return null;
+        }
+        return Arrays.copyOfRange(reply, 3, 3 + Math.min(reply[2] & 0xFF, read - 3));
+    }
+
     private boolean writeOutput(Slot slot, byte[] report) {
         try {
             if (slot.out != null) {
@@ -350,6 +407,7 @@ public final class SteamControllerUsb {
                     if (connected && current == generation && configureState != (ok ? 1 : 2)) logLinkSettings(Slot.this, ok);
                 }
                 if (!ok) writeFailed(current);
+                else readAttributes(Slot.this, current);
             });
         }
 

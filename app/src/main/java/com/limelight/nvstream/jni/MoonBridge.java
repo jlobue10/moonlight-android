@@ -131,6 +131,21 @@ public class MoonBridge {
     public static final short LI_CCAP_STEAM_HAPTIC    = 0x800; // Vibepollo extension: replays Steam Controller haptic reports
     public static final short LI_CCAP_SC26_BUTTONS    = 0x1000; // Physical pad/trigger clicks and explicit touch sensors
     public static final short LI_CCAP_STEAM_SETTINGS  = 0x2000; // Vibepollo extension: applies Steam Controller settings writes
+    public static final short LI_CCAP_STEAM_ATTRIBUTES = 0x4000; // Vibepollo extension: sends the real Steam Controller's firmware attributes
+
+    // Which fields of a Steam Controller attributes event carry a value read from the controller
+    public static final int LI_SCATTR_FIRMWARE_BUILD_TIME   = 0x01;
+    public static final int LI_SCATTR_BOOTLOADER_BUILD_TIME = 0x02;
+    public static final int LI_SCATTR_BOARD_REVISION        = 0x04;
+    public static final int LI_SCATTR_CAPABILITIES          = 0x08;
+    public static final int LI_SCATTR_RADIO_FW_BUILD_TIME   = 0x10;
+    public static final int LI_SCATTR_DONGLE_FW_BUILD_TIME  = 0x20;
+    public static final int LI_SCATTR_BUILD_ID              = 0x40;
+    public static final int LI_SCATTR_SERIALS               = 0x80;
+    // How the client is connected to the real Steam Controller (informational)
+    public static final byte LI_SCATTR_TRANSPORT_USB  = 0;
+    public static final byte LI_SCATTR_TRANSPORT_BLE  = 1;
+    public static final byte LI_SCATTR_TRANSPORT_PUCK = 2;
 
     public static final byte LI_MOTION_TYPE_ACCEL = 0x01;
     public static final byte LI_MOTION_TYPE_GYRO  = 0x02;
@@ -420,6 +435,16 @@ public class MoonBridge {
     public static native int sendControllerMotionEvent(byte controllerNumber, byte motionType, float x, float y, float z);
 
     public static native int sendControllerBatteryEvent(byte controllerNumber, byte batteryState, byte batteryPercentage);
+
+    /**
+     * The real Steam Controller's firmware attributes for a controller announced as LI_CTYPE_STEAM with
+     * LI_CCAP_STEAM_ATTRIBUTES (Vibepollo extension). Strings are cut to 15 printable ASCII characters.
+     */
+    public static native int sendSteamControllerAttributesEvent(byte controllerNumber, byte transport, byte validMask,
+                                                                int firmwareBuildTime, int bootloaderBuildTime,
+                                                                int boardRevision, int capabilities,
+                                                                int radioFirmwareBuildTime, int dongleFirmwareBuildTime,
+                                                                String buildId, String unitSerial, String boardSerial);
 
     public static native void sendKeyboardInput(short keyMap, byte keyDirection, byte modifier, byte flags);
 
