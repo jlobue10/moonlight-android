@@ -404,6 +404,7 @@ public final class SteamControllerUsb {
             if (connected || stopped || SystemClock.uptimeMillis() < retryAtMs) return;
             connected = true;
             generation++;
+            clearSteamAttributes();
             resetInputState();
             lastStateMs = SystemClock.uptimeMillis();
             notifyDeviceAdded();
@@ -442,6 +443,7 @@ public final class SteamControllerUsb {
             outputHandler.removeCallbacks(drain);
             // Release any touches the host still thinks are down (the BLE driver does the same).
             if (connected) releaseTouches();
+            clearSteamAttributes();
             resetInputState();
             if (connected) {
                 connected = false;
