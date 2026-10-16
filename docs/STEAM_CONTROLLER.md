@@ -342,6 +342,11 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.118: settings survive haptic bursts on the BLE write queue
+
+- SteamControllerBle keeps a separate 16-deep budget for host settings commands inside the 32-write queue: ordinary haptics can no longer evict a 0x87 chunk, the 0x8E reset, or the link-setup restore that follows it; motor stops stay protected too; only a settings flood evicts older settings. jlobue10/moonlight-android #147 (ChatGPT audit 58).
+- common-c pyrowave: an ordinary haptic event arriving at total callback-queue capacity is refused instead of displacing a reserved settings chunk (jlobue10/moonlight-common-c #58). versionCode 175.
+
 ### fork.117: upstream syncs (common-c RTSP parser rework, trackpad history)
 
 - common-c pyrowave now carries upstream moonlight-stream `aeba988e0` (line-based RTSP parser rework: bounded end-of-message check, strtol-validated status/CSeq, case-insensitive headers, whitespace trimming) with the fork's guards re-applied on top: status codes outside 100..999 are malformed (C16-01) and `insertOption()` keeps its bool duplicate-header contract (C14-01). jlobue10/moonlight-common-c #57.
