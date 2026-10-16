@@ -83,6 +83,53 @@ Java_com_limelight_nvstream_jni_MoonBridge_sendControllerArrivalEvent(JNIEnv *en
     return LiSendControllerArrivalEvent(controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities);
 }
 
+// Copies a Java string into a fixed NUL-padded attribute field; common-c sanitises it again.
+static void copyAttributeString(JNIEnv *env, jstring source, char *dst, size_t dstSize) {
+    const char *utf;
+
+    memset(dst, 0, dstSize);
+    if (source == NULL) {
+        return;
+    }
+    utf = (*env)->GetStringUTFChars(env, source, NULL);
+    if (utf == NULL) {
+        return;
+    }
+    strncpy(dst, utf, dstSize - 1);
+    (*env)->ReleaseStringUTFChars(env, source, utf);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_limelight_nvstream_jni_MoonBridge_sendSteamControllerAttributesEvent(JNIEnv *env, jclass clazz,
+                                                                              jbyte controllerNumber,
+                                                                              jbyte transport,
+                                                                              jbyte validMask,
+                                                                              jint firmwareBuildTime,
+                                                                              jint bootloaderBuildTime,
+                                                                              jint boardRevision,
+                                                                              jint capabilities,
+                                                                              jint radioFirmwareBuildTime,
+                                                                              jint dongleFirmwareBuildTime,
+                                                                              jstring buildId,
+                                                                              jstring unitSerial,
+                                                                              jstring boardSerial) {
+    LI_STEAM_CONTROLLER_ATTRIBUTES attributes;
+
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.transport = (uint8_t)transport;
+    attributes.validMask = (uint8_t)validMask;
+    attributes.firmwareBuildTime = (uint32_t)firmwareBuildTime;
+    attributes.bootloaderBuildTime = (uint32_t)bootloaderBuildTime;
+    attributes.boardRevision = (uint32_t)boardRevision;
+    attributes.capabilities = (uint32_t)capabilities;
+    attributes.radioFirmwareBuildTime = (uint32_t)radioFirmwareBuildTime;
+    attributes.dongleFirmwareBuildTime = (uint32_t)dongleFirmwareBuildTime;
+    copyAttributeString(env, buildId, attributes.buildId, sizeof(attributes.buildId));
+    copyAttributeString(env, unitSerial, attributes.unitSerial, sizeof(attributes.unitSerial));
+    copyAttributeString(env, boardSerial, attributes.boardSerial, sizeof(attributes.boardSerial));
+    return LiSendSteamControllerAttributesEvent((uint8_t)controllerNumber, &attributes);
+}
+
 JNIEXPORT jint JNICALL
 Java_com_limelight_nvstream_jni_MoonBridge_sendControllerTouchEvent(JNIEnv *env, jclass clazz,
                                                                     jbyte controllerNumber,
