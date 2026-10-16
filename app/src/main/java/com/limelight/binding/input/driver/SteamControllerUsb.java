@@ -215,7 +215,12 @@ public final class SteamControllerUsb {
                 synchronized (slot) {
                     if (slot.connected && slot.generation == generation && slot.configureState != (ok ? 1 : 2)) logLinkSettings(slot, ok);
                 }
-                if (ok) slot.writeSucceeded(); else slot.writeFailed(generation);
+                if (ok) {
+                    slot.writeSucceeded();
+                    // Initial setup can fail without retiring the slot. Read its attributes
+                    // after the first successful retry, once per connected generation.
+                    readAttributes(slot, generation);
+                } else slot.writeFailed(generation);
             }
             if (!stopped) outputHandler.postDelayed(this, KEEPALIVE_MS);
         }
@@ -262,6 +267,10 @@ public final class SteamControllerUsb {
      * query leaves its fields out of the valid mask and does not count against the output budget.
      */
     private void readAttributes(Slot slot, int generation) {
+        synchronized (slot) {
+            if (stopped || !slot.connected || slot.generation != generation || slot.attributesQueried) return;
+            slot.attributesQueried = true;
+        }
         SteamControllerAttributes attributes = new SteamControllerAttributes(device.getProductId() == PUCK
                 ? MoonBridge.LI_SCATTR_TRANSPORT_PUCK : MoonBridge.LI_SCATTR_TRANSPORT_USB);
         byte[] reply = featureQuery(slot, ID_GET_ATTRIBUTES_VALUES, 0);
@@ -349,6 +358,7 @@ public final class SteamControllerUsb {
         long lastStateMs, retryAtMs;
         final ArrayDeque<byte[]> outputs = new ArrayDeque<>();
         boolean drainScheduled;
+        boolean attributesQueried;   // one query sequence after successful setup for this generation
         byte configureState;   // settings write for this generation: 0 not logged yet, 1 accepted, 2 failed
         byte[] repeatingRumble;
         long rumbleDeadline;
@@ -423,6 +433,7 @@ public final class SteamControllerUsb {
             outputs.clear();
             drainScheduled = false;
             configureState = 0;
+            attributesQueried = false;
             repeatingRumble = null;
             outputFailures = 0;
             strikedReport = null;

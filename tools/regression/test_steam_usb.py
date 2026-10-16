@@ -74,7 +74,7 @@ public class UsbRegression {
   public void reportControllerSteamAttributes(int i,SteamControllerAttributes a){attrs.add(a);}
   public void deviceAdded(AbstractController c){added.add(c.getControllerId());}public void deviceRemoved(AbstractController c){removed.add(c.getControllerId());}
  }
- static SteamControllerUsb make(UsbDevice d,UsbDeviceConnection c,Events e){return new SteamControllerUsb(d,c,100,e,new Context(),true,false,SteamControllerInput.GRIPS_PADDLES,500,false);}
+ static SteamControllerUsb make(UsbDevice d,UsbDeviceConnection c,Events e){return new SteamControllerUsb(d,c,100,new UsbServiceRelay(e),new Context(),true,false,SteamControllerInput.GRIPS_PADDLES,500,false);}
  static byte[] state(int id){byte[] r=new byte[id==0x42?54:46];r[0]=(byte)id;r[1]=3;int buttons=1|(1<<6)|(1<<7)|(1<<14)|(1<<20)|(1<<21)|(1<<25)|(1<<28)|(1<<29);for(int i=0;i<4;i++)r[i+2]=(byte)(buttons>>(8*i));
   put16(r,6,32767);put16(r,8,16384);put16(r,10,16384);put16(r,12,-16384);put16(r,14,-32767);put16(r,16,32767);
   int p=id==0x47?20:18;if(id==0x47)put16(r,18,0xabcd);put16(r,p,-16384);put16(r,p+2,16384);put16(r,p+4,16384);put16(r,p+6,16384);put16(r,p+8,-16384);put16(r,p+10,8192);
@@ -99,7 +99,7 @@ public class UsbRegression {
   check(io.gets.size()==4&&io.gets.stream().allMatch(t->t.index==5&&t.value==0x301),"each query is followed by one GET_REPORT of feature report 1 on the same interface");
   check(e.attrs.size()==1&&e.attrs.get(0).transport==MoonBridge.LI_SCATTR_TRANSPORT_PUCK&&e.attrs.get(0).validMask==(MoonBridge.LI_SCATTR_FIRMWARE_BUILD_TIME|MoonBridge.LI_SCATTR_BOOTLOADER_BUILD_TIME|MoonBridge.LI_SCATTR_BOARD_REVISION|MoonBridge.LI_SCATTR_CAPABILITIES|MoonBridge.LI_SCATTR_BUILD_ID|MoonBridge.LI_SCATTR_SERIALS),
    "the puck slot reports one attribute set, transport puck, with the six fields the wired unit answers (no radio or dongle build time)");
-  SteamControllerAttributes real=e.attrs.get(0);
+  SteamControllerAttributes real=e.attrs.isEmpty()?new SteamControllerAttributes(MoonBridge.LI_SCATTR_TRANSPORT_PUCK):e.attrs.get(0);
   check(real.firmwareBuildTime==0x6A4D85E3&&real.bootloaderBuildTime==0x68D2F92E&&real.boardRevision==0x4A&&real.capabilities==0&&real.buildId.equals("26e1f7ef1955")&&real.unitSerial.equals("FXA9962403787")&&real.boardSerial.equals("MXA2G623065D4"),
    "the real unit's 0x83, 0xF2 and 0xAE replies decode to its build times, board revision, build id and both serials");
   check(((AbstractController)s5).getSteamAttributes()==real,"the slot keeps the attributes so an arrival announced later can send them");
@@ -164,6 +164,20 @@ public class UsbRegression {
   check(we.attrs.size()==1&&we.attrs.get(0).transport==MoonBridge.LI_SCATTR_TRANSPORT_USB&&we.attrs.get(0).validMask==(MoonBridge.LI_SCATTR_FIRMWARE_BUILD_TIME|MoonBridge.LI_SCATTR_BOOTLOADER_BUILD_TIME|MoonBridge.LI_SCATTR_BOARD_REVISION|MoonBridge.LI_SCATTR_CAPABILITIES)&&we.attrs.get(0).buildId.isEmpty()&&we.attrs.get(0).unitSerial.isEmpty()&&wi.gets.size()==4,
    "a cable-connected unit reports transport usb; when only 0x83 answers, the mask carries just its four fields and the strings stay empty");
   ((AbstractController)ws).steamHaptic(pulse(1,1));Handler.runReady();check(wi.tx.stream().anyMatch(t->t.index==0&&t.value==0x281&&t.data.length==8),"without interrupt OUT, haptics use HID SET_REPORT(output) on the proper interface");close(wd);
+  // A transient first settings failure must not permanently skip the one-time attributes.
+  UsbDeviceConnection recoverIo=new UsbDeviceConnection();Events recoverEvents=new Events();
+  SteamControllerUsb recover=make(wired,recoverIo,recoverEvents);recover.start();Object recoverSlot=slot(recover,0);
+  realUnit(recoverIo);recoverIo.failControl=true;input(recoverSlot,state(0x42),54);Handler.runReady();
+  check((boolean)get(recoverSlot,"connected")&&recoverEvents.attrs.isEmpty()&&recoverIo.gets.isEmpty(),"a rejected initial setup keeps the USB slot live and defers attributes");
+  recoverIo.failControl=false;SystemClock.now+=1000;Handler.runReady();
+  check(recoverEvents.attrs.size()==1&&recoverIo.gets.size()==4&&((AbstractController)recoverSlot).getSteamAttributes()==recoverEvents.attrs.get(0),"the first successful keep-alive after setup failure reads and forwards attributes");
+  int recoveredReads=recoverIo.gets.size();SystemClock.now+=1000;Handler.runReady();
+  check(recoverIo.gets.size()==recoveredReads,"later successful keep-alives do not repeat the attribute queries");close(recover);
+  // The actual service forwarders must tolerate an unbound listener and deliver to its replacement.
+  UsbServiceRelay relay=new UsbServiceRelay(null);SteamControllerAttributes forwarded=new SteamControllerAttributes(MoonBridge.LI_SCATTR_TRANSPORT_USB);
+  relay.reportControllerSteamAttributes(100,forwarded);relay.listener=recoverEvents;int forwardedBefore=recoverEvents.attrs.size();
+  relay.reportControllerSteamAttributes(100,forwarded);
+  check(recoverEvents.attrs.size()==forwardedBefore+1&&recoverEvents.attrs.get(forwardedBefore)==forwarded,"the USB service delivers late attributes to the current listener and safely ignores an absent listener");
   UsbDevice liveDevice=new UsbDevice();UsbDeviceConnection liveIo=new UsbDeviceConnection();Events liveEvents=new Events();SteamControllerUsb live=make(liveDevice,liveIo,liveEvents);live.start();
   liveIo.receive(2,state(0x42));for(int i=0;i<200&&liveEvents.added.isEmpty();i++)Thread.sleep(5);
   check(liveEvents.added.equals(List.of(100)),"actual read loop discovers a controller from interrupt IN");
@@ -174,6 +188,17 @@ public class UsbRegression {
  }
 }
 '''
+# Exercise the same service listener hop used by wired and puck controllers, including
+# the interface default if a new callback was accidentally omitted from the service.
+service = (JAVA/'com/limelight/binding/input/driver/UsbDriverService.java').read_text()
+forwarders = service[service.index('    @Override\n    public void reportControllerState('):service.index('    public class UsbEventReceiver')]
+STUBS['UsbServiceRelay.java'] = """import java.util.*;import com.limelight.binding.input.driver.*;
+import com.limelight.nvstream.input.SteamControllerAttributes;
+public class UsbServiceRelay implements UsbDriverListener {
+ public volatile UsbDriverListener listener;
+ private final List<AbstractController> controllers=new ArrayList<>();
+ public UsbServiceRelay(UsbDriverListener l){listener=l;}
+""" + forwarders + '}\n'
 with tempfile.TemporaryDirectory() as temp:
     work=Path(temp)
     constants = re.findall(r'public static final (?:byte|short|int) LI_(?:CCAP|CTYPE|TOUCH_EVENT|BATTERY_STATE|MOTION_TYPE|SCATTR)[^;]+;', (JAVA/'com/limelight/nvstream/jni/MoonBridge.java').read_text())

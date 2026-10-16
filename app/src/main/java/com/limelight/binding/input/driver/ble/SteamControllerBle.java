@@ -404,6 +404,13 @@ public class SteamControllerBle extends SteamControllerInput {
             if (stopped || gatt == null || ch == null) {
                 return;
             }
+            // Discovery also supports write-only command/fallback characteristics.
+            // Android rejects their reads locally; an optional query must not stall
+            // the output queue and make its retry watchdog recycle a working link.
+            if ((ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_READ) == 0) {
+                LimeLog.info("Steam Controller BLE: firmware attributes unavailable on a write-only characteristic");
+                return;
+            }
             synchronized (SteamControllerBle.this) {
                 attributeDraft = new SteamControllerAttributes(MoonBridge.LI_SCATTR_TRANSPORT_BLE);
                 attributeReadsLeft = 4;
@@ -1005,6 +1012,11 @@ public class SteamControllerBle extends SteamControllerInput {
                     }
                     noteAttributeReply(query, ch.getValue(), status);
                     done = attributeReadFinished();
+                    // Publish while this link still owns the lifetime lock. Otherwise
+                    // onLinkLost() can clear the cache before this callback restores it.
+                    if (done != null && !stopped) {
+                        publishSteamAttributes(done);
+                    }
                     drained = closing && writeQueue.isEmpty();
                 }
             }
@@ -1013,9 +1025,6 @@ public class SteamControllerBle extends SteamControllerInput {
                     handleBattery(ch.getValue());
                 }
                 return;
-            }
-            if (done != null && !stopped) {
-                publishSteamAttributes(done);
             }
             if (drained) {
                 handler.post(closeLink);
@@ -1571,9 +1580,11 @@ public class SteamControllerBle extends SteamControllerInput {
             if (p != null) {
                 writeQueue.add(p);
             }
-        }
-        if (done != null) {
-            publishSteamAttributes(done);
+            // Queue pressure can finish the last read too; keep that publication
+            // in the same lifetime boundary as a normal read completion.
+            if (done != null) {
+                publishSteamAttributes(done);
+            }
         }
         flushWrites();
     }
