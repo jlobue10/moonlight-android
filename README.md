@@ -11,6 +11,15 @@ Artemis is currently the best fork of Moonlight with loads of optimizations for 
 
 A more seamless experience with virtual display will be Artemis paired with [Apollo](https://github.com/ClassicOldSong/Apollo).
 
+# About this fork
+
+This fork ([jlobue10/moonlight-android](https://github.com/jlobue10/moonlight-android)) is adding two things on top of Artemis. Both are still being tested, so expect rough edges:
+
+- **Steam Controller 2026 support.** The controller pairs directly with the Android device over Bluetooth LE and is streamed to the host as a Steam Controller, with Steam's haptic and settings output forwarded back to the real pads. This needs matching host-side support, which is being worked on for [Vibepollo](https://github.com/jlobue10/Vibepollo) together with the [libvirtualgamepad](https://github.com/jlobue10/libvirtualgamepad) virtual-controller driver. Against a host without that support the controller still works as an ordinary gamepad. Details: [docs/STEAM_CONTROLLER.md](docs/STEAM_CONTROLLER.md).
+- **PyroWave support.** The PyroWave video codec, carried in this fork's [moonlight-common-c](https://github.com/jlobue10/moonlight-common-c) branch and used with a host that offers it.
+
+Releases of this fork are published from this repository as `v20.3.0-fork.N` (same app id, `com.limelight.noir`).
+
 # Features
 
 If you switch back to the main stream version, you'll be missing the following awesome features which are very unlikely to be added there:
