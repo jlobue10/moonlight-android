@@ -342,6 +342,12 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.117: upstream syncs (common-c RTSP parser rework, trackpad history)
+
+- common-c pyrowave now carries upstream moonlight-stream `aeba988e0` (line-based RTSP parser rework: bounded end-of-message check, strtol-validated status/CSeq, case-insensitive headers, whitespace trimming) with the fork's guards re-applied on top: status codes outside 100..999 are malformed (C16-01) and `insertOption()` keeps its bool duplicate-header contract (C14-01). jlobue10/moonlight-common-c #57.
+- moonlight-noir merged ClassicOldSong master `6c572009` (six 2024 trackpad commits). Every one was already in the fork by patch id, so the merge is history-only: the app tree is unchanged. jlobue10/moonlight-android #144.
+- No client source changes; this release exists so the RTSP parser change ships. versionCode 174.
+
 ### fork.116: setup-time touches, write refusals, duplicate setup, and the settings queue
 
 Seven fixes from an audit of fork.115, one of them in moonlight-common-c (pyrowave); none
