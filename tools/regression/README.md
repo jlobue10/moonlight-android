@@ -18,6 +18,8 @@ boundaries. See each script for the exact boundary being replaced.
   controller slot allocation; duplicate arrivals retain the original host slot,
   disconnect/reconnect releases and reuses it, and admitted arrivals finish
   publishing before stop cleans up. `--baseline` reads HEAD.
+- `test_controller_feedback_stop.py`: admitted rumble, Steam haptics/settings, sensor
+  configuration and LED scheduling finish before stop cleans up device resources.
 - `test_controller_motion.py`: actual motion rate handling; SensorManager cap, driver-fed
   250 Hz, burst-tolerant decimation with the production constants.
 - `test_steam_ble.py`: actual BLE driver; queue limits, stale callbacks,

@@ -16,7 +16,8 @@ source = (subprocess.check_output(['git', 'show', 'HEAD:' + PATH], cwd=ROOT, tex
           if '--baseline' in sys.argv else (ROOT / PATH).read_text())
 
 def method(marker):
-    start = source.index(marker)
+    pattern = re.escape(marker).replace('public\\ void', 'public(?: synchronized)?\\ void')
+    start = re.search(pattern, source).start()
     end = source.index('{', start)
     depth = 1
     while depth:
