@@ -345,6 +345,14 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.123: USB attributes survive a session replay (ChatGPT audit 61)
+
+- Starting a new stream while a cable or puck controller is already connected replays the
+  controller to the new session; that replay reset wiped the cached firmware attributes while the
+  one-query-per-link flag stayed set, so every session after the first sent no attributes and
+  Steam's update notice came back. The cache is now cleared only on USB connect and disconnect;
+  the BLE driver already clears its own on link loss.
+
 ### fork.122: retired-link attribute callbacks (ChatGPT audit 60)
 
 - ControllerHandler now drops an attribute callback whose object is no longer the driver's
