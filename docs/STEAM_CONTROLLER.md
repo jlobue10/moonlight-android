@@ -345,6 +345,14 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### fork.124: feedback drained before stream shutdown (ChatGPT audit 62)
+
+- The six host feedback handlers (rumble, trigger rumble, Steam haptic, Steam settings, motion
+  rate, LED) are serialized on the controller handler, and stop() takes that monitor once after
+  setting the stopped flag and releasing the controller lock. A callback that passed its stopped
+  check before stop() can no longer restart a motor or re-register a sensor on a retired context.
+  The BLE driver's feedback entry points post to their own thread, so no new lock order arises.
+
 ### fork.123: USB attributes survive a session replay (ChatGPT audit 61)
 
 - Starting a new stream while a cable or puck controller is already connected replays the
