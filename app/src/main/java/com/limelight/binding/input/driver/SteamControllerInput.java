@@ -172,8 +172,8 @@ public abstract class SteamControllerInput extends AbstractController {
         reportSteamAttributes(attributes);
     }
 
+    /** Replay input for a new listener without discarding the current physical link's identity. */
     protected void resetInputState() {
-        steamAttributes = null;
         reportedStateValid = false;
         imuSeen = false;
         if (calibrationKey == null) {
