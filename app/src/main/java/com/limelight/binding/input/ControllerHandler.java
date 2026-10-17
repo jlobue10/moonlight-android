@@ -318,6 +318,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             stopped = true;
         }
 
+        // Feedback methods use this monitor while configuring devices. Drain any
+        // callback that passed its stopped check before stopping motors and sensors
+        // and cancelling queued LED work.
+        // Do not wait while holding controllerMaskLock: a driver input callback may
+        // need that lock before releasing the transport lock held up by feedback.
+        synchronized (this) {
+            // Later callbacks observe stopped and return without touching a device.
+        }
+
         // Unregister our input device callbacks
         inputManager.unregisterInputDeviceListener(this);
 
@@ -2230,7 +2239,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
-    public void handleRumble(short controllerNumber, short lowFreqMotor, short highFreqMotor) {
+    public synchronized void handleRumble(short controllerNumber, short lowFreqMotor, short highFreqMotor) {
         boolean foundMatchingDevice = false;
         boolean vibrated = false;
 
@@ -2305,7 +2314,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
-    public void handleRumbleTriggers(short controllerNumber, short leftTrigger, short rightTrigger) {
+    public synchronized void handleRumbleTriggers(short controllerNumber, short leftTrigger, short rightTrigger) {
         if (stopped) {
             return;
         }
@@ -2336,7 +2345,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
      * A Steam Controller (2026) haptic output report from the host, for the driver-fed controller
      * that advertised LI_CCAP_STEAM_HAPTIC. The in-app Bluetooth and USB drivers replay it through their own transports.
      */
-    public void handleSteamHaptic(short controllerNumber, byte[] report) {
+    public synchronized void handleSteamHaptic(short controllerNumber, byte[] report) {
         if (stopped || report == null) {
             return;
         }
@@ -2352,7 +2361,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
      * A Steam Controller (2026) settings write from the host, for the driver-fed controller that
      * advertised LI_CCAP_STEAM_SETTINGS. The in-app Bluetooth driver applies it to the real unit.
      */
-    public void handleSteamSettings(short controllerNumber, byte command, byte[] triples) {
+    public synchronized void handleSteamSettings(short controllerNumber, byte command, byte[] triples) {
         if (stopped || triples == null) {
             return;
         }
@@ -2447,7 +2456,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         };
     }
 
-    public void handleSetMotionEventState(final short controllerNumber, final byte motionType, short reportRateHz) {
+    public synchronized void handleSetMotionEventState(final short controllerNumber, final byte motionType, short reportRateHz) {
         if (stopped) {
             return;
         }
@@ -2524,7 +2533,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
-    public void handleSetControllerLED(short controllerNumber, byte r, byte g, byte b) {
+    public synchronized void handleSetControllerLED(short controllerNumber, byte r, byte g, byte b) {
         if (stopped) {
             return;
         }
