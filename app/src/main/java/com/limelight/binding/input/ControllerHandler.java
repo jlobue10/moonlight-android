@@ -1726,6 +1726,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         return keyCode;
     }
 
+    private boolean isSwappingSelectAndTouchpad(InputDeviceContext context) {
+        // Only for controllers without a touchpad that we're presenting as a PS controller
+        return prefConfig.swapSelectAndTouchpad && context.needsClickpadEmulation;
+    }
+
     private int handleFlipFaceButtons(int keyCode) {
         switch (keyCode) {
             case KeyEvent.KEYCODE_BUTTON_A:
@@ -2581,6 +2586,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             keyCode = handleFlipFaceButtons(keyCode);
         }
 
+        // Select sends the clickpad, and the Select+LB combo sends Select instead
+        if (isSwappingSelectAndTouchpad(context) && keyCode == KeyEvent.KEYCODE_BUTTON_SELECT) {
+            keyCode = KeyEvent.KEYCODE_BUTTON_1;
+        }
+
         // If the button hasn't been down long enough, sleep for a bit before sending the up event
         // This allows "instant" button presses (like OUYA's virtual menu button) to work. This
         // path should not be triggered during normal usage.
@@ -2790,14 +2800,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             }
         }
 
-        // Check if we're emulating the touchpad button
+        // Check if we're emulating the touchpad button (or select, if they're swapped)
         if ((context.emulatingButtonFlags & ControllerHandler.EMULATING_TOUCHPAD) != 0)
         {
-            // If either select or LB is up, touchpad comes up too
-            if ((context.inputMap & ControllerPacket.BACK_FLAG) == 0 ||
+            boolean swapped = isSwappingSelectAndTouchpad(context);
+            int comboButton = swapped ? ControllerPacket.TOUCHPAD_FLAG : ControllerPacket.BACK_FLAG;
+            int emulatedButton = swapped ? ControllerPacket.BACK_FLAG : ControllerPacket.TOUCHPAD_FLAG;
+
+            // If either button in the combo is up, the emulated button comes up too
+            if ((context.inputMap & comboButton) == 0 ||
                     (context.inputMap & ControllerPacket.LB_FLAG) == 0)
             {
-                context.inputMap &= ~ControllerPacket.TOUCHPAD_FLAG;
+                context.inputMap &= ~emulatedButton;
 
                 context.emulatingButtonFlags &= ~ControllerHandler.EMULATING_TOUCHPAD;
             }
@@ -2826,6 +2840,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
         if (prefConfig.flipFaceButtons) {
             keyCode = handleFlipFaceButtons(keyCode);
+        }
+
+        // Select sends the clickpad, and the Select+LB combo sends Select instead
+        if (isSwappingSelectAndTouchpad(context) && keyCode == KeyEvent.KEYCODE_BUTTON_SELECT) {
+            keyCode = KeyEvent.KEYCODE_BUTTON_1;
         }
 
         switch (keyCode) {
@@ -2985,8 +3004,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return false;
         }
 
-        // Start+Back+LB+RB is the quit combo
-        if (context.inputMap == (ControllerPacket.BACK_FLAG | ControllerPacket.PLAY_FLAG |
+        // Start+Back+LB+RB is the quit combo. Back sends the clickpad if they're swapped.
+        int quitComboBack = isSwappingSelectAndTouchpad(context) ?
+                ControllerPacket.TOUCHPAD_FLAG : ControllerPacket.BACK_FLAG;
+        if (context.inputMap == (quitComboBack | ControllerPacket.PLAY_FLAG |
                                  ControllerPacket.LB_FLAG | ControllerPacket.RB_FLAG)) {
             // Wait for the combo to lift and then finish the activity
             context.pendingExit = true;
@@ -3005,13 +3026,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             }
         }
         else if (context.needsClickpadEmulation) {
-            // Select+LB acts like the clickpad when we're faking a PS4 controller for motion support
-            if (context.inputMap == (ControllerPacket.BACK_FLAG | ControllerPacket.LB_FLAG) ||
-                    (context.inputMap == ControllerPacket.BACK_FLAG &&
+            // Select+LB acts like the clickpad when we're faking a PS4 controller for motion support.
+            // If select and the clickpad are swapped, Select+LB acts like select instead.
+            boolean swapped = isSwappingSelectAndTouchpad(context);
+            int comboButton = swapped ? ControllerPacket.TOUCHPAD_FLAG : ControllerPacket.BACK_FLAG;
+            int emulatedButton = swapped ? ControllerPacket.BACK_FLAG : ControllerPacket.TOUCHPAD_FLAG;
+
+            if (context.inputMap == (comboButton | ControllerPacket.LB_FLAG) ||
+                    (context.inputMap == comboButton &&
                             event.getEventTime() - context.lastLbUpTime <= MAXIMUM_BUMPER_UP_DELAY_MS))
             {
-                context.inputMap &= ~(ControllerPacket.BACK_FLAG | ControllerPacket.LB_FLAG);
-                context.inputMap |= ControllerPacket.TOUCHPAD_FLAG;
+                context.inputMap &= ~(comboButton | ControllerPacket.LB_FLAG);
+                context.inputMap |= emulatedButton;
 
                 context.emulatingButtonFlags |= ControllerHandler.EMULATING_TOUCHPAD;
             }
