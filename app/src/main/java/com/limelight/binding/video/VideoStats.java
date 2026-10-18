@@ -12,6 +12,10 @@ class VideoStats {
     int totalFramesRendered;
     int frameLossEvents;
     int framesLost;
+    // PyroWave frames that arrived with lost packets: decoded with blurred detail, or
+    // dropped because the sequence header or coarsest wavelet level was among the loss.
+    int pyroWaveLossyFrames;
+    int pyroWaveDroppedFrames;
     char minHostProcessingLatency;
     char maxHostProcessingLatency;
     int totalHostProcessingLatency;
@@ -27,6 +31,8 @@ class VideoStats {
         this.totalFramesRendered += other.totalFramesRendered;
         this.frameLossEvents += other.frameLossEvents;
         this.framesLost += other.framesLost;
+        this.pyroWaveLossyFrames += other.pyroWaveLossyFrames;
+        this.pyroWaveDroppedFrames += other.pyroWaveDroppedFrames;
 
         if (this.minHostProcessingLatency == 0) {
             this.minHostProcessingLatency = other.minHostProcessingLatency;
@@ -53,6 +59,8 @@ class VideoStats {
         this.totalFramesRendered = other.totalFramesRendered;
         this.frameLossEvents = other.frameLossEvents;
         this.framesLost = other.framesLost;
+        this.pyroWaveLossyFrames = other.pyroWaveLossyFrames;
+        this.pyroWaveDroppedFrames = other.pyroWaveDroppedFrames;
         this.minHostProcessingLatency = other.minHostProcessingLatency;
         this.maxHostProcessingLatency = other.maxHostProcessingLatency;
         this.totalHostProcessingLatency = other.totalHostProcessingLatency;
@@ -69,6 +77,8 @@ class VideoStats {
         this.totalFramesRendered = 0;
         this.frameLossEvents = 0;
         this.framesLost = 0;
+        this.pyroWaveLossyFrames = 0;
+        this.pyroWaveDroppedFrames = 0;
         this.minHostProcessingLatency = 0;
         this.maxHostProcessingLatency = 0;
         this.totalHostProcessingLatency = 0;

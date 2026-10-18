@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <Limelight.h>
@@ -22,6 +23,7 @@ static jmethodID BridgeDrStartMethod;
 static jmethodID BridgeDrStopMethod;
 static jmethodID BridgeDrCleanupMethod;
 static jmethodID BridgeDrSubmitDecodeUnitMethod;
+static jmethodID BridgeDrSubmitPyroWaveFrameMethod;
 static jmethodID BridgeArInitMethod;
 static jmethodID BridgeArStartMethod;
 static jmethodID BridgeArStopMethod;
@@ -42,6 +44,18 @@ static jmethodID BridgeClSteamHapticMethod;
 static jmethodID BridgeClSteamSettingsMethod;
 static jbyteArray DecodedFrameBuffer;
 static jshortArray DecodedAudioBuffer;
+
+// PyroWave frames keep their RTP packet boundaries: every buffer of the decode
+// unit is one packet payload, including zero-filled stand-ins for lost ones.
+// The per-packet map goes to Java in a reusable int array (length, flags per
+// packet) beside the frame bytes, staged in a C array between frames.
+#define PYROWAVE_PACKET_LOST          0x1
+#define PYROWAVE_PACKET_RECORD_START  0x2
+#define PYROWAVE_PACKET_INTS          2
+static bool PyroWaveStream;
+static jintArray PyroWavePacketBuffer;
+static jint* PyroWavePacketStaging;
+static int PyroWavePacketStagingCount;
 
 void DetachThread(void* context) {
     (*JVM)->DetachCurrentThread(JVM);
@@ -88,6 +102,7 @@ Java_com_limelight_nvstream_jni_MoonBridge_init(JNIEnv *env, jclass clazz) {
     BridgeDrStopMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeDrStop", "()V");
     BridgeDrCleanupMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeDrCleanup", "()V");
     BridgeDrSubmitDecodeUnitMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeDrSubmitDecodeUnit", "([BIIIICJJ)I");
+    BridgeDrSubmitPyroWaveFrameMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeDrSubmitPyroWaveFrame", "([BI[IIIICJJ)I");
     BridgeArInitMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeArInit", "(III)I");
     BridgeArStartMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeArStart", "()V");
     BridgeArStopMethod = (*env)->GetStaticMethodID(env, clazz, "bridgeArStop", "()V");
@@ -120,6 +135,17 @@ static jbyteArray createDecodedFrameBuffer(JNIEnv* env, jsize size) {
     return global;
 }
 
+// Same ownership rules for the PyroWave packet map (PYROWAVE_PACKET_INTS ints per packet)
+static jintArray createPacketBuffer(JNIEnv* env, jsize packets) {
+    jintArray local = (*env)->NewIntArray(env, packets * PYROWAVE_PACKET_INTS);
+    if (local == NULL) {
+        return NULL;
+    }
+    jintArray global = (*env)->NewGlobalRef(env, local);
+    (*env)->DeleteLocalRef(env, local);
+    return global;
+}
+
 int BridgeDrSetup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
     JNIEnv* env = GetThreadEnv();
     int err;
@@ -145,6 +171,14 @@ int BridgeDrSetup(int videoFormat, int width, int height, int redrawRate, void* 
 
     DecodedFrameBuffer = buffer;
 
+    // PyroWave frames are delivered per packet (see BridgeDrSubmitPyroWaveFrame); the
+    // packet map is allocated by the first frame and grown as needed.
+    PyroWaveStream = (videoFormat & VIDEO_FORMAT_MASK_PYROWAVE) != 0;
+    if (PyroWaveStream) {
+        __android_log_print(ANDROID_LOG_INFO, "moonlight-common-c", "Host PyroWave bitstream revision: %s (client %s)",
+                            LiGetHostPyroWaveBitstreamId(), PYROWAVE_BITSTREAM_ID);
+    }
+
     return 0;
 }
 
@@ -166,7 +200,85 @@ void BridgeDrCleanup(void) {
     (*env)->DeleteGlobalRef(env, DecodedFrameBuffer);
     DecodedFrameBuffer = NULL;
 
+    if (PyroWavePacketBuffer != NULL) {
+        (*env)->DeleteGlobalRef(env, PyroWavePacketBuffer);
+        PyroWavePacketBuffer = NULL;
+    }
+    free(PyroWavePacketStaging);
+    PyroWavePacketStaging = NULL;
+    PyroWavePacketStagingCount = 0;
+    PyroWaveStream = false;
+
     (*env)->CallStaticVoidMethod(env, GlobalBridgeClass, BridgeDrCleanupMethod);
+}
+
+// PyroWave: one buffer per RTP packet, concatenated in order so byte offsets stay
+// packet-aligned (lost stand-ins are zero-filled and keep their real length), plus
+// the packet map and the host's critical-packet count. The renderer walks the
+// records itself, so nothing is split by buffer type here.
+static int BridgeDrSubmitPyroWaveFrame(JNIEnv* env, PDECODE_UNIT decodeUnit) {
+    PLENTRY currentEntry;
+    int packets = 0;
+    int criticalPackets = decodeUnit->pyrowaveCriticalPackets;
+
+    for (currentEntry = decodeUnit->bufferList; currentEntry != NULL; currentEntry = currentEntry->next) {
+        packets++;
+    }
+
+    if (PyroWavePacketStagingCount < packets) {
+        jint* grown = realloc(PyroWavePacketStaging, (size_t)packets * PYROWAVE_PACKET_INTS * sizeof(jint));
+        if (grown == NULL) {
+            return DR_NEED_IDR;
+        }
+        PyroWavePacketStaging = grown;
+        PyroWavePacketStagingCount = packets;
+    }
+    if (PyroWavePacketBuffer == NULL || (*env)->GetArrayLength(env, PyroWavePacketBuffer) < packets * PYROWAVE_PACKET_INTS) {
+        jintArray grown = createPacketBuffer(env, packets);
+        if (grown == NULL) {
+            // Out of memory: keep the old map and let the caller request a new frame.
+            (*env)->ExceptionClear(env);
+            return DR_NEED_IDR;
+        }
+        if (PyroWavePacketBuffer != NULL) {
+            (*env)->DeleteGlobalRef(env, PyroWavePacketBuffer);
+        }
+        PyroWavePacketBuffer = grown;
+    }
+
+    int offset = 0;
+    int index = 0;
+    for (currentEntry = decodeUnit->bufferList; currentEntry != NULL; currentEntry = currentEntry->next) {
+        if (currentEntry->length <= 0) {
+            // The depacketizer never queues an empty buffer. Should one appear, it
+            // carries no bytes, so leaving it out of the map keeps the offsets right;
+            // the critical prefix is counted in buffers, so shrink it with the map.
+            if (index < criticalPackets) {
+                criticalPackets--;
+            }
+            continue;
+        }
+        (*env)->SetByteArrayRegion(env, DecodedFrameBuffer, offset, currentEntry->length, (jbyte*)currentEntry->data);
+        offset += currentEntry->length;
+
+        PyroWavePacketStaging[index * PYROWAVE_PACKET_INTS] = currentEntry->length;
+        PyroWavePacketStaging[index * PYROWAVE_PACKET_INTS + 1] =
+            (currentEntry->bufferType == BUFFER_TYPE_LOST ? PYROWAVE_PACKET_LOST : 0) |
+            (currentEntry->bufferType == BUFFER_TYPE_RECORD_START ? PYROWAVE_PACKET_RECORD_START : 0);
+        index++;
+    }
+    (*env)->SetIntArrayRegion(env, PyroWavePacketBuffer, 0, index * PYROWAVE_PACKET_INTS, PyroWavePacketStaging);
+
+    int ret = (*env)->CallStaticIntMethod(env, GlobalBridgeClass, BridgeDrSubmitPyroWaveFrameMethod,
+                                          DecodedFrameBuffer, offset, PyroWavePacketBuffer, index, criticalPackets,
+                                          decodeUnit->frameNumber, (jchar)decodeUnit->frameHostProcessingLatency,
+                                          (jlong)decodeUnit->receiveTimeUs, (jlong)decodeUnit->enqueueTimeUs);
+    if ((*env)->ExceptionCheck(env)) {
+        // We will crash here
+        (*JVM)->DetachCurrentThread(JVM);
+        return DR_OK;
+    }
+    return ret;
 }
 
 int BridgeDrSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
@@ -183,6 +295,10 @@ int BridgeDrSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
         }
         (*env)->DeleteGlobalRef(env, DecodedFrameBuffer);
         DecodedFrameBuffer = grown;
+    }
+
+    if (PyroWaveStream) {
+        return BridgeDrSubmitPyroWaveFrame(env, decodeUnit);
     }
 
     PLENTRY currentEntry;
