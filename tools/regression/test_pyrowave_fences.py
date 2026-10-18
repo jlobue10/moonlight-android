@@ -19,8 +19,9 @@ STUBS = {
 #define JNI_TRUE 1
 #define JNI_FALSE 0
 using jboolean=bool; using jlong=int64_t; using jint=int; using jfloat=float;
-using jobject=void*; using jclass=void*; using jbyteArray=void*; using jbyte=signed char;
-struct JNIEnv {int GetArrayLength(jbyteArray){return 0;} void GetByteArrayRegion(jbyteArray,int,int,jbyte*){}};
+using jobject=void*; using jclass=void*; using jbyteArray=void*; using jintArray=void*; using jbyte=signed char;
+struct JNIEnv {int GetArrayLength(jbyteArray){return 0;} void GetByteArrayRegion(jbyteArray,int,int,jbyte*){}
+ void GetIntArrayRegion(jintArray,int,int,jint*){}};
 ''',
 'android/native_window_jni.h': '''#pragma once
 #include <jni.h>

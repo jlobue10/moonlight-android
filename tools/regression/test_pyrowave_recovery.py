@@ -11,12 +11,12 @@ def block(marker):
  return s[start:end+1]
 fields=s[s.index('    private final ReentrantReadWriteLock'):s.index('    private static boolean loadLibrary')]
 fields=fields.replace('new ReentrantReadWriteLock()', 'new HookLock()')
-methods=[block(x) for x in ['    public boolean setup(', '    private boolean recreate(', '    public void setHdrMode(', '    private void applyPendingHdrMode()', '    public int submitFrame(', '    public boolean isDead()', '    public void cleanup()']]
+methods=[block(x) for x in ['    public boolean setup(', '    private boolean recreate(', '    public void setHdrMode(', '    private void applyPendingHdrMode()', '    public int submitFrame(byte[] data, int length) {', '    public int submitFrame(byte[] data, int length, int[] packets', '    public boolean wasLastFramePresented()', '    public boolean wasLastFrameDroppedForLoss()', '    public boolean isDead()', '    public void cleanup()']]
 pre=r'''
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
 public class PyroRecovery {
- static final boolean LIBRARY_LOADED=true;static final int SUBMIT_ERROR=-1,RECREATE_AFTER_ERRORS=30;
+ static final boolean LIBRARY_LOADED=true;static final int SUBMIT_ERROR=-1,SUBMIT_SKIPPED_LOSS=2,RECREATE_AFTER_ERRORS=30;
  static class Surface {boolean isValid(){return true;}}
  static class MoonBridge{static final int DR_OK=0,DR_NEED_IDR=-1;}
  static class LimeLog{static void warning(String s){}static void severe(String s){}}
@@ -30,6 +30,8 @@ public class PyroRecovery {
  static void nativeDestroy(long h){destroys++;}
  static void nativeSetHdrMode(long h,boolean enabled,float p){hdr=enabled;peak=p;}
  static int nativeSubmitFrame(long h,byte[] data,int n){return submitResult;}
+ static int packetSubmits;
+ static int nativeSubmitPacketFrame(long h,byte[] data,int n,int[] packets,int count,int critical){packetSubmits++;return submitResult;}
  static int failures;
  static void check(boolean ok,String text){System.out.println((ok?"PASS ":"FAIL ")+text);if(!ok)failures++;}
  void setup(){setup(new Surface(),1920,1080,60,false,true);}
@@ -47,6 +49,14 @@ post=r'''
   p=new PyroRecovery();p.setup();p.errors(20);submitResult=0;p.errors(1);submitResult=-1;p.errors(29);
   check(!p.recreated,"successful submission resets the consecutive error streak");p.cleanup();
   p=new PyroRecovery();p.setup();failCreate=true;p.errors(30);check(p.isDead()&&p.handle==0,"failed rebuild is terminal");
+  // A frame skipped for packet loss is not a renderer error: it resets the streak and is reported as dropped
+  failCreate=false;p=new PyroRecovery();p.setup();p.errors(29);submitResult=SUBMIT_SKIPPED_LOSS;int[] map={64,0,64,1};
+  int r=p.submitFrame(new byte[128],128,map,2,1);boolean dropped=p.wasLastFrameDroppedForLoss();
+  submitResult=-1;p.errors(29);
+  check(r==MoonBridge.DR_OK&&dropped&&!p.wasLastFramePresented()&&packetSubmits==1&&!p.recreated&&p.consecutiveSubmitErrors==29,
+        "a frame skipped for packet loss resets the error streak and reads as dropped, not presented");
+  submitResult=0;p.submitFrame(new byte[128],128,map,2,1);
+  check(!p.wasLastFrameDroppedForLoss()&&p.wasLastFramePresented(),"the next presented frame clears the dropped flag");p.cleanup();
   if(failures>0)System.exit(1);
  }
 }

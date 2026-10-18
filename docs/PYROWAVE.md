@@ -1,8 +1,8 @@
 # PyroWave on this fork
 
 PyroWave is Hans-Kristian Arntzen's intra-only GPU wavelet codec. Every frame is decodable on
-its own, encode and decode run as Vulkan compute, and a lost packet costs at most one frame. The
-price is bandwidth: a clean picture needs hundreds of Mbps, so it is for wired LANs or a Wi-Fi 7
+its own, encode and decode run as Vulkan compute, and a lost packet costs detail in one frame,
+not the frame (see "Packet loss"). The price is bandwidth: a clean picture needs hundreds of Mbps, so it is for wired LANs or a Wi-Fi 7
 link in the same room. The host side is Vibepollo 2.0.0 and newer (never auto-selected there).
 
 ## What the branch adds
@@ -14,6 +14,18 @@ link in the same room. The host side is Vibepollo 2.0.0 and newer (never auto-se
   involved. The 10-bit profiles are part of `VIDEO_FORMAT_MASK_10BIT`, so the stock SDP code emits
   `dynamicRangeMode=1` for them; the host then streams HDR10 (BT.2020 PQ) when its display is HDR
   and 10-bit SDR otherwise, and says which through the usual HDR mode control message.
+  Since common-c `8880a83` the branch also merges Nonary's `mac-pyrowave` data plane: a PyroWave
+  frame with loss that parity could not repair is delivered anyway, one buffer per RTP packet
+  with zero-filled `BUFFER_TYPE_LOST` stand-ins for the missing ones, packets that start a record
+  are tagged `BUFFER_TYPE_RECORD_START`, `DECODE_UNIT.pyrowaveCriticalPackets` carries the host's
+  count of leading packets holding the sequence header and coarsest wavelet level, and the RTP
+  queue releases such a frame after a short silence (1-3 ms, shorter once the client's on-time
+  deadline has passed) instead of waiting for the next frame. The strict bitstream negotiation
+  gate (`pyroWaveFallbackBitrate`) is kept. The new `STREAM_CONFIGURATION` fields
+  `pyrowaveCompression`, `pyrowaveLinkMbps` and `pyrowavePaceMbps` stay at zero: Vibepollo
+  retired the compressed detail groups and rejects a client that asks for them, and the link and
+  pace hints are a later step. `LiSetVideoReassemblyDeadlineCallback` and the PCM haptics callback
+  are left unset.
 - **Codec library:** `app/src/main/jni/pyrowave-renderer/pyrowave` is the host's exact vendored
   tree (pyrowave 186f0393 + Vibepollo's three non-bitstream patches, see `VENDOR.txt`), built by
   the `buildPyroWave` Gradle task with the NDK's CMake toolchain into `libpyrowave-shared.so`
@@ -31,7 +43,9 @@ link in the same room. The host side is Vibepollo 2.0.0 and newer (never auto-se
   per frame and accepts all three; fork.15 only knew `PYRW` and dropped every frame ("Dropping
   frame without a valid PYRW header" in logcat, audio but a black picture). The decoder is cleared
   before every frame, as the host's protocol document prescribes, so a run of lost frames cannot
-  trip PyroWave's 3-bit sequence counter. See Vibepollo's `docs/pyrowave-protocol.md`.
+  trip PyroWave's 3-bit sequence counter. Only record framing survives packet loss (see "Packet
+  loss"); the other two containers carry their packet lengths in-band and are dropped whole when
+  a packet is missing. See Vibepollo's `docs/pyrowave-protocol.md`.
 - **Java:** `PyroWaveDecoderRenderer` plus a branch in `MediaCodecDecoderRenderer.setup()`:
   when the negotiated format is PyroWave the MediaCodec path is bypassed and frames are decoded
   and presented synchronously on the submitting thread. Direct submit is disabled while PyroWave
@@ -40,6 +54,40 @@ link in the same room. The host side is Vibepollo 2.0.0 and newer (never auto-se
 - **Settings (Video):** "Use PyroWave on fast local networks", "PyroWave 4:4:4", "PyroWave
   quality" (bpp) and "PyroWave bitrate cap". With "Enable HDR" on, the 10-bit profiles are offered
   too (see "HDR10" below). The main bitrate slider now reaches 800 Mbps.
+
+## Packet loss
+With common-c `8880a83` a PyroWave frame is no longer dropped when parity cannot repair it:
+
+- **Delivery:** `BridgeDrSubmitDecodeUnit` (callbacks.c) does not split a PyroWave decode unit by
+  buffer type. It concatenates every buffer in order, lost stand-ins included so byte offsets stay
+  packet-aligned, and calls `MoonBridge.bridgeDrSubmitPyroWaveFrame(data, length, packets,
+  packetCount, criticalPackets, ...)` with a reusable `int[]` of two values per packet: the payload
+  length and flags (`PYROWAVE_PACKET_LOST` 0x1, `PYROWAVE_PACKET_RECORD_START` 0x2). The old
+  `submitDecodeUnit` branch stays as the legacy single-buffer path.
+- **Walk:** `PyroWaveDecoderRenderer.submitFrame(data, length, packets, packetCount,
+  criticalPackets)` reaches `Renderer::parseRecordFrame` in `pyrowave_renderer.cpp`, a port of
+  moonlight-qt's `PyroWaveFraming::parse`. It walks the record headers, strips padding records,
+  drops any record that lost a byte with its packet and, when a record header itself was lost,
+  resumes at the next received packet the host flagged as starting with a record (hosts without
+  flags resync at the next received packet once the finer levels' ordinary records are reached).
+  Every record that reaches the decoder is validated: a block shorter than its header or running
+  past the frame, a sequence header for another size or chroma mode, an out-of-range block index
+  or, for an intact frame, a block count that differs from the announced one rejects the frame.
+  The surviving records are pushed in one piece, so an intact frame feeds the decoder exactly the
+  bytes the strict parser did.
+- **Decision:** a frame that lost its sequence header or any packet of the critical prefix (or,
+  when the host announced no count, any packet before the first finer-level block) cannot be
+  decoded and returns `SUBMIT_SKIPPED_LOSS`; Java reports it as dropped, not as a renderer error,
+  so it never counts toward the 30-error rebuild. A frame that lost only detail is decoded with
+  `pyrowave_decoder_decode_is_ready_with_sideband(allow_partial = true, 0 pristine bands)` and
+  presented with blur where the loss was; intact frames keep the readiness check they had.
+- **Visibility:** the stats overlay adds "PyroWave packet loss: N frames decoded partially, M
+  dropped" when either is non-zero in the last two windows, the crash diagnostic string carries
+  the session totals ("PyroWave frames with packet loss: ..."), and logcat gets `Frame lost X of
+  Y packets, decoded without them (N lossy frames so far)` for the first lossy frame and then one
+  in 300. `BridgeDrSetup` logs the host's advertised bitstream revision once.
+- **Harnesses:** `tools/regression/test_pyrowave_framing.py` feeds synthetic Vibepollo record
+  frames through the walk; `test_jni_frame_buffer.py` covers the per-packet delivery.
 
 ## HDR10
 PyroWave's bitstream carries no bit depth or colour metadata (the sequence header has the fields,

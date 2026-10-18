@@ -18,6 +18,9 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public class PyroWaveDecoderRenderer {
     private static final int SUBMIT_ERROR = -1;
+    // The frame lost its sequence header or coarsest wavelet level with a packet and was
+    // not decoded. Not a renderer error: the next frame is independent.
+    private static final int SUBMIT_SKIPPED_LOSS = 2;
     // A submit error latches the native renderer (device lost, failed reset). After this
     // many consecutive errors the renderer is rebuilt once on the same surface; the same
     // run of errors again means the device is gone for good.
@@ -33,6 +36,7 @@ public class PyroWaveDecoderRenderer {
     private final ReentrantReadWriteLock handleLock = new ReentrantReadWriteLock();
     private volatile long handle;
     private volatile boolean lastFramePresented;
+    private volatile boolean lastFrameDroppedForLoss;
     // Changes whenever cleanup retires a session, including setup's replacement.
     private long lifecycleGeneration;
 
@@ -185,8 +189,21 @@ public class PyroWaveDecoderRenderer {
         }
     }
 
+    // Legacy delivery without packet boundaries: a frame with missing packets cannot be told
+    // apart from a malformed one, so the renderer only decodes it whole.
     public int submitFrame(byte[] data, int length) {
+        return submitFrame(data, length, null, 0, 0);
+    }
+
+    /**
+     * Decodes and presents one frame. packets maps the frame's RTP packets (two ints each:
+     * payload length, then MoonBridge.PYROWAVE_PACKET_* flags) so records that a lost packet
+     * damaged can be skipped and the rest decoded; criticalPackets is the host's count of
+     * leading packets holding the sequence header and coarsest level, or 0 when unknown.
+     */
+    public int submitFrame(byte[] data, int length, int[] packets, int packetCount, int criticalPackets) {
         lastFramePresented = false;
+        lastFrameDroppedForLoss = false;
         int result;
         long generation;
         handleLock.readLock().lock();
@@ -197,8 +214,11 @@ public class PyroWaveDecoderRenderer {
             applyPendingHdrMode();
             // Skipped frames are fine: every frame is a keyframe, so the next one recovers.
             // PyroWave has no IDR to request, so an error only asks for the next frame.
-            result = nativeSubmitFrame(handle, data, length);
+            result = packets != null ?
+                    nativeSubmitPacketFrame(handle, data, length, packets, packetCount, criticalPackets) :
+                    nativeSubmitFrame(handle, data, length);
             lastFramePresented = result == 0;
+            lastFrameDroppedForLoss = result == SUBMIT_SKIPPED_LOSS;
             generation = lifecycleGeneration;
             if (result != SUBMIT_ERROR) consecutiveSubmitErrors = 0;
         } finally {
@@ -251,6 +271,11 @@ public class PyroWaveDecoderRenderer {
         return lastFramePresented;
     }
 
+    /** Whether the last submitted frame was skipped because packet loss hit its critical prefix. */
+    public boolean wasLastFrameDroppedForLoss() {
+        return lastFrameDroppedForLoss;
+    }
+
     public void cleanup() {
         handleLock.writeLock().lock();
         try {
@@ -272,6 +297,9 @@ public class PyroWaveDecoderRenderer {
     private static native long nativeCreate(Surface surface, int width, int height, int frameRate, boolean chroma444, boolean tenBit);
     private static native void nativeSetHdrMode(long handle, boolean enabled, float peakNits);
     private static native int nativeSubmitFrame(long handle, byte[] data, int length);
+    // Overloading a native would need JNI's mangled long names, so the packet form has its own name.
+    private static native int nativeSubmitPacketFrame(long handle, byte[] data, int length, int[] packets,
+                                                      int packetCount, int criticalPackets);
     private static native int nativeGetLastGpuDecodeUs(long handle);
     private static native void nativeDestroy(long handle);
 }

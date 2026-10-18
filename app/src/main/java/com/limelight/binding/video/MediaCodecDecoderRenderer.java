@@ -1595,89 +1595,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
     }
 
-    private void recordFrameStats(int frameNumber) {
-        int skipped = 0;
-        if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
-            int cumulative = MoonBridge.getSkippedVideoFrames();
-            // Java subtraction preserves the uint32 delta across counter wrap.
-            skipped = Math.max(0, cumulative - lastSkippedVideoFrames);
-            lastSkippedVideoFrames = cumulative;
-            activeWindowVideoStats.totalFramesSkipped += skipped;
-            activeWindowVideoStats.totalFramesReceived += skipped;
-            activeWindowVideoStats.totalFrames += skipped;
-        }
-        if (lastFrameNumber == 0) {
-            activeWindowVideoStats.measurementStartTimestamp = SystemClock.uptimeMillis();
-        } else if (frameNumber != lastFrameNumber && frameNumber != lastFrameNumber + 1) {
-            // Native newest-frame skips are complete received frames, not network loss.
-            int lost = Math.max(0, frameNumber - lastFrameNumber - 1 - skipped);
-            activeWindowVideoStats.framesLost += lost;
-            activeWindowVideoStats.totalFrames += lost;
-            if (lost != 0) activeWindowVideoStats.frameLossEvents++;
-        }
-    }
-
-    // Codec configuration from the host that cannot be used: report it once through the
-    // crash listener and unwind with the diagnosed RendererException instead of letting a
-    // BufferOverflowException or a parser error abort the process.
-    private RendererException codecConfigFailure(RuntimeException cause) {
-        if (!reportedCrash) {
-            reportedCrash = true;
-            crashListener.notifyCrash(cause);
-        }
-        return new RendererException(this, cause);
-    }
-
-    // Append every buffered VPS/SPS/PPS to the current input buffer, after checking that
-    // they fit (the host chooses their sizes).
-    private void putCodecConfig() {
-        int codecConfigLength = 0;
-        for (byte[] vpsBuffer : vpsBuffers) {
-            codecConfigLength += vpsBuffer.length;
-        }
-        for (byte[] spsBuffer : spsBuffers) {
-            codecConfigLength += spsBuffer.length;
-        }
-        for (byte[] ppsBuffer : ppsBuffers) {
-            codecConfigLength += ppsBuffer.length;
-        }
-        if (codecConfigLength > nextInputBuffer.remaining()) {
-            throw codecConfigFailure(new IllegalArgumentException(
-                    "Codec config length "+codecConfigLength+" too large for input buffer "+nextInputBuffer.limit()));
-        }
-        for (byte[] vpsBuffer : vpsBuffers) {
-            nextInputBuffer.put(vpsBuffer);
-        }
-        for (byte[] spsBuffer : spsBuffers) {
-            nextInputBuffer.put(spsBuffer);
-        }
-        for (byte[] ppsBuffer : ppsBuffers) {
-            nextInputBuffer.put(ppsBuffer);
-        }
-    }
-
-    @SuppressWarnings("deprecation")
-    @Override
-    public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
-                                int frameNumber, int frameType, char frameHostProcessingLatency,
-                                long receiveTimeUs, long enqueueTimeUs) {
-        if (stopping) {
-            // Don't bother if we're stopping
-            return MoonBridge.DR_OK;
-        }
-
-        recordFrameStats(frameNumber);
-
-        // Reset CSD data for each IDR frame
-        if (lastFrameNumber != frameNumber && frameType == MoonBridge.FRAME_TYPE_IDR) {
-            vpsBuffers.clear();
-            spsBuffers.clear();
-            ppsBuffers.clear();
-        }
-
-        lastFrameNumber = frameNumber;
-
-        // Flip stats windows roughly every second
+    // Flip stats windows roughly every second
+    private void flipStatsWindowIfDue() {
         if (SystemClock.uptimeMillis() >= activeWindowVideoStats.measurementStartTimestamp + 1000) {
             if (prefs.enablePerfOverlay || prefs.enablePerfLogging) {
                 VideoStats lastTwo = new VideoStats();
@@ -1765,6 +1684,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                     sb.append(context.getString(R.string.perf_overlay_renderingfps, fps.renderedFps)).append('\n');
                     sb.append(context.getString(R.string.perf_overlay_netdrops,
                             (float)lastTwo.framesLost / lastTwo.totalFrames * 100)).append('\n');
+                    if (lastTwo.pyroWaveLossyFrames + lastTwo.pyroWaveDroppedFrames > 0) {
+                        sb.append(context.getString(R.string.perf_overlay_pyrowave_loss,
+                                lastTwo.pyroWaveLossyFrames, lastTwo.pyroWaveDroppedFrames)).append('\n');
+                    }
                     if(TrafficStatsHelper.getPackageRxBytes(Process.myUid()) != TrafficStats.UNSUPPORTED){
                         long netData=TrafficStatsHelper.getPackageRxBytes(Process.myUid())+TrafficStatsHelper.getPackageTxBytes(Process.myUid());
                         if(lastNetDataNum!=0){
@@ -1804,10 +1727,97 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             activeWindowVideoStats.clear();
             activeWindowVideoStats.measurementStartTimestamp = SystemClock.uptimeMillis();
         }
+    }
+
+    private void recordFrameStats(int frameNumber) {
+        int skipped = 0;
+        if ((videoFormat & MoonBridge.VIDEO_FORMAT_MASK_PYROWAVE) != 0) {
+            int cumulative = MoonBridge.getSkippedVideoFrames();
+            // Java subtraction preserves the uint32 delta across counter wrap.
+            skipped = Math.max(0, cumulative - lastSkippedVideoFrames);
+            lastSkippedVideoFrames = cumulative;
+            activeWindowVideoStats.totalFramesSkipped += skipped;
+            activeWindowVideoStats.totalFramesReceived += skipped;
+            activeWindowVideoStats.totalFrames += skipped;
+        }
+        if (lastFrameNumber == 0) {
+            activeWindowVideoStats.measurementStartTimestamp = SystemClock.uptimeMillis();
+        } else if (frameNumber != lastFrameNumber && frameNumber != lastFrameNumber + 1) {
+            // Native newest-frame skips are complete received frames, not network loss.
+            int lost = Math.max(0, frameNumber - lastFrameNumber - 1 - skipped);
+            activeWindowVideoStats.framesLost += lost;
+            activeWindowVideoStats.totalFrames += lost;
+            if (lost != 0) activeWindowVideoStats.frameLossEvents++;
+        }
+    }
+
+    // Codec configuration from the host that cannot be used: report it once through the
+    // crash listener and unwind with the diagnosed RendererException instead of letting a
+    // BufferOverflowException or a parser error abort the process.
+    private RendererException codecConfigFailure(RuntimeException cause) {
+        if (!reportedCrash) {
+            reportedCrash = true;
+            crashListener.notifyCrash(cause);
+        }
+        return new RendererException(this, cause);
+    }
+
+    // Append every buffered VPS/SPS/PPS to the current input buffer, after checking that
+    // they fit (the host chooses their sizes).
+    private void putCodecConfig() {
+        int codecConfigLength = 0;
+        for (byte[] vpsBuffer : vpsBuffers) {
+            codecConfigLength += vpsBuffer.length;
+        }
+        for (byte[] spsBuffer : spsBuffers) {
+            codecConfigLength += spsBuffer.length;
+        }
+        for (byte[] ppsBuffer : ppsBuffers) {
+            codecConfigLength += ppsBuffer.length;
+        }
+        if (codecConfigLength > nextInputBuffer.remaining()) {
+            throw codecConfigFailure(new IllegalArgumentException(
+                    "Codec config length "+codecConfigLength+" too large for input buffer "+nextInputBuffer.limit()));
+        }
+        for (byte[] vpsBuffer : vpsBuffers) {
+            nextInputBuffer.put(vpsBuffer);
+        }
+        for (byte[] spsBuffer : spsBuffers) {
+            nextInputBuffer.put(spsBuffer);
+        }
+        for (byte[] ppsBuffer : ppsBuffers) {
+            nextInputBuffer.put(ppsBuffer);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public int submitDecodeUnit(byte[] decodeUnitData, int decodeUnitLength, int decodeUnitType,
+                                int frameNumber, int frameType, char frameHostProcessingLatency,
+                                long receiveTimeUs, long enqueueTimeUs) {
+        if (stopping) {
+            // Don't bother if we're stopping
+            return MoonBridge.DR_OK;
+        }
+
+        recordFrameStats(frameNumber);
+
+        // Reset CSD data for each IDR frame
+        if (lastFrameNumber != frameNumber && frameType == MoonBridge.FRAME_TYPE_IDR) {
+            vpsBuffers.clear();
+            spsBuffers.clear();
+            ppsBuffers.clear();
+        }
+
+        lastFrameNumber = frameNumber;
+
+        flipStatsWindowIfDue();
 
         if (pyroWaveRenderer != null) {
-            return submitPyroWaveFrame(decodeUnitData, decodeUnitLength, frameHostProcessingLatency,
-                    receiveTimeUs, enqueueTimeUs);
+            // Legacy single-buffer delivery without a packet map (the bridge now uses
+            // submitPyroWaveFrame for PyroWave streams)
+            return decodePyroWaveFrame(decodeUnitData, decodeUnitLength, null, 0, 0,
+                    frameHostProcessingLatency, receiveTimeUs, enqueueTimeUs);
         }
 
         boolean csdSubmittedForThisFrame = false;
@@ -2116,7 +2126,28 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         return queueNextInputBuffer(0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
     }
 
-    private int submitPyroWaveFrame(byte[] decodeUnitData, int decodeUnitLength, char frameHostProcessingLatency,
+    @Override
+    public int submitPyroWaveFrame(byte[] frameData, int frameLength, int[] packets, int packetCount,
+                                   int criticalPackets, int frameNumber, char frameHostProcessingLatency,
+                                   long receiveTimeUs, long enqueueTimeUs) {
+        if (stopping || pyroWaveRenderer == null) {
+            // Nothing can decode it; the stream is PyroWave only when setup() created the renderer.
+            return MoonBridge.DR_OK;
+        }
+
+        // One frame per call: the per-frame accounting of submitDecodeUnit, without its CSD handling
+        recordFrameStats(frameNumber);
+        lastFrameNumber = frameNumber;
+        flipStatsWindowIfDue();
+
+        return decodePyroWaveFrame(frameData, frameLength, packets, packetCount, criticalPackets,
+                frameHostProcessingLatency, receiveTimeUs, enqueueTimeUs);
+    }
+
+    // packets is the bridge's packet map (two ints per packet), or null for the legacy
+    // single-buffer delivery that has no packet boundaries.
+    private int decodePyroWaveFrame(byte[] decodeUnitData, int decodeUnitLength, int[] packets, int packetCount,
+                                    int criticalPackets, char frameHostProcessingLatency,
                                     long receiveTimeUs, long enqueueTimeUs) {
         if (frameHostProcessingLatency != 0) {
             if (activeWindowVideoStats.minHostProcessingLatency != 0) {
@@ -2131,9 +2162,25 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         activeWindowVideoStats.totalFramesReceived++;
         activeWindowVideoStats.totalFrames++;
 
+        int lostPackets = 0;
+        if (packets != null) {
+            for (int i = 0; i < packetCount; i++) {
+                if ((packets[i * 2 + 1] & MoonBridge.PYROWAVE_PACKET_LOST) != 0) {
+                    lostPackets++;
+                }
+            }
+        }
+
         long submitStartUs = SystemClock.elapsedRealtimeNanos() / 1000;
-        int result = pyroWaveRenderer.submitFrame(decodeUnitData, decodeUnitLength);
+        int result = packets != null ?
+                pyroWaveRenderer.submitFrame(decodeUnitData, decodeUnitLength, packets, packetCount, criticalPackets) :
+                pyroWaveRenderer.submitFrame(decodeUnitData, decodeUnitLength);
         long submitEndUs = SystemClock.elapsedRealtimeNanos() / 1000;
+        if (pyroWaveRenderer.wasLastFrameDroppedForLoss()) {
+            activeWindowVideoStats.pyroWaveDroppedFrames++;
+        } else if (lostPackets != 0) {
+            activeWindowVideoStats.pyroWaveLossyFrames++;
+        }
         if (pyroWaveRenderer.isDead()) {
             // The GPU device is gone and a rebuilt renderer failed the same way. Treat it
             // like a MediaCodec that died: audio and input would otherwise keep running
@@ -2350,6 +2397,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             str += "Total frames rendered: "+renderer.globalVideoStats.totalFramesRendered+DELIMITER;
             str += "Frames skipped before decode: "+renderer.globalVideoStats.totalFramesSkipped+DELIMITER;
             str += "Frame losses: "+renderer.globalVideoStats.framesLost+" in "+renderer.globalVideoStats.frameLossEvents+" loss events"+DELIMITER;
+            str += "PyroWave frames with packet loss: "+renderer.globalVideoStats.pyroWaveLossyFrames+" decoded partially, "+renderer.globalVideoStats.pyroWaveDroppedFrames+" dropped"+DELIMITER;
             str += "Average end-to-end client latency: "+renderer.getAverageEndToEndLatency()+"ms"+DELIMITER;
             str += "Average hardware decoder latency: "+renderer.getAverageDecoderLatency()+"ms"+DELIMITER;
             str += "Frame pacing mode: "+renderer.prefs.framePacing+DELIMITER;

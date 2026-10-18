@@ -39,6 +39,14 @@ public class MoonBridge {
     public static final int BUFFER_TYPE_SPS = 1;
     public static final int BUFFER_TYPE_PPS = 2;
     public static final int BUFFER_TYPE_VPS = 3;
+    // PyroWave only (see Limelight.h): a zero-filled stand-in for a packet that never arrived,
+    // and picture data whose first byte starts a record. Never used for other codecs.
+    public static final int BUFFER_TYPE_LOST = 4;
+    public static final int BUFFER_TYPE_RECORD_START = 5;
+
+    // Flags of the PyroWave packet map (bridgeDrSubmitPyroWaveFrame), mirrored from callbacks.c
+    public static final int PYROWAVE_PACKET_LOST = 0x1;
+    public static final int PYROWAVE_PACKET_RECORD_START = 0x2;
 
     public static final int FRAME_TYPE_PFRAME = 0;
     public static final int FRAME_TYPE_IDR = 1;
@@ -257,6 +265,22 @@ public class MoonBridge {
         if (videoRenderer != null) {
             return videoRenderer.submitDecodeUnit(decodeUnitData, decodeUnitLength,
                     decodeUnitType, frameNumber, frameType, frameHostProcessingLatency, receiveTimeUs, enqueueTimeUs);
+        }
+        else {
+            return DR_OK;
+        }
+    }
+
+    // PyroWave frames arrive whole, with every RTP packet payload concatenated in order (lost
+    // ones zero-filled at their real length) and a map of two ints per packet: the payload
+    // length, then PYROWAVE_PACKET_* flags. criticalPackets is the number of leading packets
+    // the host said hold the sequence header and coarsest wavelet level, or 0 if unknown.
+    public static int bridgeDrSubmitPyroWaveFrame(byte[] frameData, int frameLength, int[] packets, int packetCount,
+                                                  int criticalPackets, int frameNumber, char frameHostProcessingLatency,
+                                                  long receiveTimeUs, long enqueueTimeUs) {
+        if (videoRenderer != null) {
+            return videoRenderer.submitPyroWaveFrame(frameData, frameLength, packets, packetCount, criticalPackets,
+                    frameNumber, frameHostProcessingLatency, receiveTimeUs, enqueueTimeUs);
         }
         else {
             return DR_OK;
