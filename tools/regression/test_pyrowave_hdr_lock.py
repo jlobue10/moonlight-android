@@ -26,7 +26,7 @@ def delegate(match):
 
 
 source, replaced = re.subn(r'private static native (\S+) (\w+)\(([^)]*)\);', delegate, source)
-assert replaced >= 6, replaced
+assert replaced >= 7, replaced
 
 support = r'''
 import java.util.concurrent.CountDownLatch;
@@ -50,6 +50,7 @@ class Fake {
         hdrCalls++; lastEnabled = e; lastPeak = p;
     }
     static int nativeSubmitFrame(long h, byte[] d, int l) { inSubmit.countDown(); try { release.await(); } catch (InterruptedException x) {} return 0; }
+    static int nativeSubmitPacketFrame(long h, byte[] d, int l, int[] p, int n, int c) { return nativeSubmitFrame(h, d, l); }
     static int nativeGetLastGpuDecodeUs(long h) { return 0; }
     static void nativeDestroy(long h) {}
 }

@@ -44,6 +44,10 @@ suffix=r'''
   check(combined.totalFramesSkipped==6 && combined.getSubmittedFrames()==2,"window aggregation excludes skipped frames from latency denominators");
   combined.clear();
   check(combined.totalFramesSkipped==0 && combined.getSubmittedFrames()==0,"window clear resets skip accounting");
+  VideoStats loss=new VideoStats();loss.pyroWaveLossyFrames=3;loss.pyroWaveDroppedFrames=1;
+  VideoStats lossCopy=new VideoStats();lossCopy.copy(loss);lossCopy.add(loss);
+  boolean carried=lossCopy.pyroWaveLossyFrames==6 && lossCopy.pyroWaveDroppedFrames==2;lossCopy.clear();
+  check(carried && lossCopy.pyroWaveLossyFrames==0 && lossCopy.pyroWaveDroppedFrames==0,"PyroWave loss counters follow window copy, aggregation and clear");
   if(failures!=0)System.exit(1);
  }
 }

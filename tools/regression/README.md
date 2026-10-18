@@ -11,7 +11,8 @@ boundaries. See each script for the exact boundary being replaced.
   blocked native start without leaking the process-wide semaphore. Cancellation
   while queued for another session's permit must finish without stopping its owner.
 - `test_pyrowave_recovery.py`: renderer rebuilds, cleanup/replacement during recovery,
-  HDR restoration and the terminal error budget, with JNI calls recorded.
+  HDR restoration and the terminal error budget, with JNI calls recorded; a frame
+  skipped for packet loss resets the streak and reads as dropped.
 - `test_depth_failure_cleanup.py`: failed-model cleanup blocked across stop; the GL
   waiter exits while native cleanup remains on its owning executor.
 - `test_controller_arrival_lifecycle.py`: actual USB listener/puck replay and
@@ -27,7 +28,9 @@ boundaries. See each script for the exact boundary being replaced.
   state delivery across announcement/reconnect while deduplicating live packets.
 - `test_jni_frame_buffer.py`: actual JNI setup, growth and cleanup methods with
   allocation failure injection; local/global reference ownership and retry after
-  failed growth. Requires JDK JNI headers (`AUDIT_JNI_INCLUDE` can override them).
+  failed growth. PyroWave frames: whole delivery with the per-packet map (lost
+  stand-ins, record starts, empty buffers, map growth and failure, cleanup).
+  Requires JDK JNI headers (`AUDIT_JNI_INCLUDE` can override them).
 - `test_nsd_discovery_lifecycle.py`: full Android NSD agent with delayed callbacks,
   duplicate and failed registrations, bounded tracking, and idle worker retirement.
 - `test_ble_start_lifecycle.py`: actual activity driver-start method; late
@@ -42,6 +45,13 @@ boundaries. See each script for the exact boundary being replaced.
   Vulkan declarations; fake Vulkan dispatch simulates consecutive acquire
   timeouts. Also checks three container formats, truncations and 20,000
   deterministic malformed frames under ASan/UBSan.
+- `test_pyrowave_framing.py`: entire native renderer with a capturing PyroWave
+  decoder stub; synthetic Vibepollo record frames with per-packet maps through
+  the hole-tolerant walk: an intact frame feeds the decoder the same bytes as the
+  strict whole-frame parser, lost detail packets drop only the damaged records and
+  resync at the next record start (flagged and unflagged hosts), loss in the
+  sequence header or critical prefix skips the frame as loss rather than error,
+  padding is stripped and malformed records are rejected as before. ASan/UBSan.
 - `test_pyrowave_state.py`: actual setup/HDR/cleanup methods; early HDR state.
 - `test_depth_download.py`: actual downloader, fake HTTP streams and real files;
   cancellation overlapping a retry cannot delete the retry's private file.
