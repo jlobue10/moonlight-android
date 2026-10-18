@@ -13,12 +13,12 @@ A more seamless experience with virtual display will be Artemis paired with [Apo
 
 # About this fork
 
-This fork ([jlobue10/moonlight-android](https://github.com/jlobue10/moonlight-android)) is adding two things on top of Artemis. Both are still being tested, so expect rough edges:
+This fork ([jlobue10/moonlight-android](https://github.com/jlobue10/moonlight-android)) adds two things on top of Artemis. Both are fully functional now. **Both need a host that supports them**; against any other host the app behaves like stock Artemis.
 
-- **Steam Controller 2026 support.** The controller pairs directly with the Android device over Bluetooth LE and is streamed to the host as a Steam Controller, with Steam's haptic and settings output forwarded back to the real pads. This needs matching host-side support, which is being worked on for [Vibepollo](https://github.com/jlobue10/Vibepollo) together with the [libvirtualgamepad](https://github.com/jlobue10/libvirtualgamepad) virtual-controller driver. Against a host without that support the controller still works as an ordinary gamepad. Details: [docs/STEAM_CONTROLLER.md](docs/STEAM_CONTROLLER.md).
-- **PyroWave support.** The PyroWave video codec, carried in this fork's [moonlight-common-c](https://github.com/jlobue10/moonlight-common-c) branch and used with a host that offers it.
+- **Steam Controller 2026 support.** The controller connects to the Android device over Bluetooth LE, USB or the USB puck and is streamed to the host as a Steam Controller, with Steam's haptic and settings output forwarded back to the real controller. The host needs [Vibepollo](https://github.com/jlobue10/Vibepollo) with the Steam Controller profile and the [libvirtualgamepad](https://github.com/jlobue10/libvirtualgamepad) virtual-controller driver. Both are available from those forks today, and their upstream submissions ([Nonary/Vibepollo#629](https://github.com/Nonary/Vibepollo/pull/629), [Nonary/libvirtualgamepad#6](https://github.com/Nonary/libvirtualgamepad/pull/6)) are open. Against a host without that support the controller still works as an ordinary gamepad. Details: [docs/STEAM_CONTROLLER.md](docs/STEAM_CONTROLLER.md) and [docs/SC2026_USB_PUCK.md](docs/SC2026_USB_PUCK.md).
+- **PyroWave support.** The PyroWave video codec, decoded on the device with Vulkan and carried in this fork's [moonlight-common-c](https://github.com/jlobue10/moonlight-common-c) branch. The host needs to offer it: Vibepollo 2.0.0 or newer, where PyroWave is opt-in on both sides. Details: [docs/PYROWAVE.md](docs/PYROWAVE.md).
 
-Releases of this fork are published from this repository as `v20.3.0-fork.N` (same app id, `com.limelight.noir`).
+Releases of this fork are published from [this repository's Releases page](https://github.com/jlobue10/moonlight-android/releases) as `v<version>` (v20.4.0 onwards; earlier builds were `v20.3.0-fork.N`), with the same app id, `com.limelight.noir`. A build from this fork cannot be installed over the official Artemis release (different signing key): uninstall that first. Obtainium setup is in [docs/RELEASING.md](docs/RELEASING.md).
 
 # Features
 
