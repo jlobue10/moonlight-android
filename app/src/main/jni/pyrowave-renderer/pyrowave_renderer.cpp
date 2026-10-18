@@ -48,6 +48,13 @@ namespace {
     constexpr int SUBMIT_OK = 0;
     constexpr int SUBMIT_SKIPPED = 1;
     constexpr int SUBMIT_ERROR = -1;
+    // The frame lost its sequence header or part of its coarsest wavelet level with
+    // a packet. Nothing is wrong with the renderer, so Java keeps it out of the
+    // error budget and counts it as a dropped frame.
+    constexpr int SUBMIT_SKIPPED_LOSS = 2;
+
+    // Lossy frames are logged on the first one and then once per this many.
+    constexpr uint32_t LOSSY_FRAME_LOG_INTERVAL = 300;
 
     constexpr uint64_t ACQUIRE_TIMEOUT_NS = 250'000'000;
     constexpr uint64_t FENCE_TIMEOUT_NS = 2'000'000'000;
@@ -62,9 +69,23 @@ namespace {
     //  - Vibepollo length-prefixed framing: little-endian u32 packet count, then
     //    per packet a little-endian u32 length and the packet bytes.
     // See Vibepollo's docs/pyrowave-protocol.md.
+    //
+    // moonlight-common-c delivers record-framed frames with their RTP packet
+    // boundaries, zero-filling packets that never arrived. Such a frame is walked
+    // packet by packet (parseRecordFrame): records that lost a byte are dropped,
+    // the walk resumes at the next received packet the host flagged as starting
+    // with a record, and the rest decodes with blurred detail where the loss was.
     constexpr size_t FRAME_HEADER_SIZE = 8;
     constexpr uint8_t FRAME_VERSION = 1;
     constexpr uint32_t PADDING_MAGIC = 0xFFFFFFFFu;
+    // Vibepollo's retired compressed detail group; never negotiated by this client.
+    constexpr uint32_t COMPRESSED_DETAIL_MAGIC = 0xFFFFFFFEu;
+    constexpr size_t RECORD_HEADER_SIZE = 8;
+
+    // Bitstream constants (pyrowave bitstream/bitstream.md)
+    constexpr int DECOMPOSITION_LEVELS = 5;
+    constexpr int BLOCK_SIZE = 32;
+    constexpr int MINIMUM_IMAGE_SIZE = 128;
 
     const char *const INSTANCE_EXTENSIONS[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
@@ -318,6 +339,161 @@ namespace {
         uint32_t height = 0;
     };
 
+    // The part of a frame one RTP packet carried, whether that packet was lost (its
+    // bytes are then zero-filled and meaningless) and whether the host flagged it as
+    // starting with a record. Packets tile the frame in order.
+    struct PacketSegment {
+        size_t offset;
+        size_t size;
+        bool lost;
+        bool recordStart;
+    };
+
+    // A byte range of the frame holding whole records and no padding
+    struct RecordSpan {
+        size_t offset;
+        size_t size;
+    };
+
+    struct RecordFrame {
+        std::vector<RecordSpan> spans;
+        // Block records passed on (excluding the sequence header and padding)
+        uint32_t blockRecords = 0;
+        // total_blocks from the sequence header
+        uint32_t announcedBlocks = 0;
+        bool sequenceHeaderSeen = false;
+        uint32_t paddingBytes = 0;
+        // Some records were lost with their packets
+        bool partial = false;
+        // Every coarsest-level block arrived (always true when not partial)
+        bool coarseLevelIntact = true;
+
+        // Keeps the span allocation across frames
+        void reset() {
+            spans.clear();
+            blockRecords = announcedBlocks = paddingBytes = 0;
+            sequenceHeaderSeen = partial = false;
+            coarseLevelIntact = true;
+        }
+    };
+
+    int alignedExtent(int extent) {
+        const int aligned = (extent + BLOCK_SIZE - 1) / BLOCK_SIZE * BLOCK_SIZE;
+        return std::max(aligned, MINIMUM_IMAGE_SIZE);
+    }
+
+    // Number of blocks in the coarsest wavelet level (all four bands of every
+    // component), which PyroWave indexes first. A frame missing any of them decodes
+    // with extreme artifacts.
+    uint32_t coarseBlockCount(int width, int height) {
+        const int bandWidth = alignedExtent(width) >> DECOMPOSITION_LEVELS;
+        const int bandHeight = alignedExtent(height) >> DECOMPOSITION_LEVELS;
+        const uint32_t perBand = uint32_t((bandWidth + BLOCK_SIZE - 1) / BLOCK_SIZE) *
+                                 uint32_t((bandHeight + BLOCK_SIZE - 1) / BLOCK_SIZE);
+        // Four bands of three components (only level 0 drops 4:2:0 chroma)
+        return perBand * 4 * 3;
+    }
+
+    // Number of 32x32 blocks a frame of this geometry can index: five wavelet levels
+    // of each component, 4:2:0 omits chroma level 0.
+    uint32_t maxBlockCount(int width, int height, bool chroma444) {
+        const int alignedWidth = alignedExtent(width);
+        const int alignedHeight = alignedExtent(height);
+        uint32_t blocks = 0;
+        for (int level = 0; level < DECOMPOSITION_LEVELS; level++) {
+            const int bandWidth = alignedWidth >> (level + 1);
+            const int bandHeight = alignedHeight >> (level + 1);
+            const uint32_t perBand = uint32_t((bandWidth + BLOCK_SIZE - 1) / BLOCK_SIZE) *
+                                     uint32_t((bandHeight + BLOCK_SIZE - 1) / BLOCK_SIZE);
+            const uint32_t bands = level == DECOMPOSITION_LEVELS - 1 ? 4 : 3;
+            const uint32_t components = (level == 0 && !chroma444) ? 1 : 3;
+            blocks += perBand * bands * components;
+        }
+        return blocks;
+    }
+
+    // The frame's packets, looked up by byte offset
+    class PacketMap {
+    public:
+        explicit PacketMap(const std::vector<PacketSegment> &segments) : segments(segments) {
+            for (const auto &segment : segments) {
+                anyLostPacket |= segment.lost;
+            }
+        }
+
+        bool anyLost() const {
+            return anyLostPacket;
+        }
+
+        // Whether any byte of [start, end) was lost
+        bool lost(size_t start, size_t end) const {
+            // Most frames are intact: skip the packet lookup for every record then.
+            if (!anyLostPacket) {
+                return false;
+            }
+            for (size_t i = indexOf(start); i < segments.size() && segments[i].offset < end; i++) {
+                if (segments[i].lost) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Whether [start, end) came in a single packet
+        bool withinOnePacket(size_t start, size_t end) const {
+            const size_t i = indexOf(start);
+            return i < segments.size() && end <= segments[i].offset + segments[i].size;
+        }
+
+        // Frame bytes a full RTP packet carries: the first packet is full whenever
+        // another follows, and also carried the 8-byte frame header. SIZE_MAX when
+        // unknown (a single packet).
+        size_t payloadSize() const {
+            return segments.size() >= 2 ? segments[0].size + 8 : SIZE_MAX;
+        }
+
+        // Whether the host flags the packets that start with a record (it always
+        // flags the first, which starts with the sequence header)
+        bool recordStartsFlagged() const {
+            return !segments.empty() && segments[0].recordStart;
+        }
+
+        // Start of the first received packet after pos (flagged as starting with a
+        // record when flagRequired), or SIZE_MAX
+        size_t nextReceivedStart(size_t pos, bool flagRequired) const {
+            for (size_t i = indexOf(pos) + 1; i < segments.size(); i++) {
+                if (!segments[i].lost && (segments[i].recordStart || !flagRequired)) {
+                    return segments[i].offset;
+                }
+            }
+            return SIZE_MAX;
+        }
+
+    private:
+        // Index of the segment holding pos (segments tile the frame)
+        size_t indexOf(size_t pos) const {
+            // Record traversal moves forward, often looking up the same packet
+            // several times: advance from the last hit instead of searching.
+            if (pos >= segments[index].offset) {
+                while (index + 1 < segments.size() && segments[index + 1].offset <= pos) {
+                    ++index;
+                }
+                return index;
+            }
+            auto it = std::upper_bound(segments.begin(), segments.end(), pos,
+                                       [](size_t value, const PacketSegment &segment) { return value < segment.offset; });
+            if (it == segments.begin()) {
+                return segments.size();
+            }
+            index = size_t(it - segments.begin()) - 1;
+            return index;
+        }
+
+        const std::vector<PacketSegment> &segments;
+        bool anyLostPacket = false;
+        mutable size_t index = 0;
+    };
+
     class Renderer {
     public:
         ~Renderer() {
@@ -368,6 +544,80 @@ namespace {
                 return SUBMIT_SKIPPED;
             }
             return present() ? (framePresented ? SUBMIT_OK : SUBMIT_SKIPPED) : SUBMIT_ERROR;
+        }
+
+        // Per-packet delivery: packets tile [0, length) in order and criticalPackets is
+        // the host's count of leading packets holding the sequence header and coarsest
+        // wavelet level (0 if unknown). A frame that lost only detail records decodes
+        // without them; one that lost its critical prefix is SUBMIT_SKIPPED_LOSS.
+        int submit(const uint8_t *data, size_t length, const std::vector<PacketSegment> &packets,
+                   size_t criticalPackets) {
+            framePresented = false;
+            const int ready = decodeFrame(data, length, packets, criticalPackets);
+            if (ready != SUBMIT_OK) {
+                return ready;
+            }
+            return present() ? (framePresented ? SUBMIT_OK : SUBMIT_SKIPPED) : SUBMIT_ERROR;
+        }
+
+        // Pushes the frame into the cleared decoder and says whether it can be decoded:
+        // SUBMIT_OK, SUBMIT_SKIPPED (malformed, or nothing decodable arrived) or
+        // SUBMIT_SKIPPED_LOSS. A frame without a packet map takes the legacy path.
+        int decodeFrame(const uint8_t *data, size_t length, const std::vector<PacketSegment> &packets,
+                        size_t criticalPackets) {
+            pyrowave_decoder_clear(decoder);
+            bool anyLost = false;
+            for (const auto &packet : packets) {
+                anyLost |= packet.lost;
+            }
+            // The first packet carries the sequence header; without it nothing decodes
+            // (moonlight-common-c never delivers a frame whose first packet was lost).
+            if (!packets.empty() && packets[0].lost) {
+                noteLossyFrame(packets, "skipped: sequence header lost");
+                return SUBMIT_SKIPPED_LOSS;
+            }
+            if (packets.empty() || length < RECORD_HEADER_SIZE || (readLe32(data) & 0x80000000u) == 0) {
+                // Only record framing survives packet loss: the other containers carry
+                // their packet lengths in-band and cannot be resynchronised.
+                if (anyLost) {
+                    noteLossyFrame(packets, "skipped: not record framing");
+                    warnFraming("Dropping a frame with packet loss: container is not record framing");
+                    return SUBMIT_SKIPPED;
+                }
+                if (!pushFrame(data, length) || !pyrowave_decoder_decode_is_ready(decoder, true)) {
+                    pyrowave_decoder_clear(decoder);
+                    return SUBMIT_SKIPPED;
+                }
+                return SUBMIT_OK;
+            }
+
+            RecordFrame &frame = recordFrame;
+            if (!parseRecordFrame(data, length, packets, criticalPackets, frame)) {
+                pyrowave_decoder_clear(decoder);
+                return SUBMIT_SKIPPED;
+            }
+            if (frame.partial) {
+                noteLossyFrame(packets, frame.coarseLevelIntact ? "decoded without them" : "skipped: coarsest level lost");
+            }
+            // The host protects the coarsest level with parity and nothing else, so every
+            // other loss decodes as blur over the area it covered. PyroWave's own readiness
+            // check cannot tell a lost block from an all-zero one that was never sent.
+            if (!frame.coarseLevelIntact) {
+                return SUBMIT_SKIPPED_LOSS;
+            }
+            if (!pushRecordSpans(data, frame)) {
+                pyrowave_decoder_clear(decoder);
+                return SUBMIT_SKIPPED;
+            }
+            if (!frame.partial) {
+                if (!pyrowave_decoder_decode_is_ready(decoder, true)) {
+                    return SUBMIT_SKIPPED;
+                }
+            } else if (!pyrowave_decoder_decode_is_ready_with_sideband(decoder, true, 0, 0.0f, nullptr, 0)) {
+                warnFraming("Dropping a frame with packet loss: no decodable blocks arrived");
+                return SUBMIT_SKIPPED;
+            }
+            return SUBMIT_OK;
         }
 
     private:
@@ -1265,6 +1515,248 @@ namespace {
                    pyrowave_decoder_push_packet(decoder, packet, packetSize) == PYROWAVE_SUCCESS;
         }
 
+        // Record framing with packet boundaries (ported from moonlight-qt's
+        // PyroWaveFraming): walks the records, drops padding and any record that lost a
+        // byte with its packet, and validates every record that reaches the decoder: a
+        // block record shorter than its header or running past the frame, a sequence
+        // header for another size or chroma mode, an out-of-range block index or a block
+        // count that differs from the announced one rejects the whole frame.
+        //
+        // The host sends the sequence header, the coarsest wavelet level, then the finer
+        // levels: first their oversized records (too large to share a packet with a
+        // padding record), then the rest packed so that none crosses a packet boundary.
+        // When a record header itself was lost, the walk resumes at the next received
+        // packet that the host flagged as starting with a record. Without flags, it
+        // resumes at the next received packet once a finer record of ordinary size shows
+        // the oversized ones are behind; before that, the rest of the frame is lost.
+        //
+        // A partial frame is only worth decoding if every coarsest-level block arrived.
+        // The host announces how many leading packets hold them (criticalPackets); hosts
+        // that do not still send them first, so they are known intact when no loss
+        // precedes the first finer block.
+        bool parseRecordFrame(const uint8_t *data, size_t length, const std::vector<PacketSegment> &packets,
+                              size_t criticalPackets, RecordFrame &frame) {
+            frame.reset();
+            if (length < RECORD_HEADER_SIZE || (length % 4) != 0) {
+                warnFraming("Dropping record frame: not word aligned");
+                return false;
+            }
+            size_t tiled = 0;
+            for (const auto &packet : packets) {
+                if (packet.offset != tiled || packet.size == 0) {
+                    warnFraming("Dropping record frame: packet map does not tile the frame");
+                    return false;
+                }
+                tiled += packet.size;
+            }
+            if (tiled != length) {
+                warnFraming("Dropping record frame: packet map does not tile the frame");
+                return false;
+            }
+
+            const PacketMap segments(packets);
+            // The first packet carries the sequence header; without it nothing decodes
+            if (segments.lost(0, RECORD_HEADER_SIZE)) {
+                warnFraming("Dropping record frame: its first packet was lost");
+                return false;
+            }
+
+            const uint32_t maxBlocks = maxBlockCount(int(width), int(height), chroma444);
+            const uint32_t coarseBlocks = coarseBlockCount(int(width), int(height));
+            // With the count announced, the coarsest level is intact exactly when its
+            // packets are; parity has usually repaired them already.
+            const bool coarseLevelKnown = criticalPackets != 0;
+            if (coarseLevelKnown) {
+                const size_t count = std::min(criticalPackets, packets.size());
+                for (size_t i = 0; i < count; i++) {
+                    if (packets[i].lost) {
+                        frame.coarseLevelIntact = false;
+                    }
+                }
+            }
+
+            const size_t payloadSize = segments.payloadSize();
+            const bool flagged = segments.recordStartsFlagged();
+            size_t pos = 0;
+            size_t spanStart = 0;
+            uint32_t sequence = 0;
+            // Every later packet starts with a record
+            bool aligned = false;
+            // Every coarsest-level block has been passed
+            bool pastCoarseLevel = false;
+
+            auto skipTo = [&](size_t next) {
+                if (pos > spanStart) {
+                    frame.spans.push_back({spanStart, pos - spanStart});
+                }
+                pos = spanStart = next;
+            };
+            auto noteLoss = [&]() {
+                frame.partial = true;
+                if (!pastCoarseLevel && !coarseLevelKnown) {
+                    frame.coarseLevelIntact = false;
+                }
+            };
+
+            while (pos < length) {
+                if (segments.lost(pos, std::min(pos + RECORD_HEADER_SIZE, length))) {
+                    noteLoss();
+                    skipTo(flagged || aligned ? std::min(segments.nextReceivedStart(pos, flagged), length) : length);
+                    continue;
+                }
+                if (length - pos < RECORD_HEADER_SIZE) {
+                    warnFraming("Dropping record frame: trailing bytes shorter than a record header");
+                    return false;
+                }
+
+                const uint32_t word0 = readLe32(data + pos);
+                const uint32_t word1 = readLe32(data + pos + 4);
+
+                if (word0 == PADDING_MAGIC) {
+                    // Check before multiplying: size_t is 32-bit on armeabi-v7a.
+                    if (size_t(word1) > (length - pos - RECORD_HEADER_SIZE) / 4) {
+                        warnFraming("Dropping record frame: padding runs past the frame");
+                        return false;
+                    }
+                    const size_t padBytes = RECORD_HEADER_SIZE + size_t(word1) * 4;
+                    frame.paddingBytes += uint32_t(padBytes);
+                    skipTo(pos + padBytes);
+                    continue;
+                }
+                if (word0 == COMPRESSED_DETAIL_MAGIC) {
+                    warnFraming("Dropping record frame: compressed detail was never negotiated");
+                    return false;
+                }
+
+                if ((word0 & 0x80000000u) != 0) {
+                    // BitstreamSequenceHeader: two words, first and only once
+                    if (frame.sequenceHeaderSeen) {
+                        warnFraming("Dropping record frame: second sequence header");
+                        return false;
+                    }
+                    const int headerWidth = int(word0 & 0x3FFF) + 1;
+                    const int headerHeight = int((word0 >> 14) & 0x3FFF) + 1;
+                    const uint32_t totalBlocks = word1 & 0xFFFFFF;
+                    const uint32_t code = (word1 >> 24) & 0x3;
+                    const bool headerChroma444 = ((word1 >> 26) & 0x1) != 0;
+                    if (code != 0) {
+                        // Code 1 is the "keep previous coefficients" frame, which
+                        // upstream PyroWave cannot decode.
+                        warnFraming("Dropping record frame: unsupported sequence header code");
+                        return false;
+                    }
+                    if (headerWidth != int(width) || headerHeight != int(height)) {
+                        warnFraming("Dropping record frame: sequence header size differs from the stream");
+                        return false;
+                    }
+                    if (headerChroma444 != chroma444) {
+                        warnFraming("Dropping record frame: sequence header chroma subsampling differs from the stream");
+                        return false;
+                    }
+                    if (totalBlocks > maxBlocks) {
+                        warnFraming("Dropping record frame: sequence header announces more blocks than the frame can hold");
+                        return false;
+                    }
+                    frame.sequenceHeaderSeen = true;
+                    frame.announcedBlocks = totalBlocks;
+                    sequence = (word0 >> 28) & 0x7;
+                    pos += RECORD_HEADER_SIZE;
+                    continue;
+                }
+
+                // BitstreamHeader: payload_words (12 bits above the 16-bit ballot) counts
+                // the header too.
+                const uint32_t payloadWords = (word0 >> 16) & 0xFFF;
+                const uint32_t blockIndex = word1 >> 8;
+                if (!frame.sequenceHeaderSeen) {
+                    warnFraming("Dropping record frame: block before the sequence header");
+                    return false;
+                }
+                if (((word0 >> 28) & 0x7) != sequence) {
+                    warnFraming("Dropping record frame: block record from another frame");
+                    return false;
+                }
+                if (payloadWords < 2) {
+                    warnFraming("Dropping record frame: block shorter than its header");
+                    return false;
+                }
+                if (size_t(payloadWords) * 4 > length - pos) {
+                    warnFraming("Dropping record frame: record runs past the frame");
+                    return false;
+                }
+                if (blockIndex >= maxBlocks) {
+                    warnFraming("Dropping record frame: block index out of range");
+                    return false;
+                }
+
+                // The whole coarsest level precedes the first finer block
+                if (blockIndex >= coarseBlocks) {
+                    pastCoarseLevel = true;
+                }
+
+                const size_t end = pos + size_t(payloadWords) * 4;
+                if (segments.lost(pos, end)) {
+                    // Only a record that spans packets can lose its payload but not its header
+                    noteLoss();
+                    aligned = false;
+                    skipTo(end);
+                    continue;
+                }
+
+                // Only the finer levels' ordinary records are packed so that none crosses
+                // a packet boundary; their oversized ones come first.
+                const bool ordinary = end - pos + RECORD_HEADER_SIZE <= payloadSize;
+                aligned = segments.anyLost() && ordinary && blockIndex >= coarseBlocks &&
+                          segments.withinOnePacket(pos, end);
+                frame.blockRecords++;
+                pos = end;
+            }
+            skipTo(pos);
+
+            if (!frame.sequenceHeaderSeen) {
+                warnFraming("Dropping record frame: no sequence header");
+                return false;
+            }
+            // A partial frame is decoded if the decoder finds enough of it intact
+            if (!frame.partial && frame.blockRecords != frame.announcedBlocks) {
+                warnFraming("Dropping record frame: block count differs from the sequence header");
+                return false;
+            }
+            return true;
+        }
+
+        // Hands the surviving records to the decoder in one piece, exactly as
+        // pushRecordFrame does for a whole frame: in place when nothing was removed
+        // between them, otherwise gathered into recordScratch.
+        bool pushRecordSpans(const uint8_t *data, const RecordFrame &frame) {
+            if (frame.spans.empty()) {
+                return false;
+            }
+            if (frame.spans.size() == 1) {
+                return pyrowave_decoder_push_packet(decoder, data + frame.spans[0].offset, frame.spans[0].size) ==
+                       PYROWAVE_SUCCESS;
+            }
+            recordScratch.clear();
+            for (const auto &span : frame.spans) {
+                recordScratch.insert(recordScratch.end(), data + span.offset, data + span.offset + span.size);
+            }
+            return pyrowave_decoder_push_packet(decoder, recordScratch.data(), recordScratch.size()) == PYROWAVE_SUCCESS;
+        }
+
+        // Packet loss is routine on a saturated link; log the first lossy frame and
+        // then one in LOSSY_FRAME_LOG_INTERVAL.
+        void noteLossyFrame(const std::vector<PacketSegment> &packets, const char *outcome) {
+            if (lossyFrames % LOSSY_FRAME_LOG_INTERVAL == 0) {
+                size_t lost = 0;
+                for (const auto &packet : packets) {
+                    lost += packet.lost;
+                }
+                LOGW("Frame lost %zu of %zu packets, %s (%u lossy frames so far)", lost, packets.size(), outcome,
+                     unsigned(lossyFrames + 1));
+            }
+            lossyFrames++;
+        }
+
         // Framing problems repeat every frame; log the first few and then one per second.
         void warnFraming(const char *message) {
             const uint64_t now = nowUs();
@@ -1276,6 +1768,8 @@ namespace {
         }
 
         std::vector<uint8_t> recordScratch;
+        RecordFrame recordFrame;
+        uint32_t lossyFrames = 0;
         uint32_t framingWarnings = 0;
         uint64_t lastFramingWarningUs = 0;
 
@@ -1850,6 +2344,45 @@ Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeSubmitFrame(JNIEn
     frame.resize(size_t(length));
     env->GetByteArrayRegion(data, 0, length, reinterpret_cast<jbyte *>(frame.data()));
     return renderer->submit(frame.data(), frame.size());
+}
+
+// Per-packet delivery: packets holds two ints per packet, the payload length and
+// flags (bit 0 lost, bit 1 starts a record), tiling the frame in order.
+JNIEXPORT jint JNICALL
+Java_com_limelight_binding_video_PyroWaveDecoderRenderer_nativeSubmitPacketFrame(JNIEnv *env, jclass, jlong handle,
+                                                                                 jbyteArray data, jint length,
+                                                                                 jintArray packets, jint packetCount,
+                                                                                 jint criticalPackets) {
+    auto *renderer = reinterpret_cast<Renderer *>(handle);
+    if (renderer == nullptr || data == nullptr || length <= 0 || packets == nullptr || packetCount <= 0 ||
+        criticalPackets < 0) {
+        return SUBMIT_ERROR;
+    }
+    if (length > env->GetArrayLength(data) || jlong(packetCount) * 2 > env->GetArrayLength(packets)) {
+        return SUBMIT_ERROR;
+    }
+    static thread_local std::vector<uint8_t> frame;
+    static thread_local std::vector<jint> map;
+    static thread_local std::vector<PacketSegment> segments;
+    frame.resize(size_t(length));
+    env->GetByteArrayRegion(data, 0, length, reinterpret_cast<jbyte *>(frame.data()));
+    map.resize(size_t(packetCount) * 2);
+    env->GetIntArrayRegion(packets, 0, packetCount * 2, map.data());
+    segments.clear();
+    size_t offset = 0;
+    for (jint i = 0; i < packetCount; ++i) {
+        const jint packetLength = map[size_t(i) * 2];
+        const jint flags = map[size_t(i) * 2 + 1];
+        if (packetLength <= 0 || size_t(packetLength) > frame.size() - offset) {
+            return SUBMIT_ERROR;
+        }
+        segments.push_back({offset, size_t(packetLength), (flags & 0x1) != 0, (flags & 0x2) != 0});
+        offset += size_t(packetLength);
+    }
+    if (offset != frame.size()) {
+        return SUBMIT_ERROR;
+    }
+    return renderer->submit(frame.data(), frame.size(), segments, size_t(criticalPackets));
 }
 
 JNIEXPORT jint JNICALL
