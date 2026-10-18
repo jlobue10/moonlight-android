@@ -10,14 +10,14 @@ x86, x86_64), signs the APKs, and publishes them as a GitHub release when a tag 
 2. Tag the commit with `v<versionName>` (the workflow refuses a tag that does not match
    `versionName`) and push the tag:
 
-       git tag v20.3.0-fork.1
-       git push origin v20.3.0-fork.1
+       git tag v20.4.0
+       git push origin v20.4.0
 
 3. Watch the "Build and release APKs" workflow. When it finishes, the release appears under
    *Releases* with the APKs and a `SHA256SUMS.txt` attached.
 
 `workflow_dispatch` (the *Run workflow* button) builds and signs the same APKs and uploads
-them as workflow artifacts. If its `release_tag` input is set (e.g. `v20.3.0-fork.1`), the run
+them as workflow artifacts. If its `release_tag` input is set (e.g. `v20.4.0`), the run
 also creates that tag at the built commit and publishes the release — the same result as
 pushing the tag, for environments that cannot push tags.
 
