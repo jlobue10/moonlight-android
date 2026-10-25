@@ -47,10 +47,11 @@ int main(void) {
     check(zero, "the burst is zero padded to its full length");
 
     // Odd length: the last byte is MSB aligned in one more word and Pd rounds up
-    uint8_t dts[2011];
+    // 2048 bytes of frame data; the odd-length pack below uses the first 2011 of them
+    uint8_t dts[2048];
     for (int i = 0; i < (int)sizeof(dts); i++) dts[i] = (uint8_t)(i ^ 0x5A);
     memset(out, 0xEE, sizeof(out));
-    n = iec61937_pack(IEC61937_DTS_TYPE_I, dts, sizeof(dts), out, 2048);
+    n = iec61937_pack(IEC61937_DTS_TYPE_I, dts, 2011, out, 2048);
     check(n == 2048, "a DTS frame packs into a 2048-byte burst");
     check(le16(out + 4) == 0x0B, "Pc is DTS type I");
     check(le16(out + 6) == 2012 * 8, "Pd rounds an odd payload up to whole words");
