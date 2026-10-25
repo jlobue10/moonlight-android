@@ -372,6 +372,21 @@ public class PreferenceConfiguration {
     //物理光标捕获
     public boolean enableMouseLocalCursor;
 
+    // Desktop touchpad mode (opt-in): 3/4-finger gestures, pinch zoom, on-demand touchpad capture and the
+    // Ctrl+Shift+M / Ctrl+Shift+I / Ctrl+Alt+` shortcuts, see TrackpadGestureDetector and TouchpadGate
+    public boolean desktopTouchpadMode;
+    // Cursor drawn by the app over the stream, see LocalCursorOverlay
+    public boolean enableLocalCursorOverlay;
+    public float localCursorSpeed;
+
+    // See TouchpadGate; 0 = off
+    public int touchpadTypingPauseMs;
+    public float touchpadEdgeMm;
+    // Two-finger scroll speed, 1.0 = the previous behaviour
+    public float trackpadScrollSpeed;
+    // Whether a one-finger flick keeps the pointer gliding (the previous behaviour)
+    public boolean trackpadPointerMomentum;
+
     public boolean enableMultiTouchGestures;
 
     //禁用内置的特殊指令
@@ -1063,6 +1078,26 @@ private static int getFramePacingValue(Context context) {
         config.enableTouchSensitivity=prefs.getBoolean("checkbox_enable_touch_sensitivity",false);
 
         config.enableMouseLocalCursor=prefs.getBoolean("checkbox_mouse_local_cursor",false);
+
+        config.desktopTouchpadMode = prefs.getBoolean("checkbox_desktop_touchpad_mode", false);
+        config.enableLocalCursorOverlay = prefs.getBoolean("checkbox_local_cursor_overlay", false);
+        // The overlay applies the PC's own acceleration, so 100 % means "same as the PC mouse"
+        config.localCursorSpeed = 1.0f;
+        try {
+            config.localCursorSpeed = Integer.parseInt(prefs.getString("list_local_cursor_speed", "100")) / 100f;
+        } catch (NumberFormatException ignored) {}
+
+        // Everything below defaults to the previous behaviour: no typing pause, no edge margin, 100 % scroll
+        // speed, pointer momentum on. The typing pause and edge margin only act in desktop touchpad mode.
+        config.touchpadTypingPauseMs = 0;
+        config.touchpadEdgeMm = 0;
+        config.trackpadScrollSpeed = 1f;
+        try {
+            config.touchpadTypingPauseMs = Integer.parseInt(prefs.getString("list_touchpad_typing_pause", "0"));
+            config.touchpadEdgeMm = Integer.parseInt(prefs.getString("list_touchpad_edge_margin", "0"));
+            config.trackpadScrollSpeed = Integer.parseInt(prefs.getString("list_trackpad_scroll_speed", "100")) / 100f;
+        } catch (NumberFormatException ignored) {}
+        config.trackpadPointerMomentum = prefs.getBoolean("checkbox_trackpad_pointer_momentum", true);
 
         config.enableMultiTouchGestures = prefs.getBoolean("checkbox_multi_touch_gestures", false);
 

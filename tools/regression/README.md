@@ -6,6 +6,12 @@ start a stream, or load Android native libraries. They compile production
 sources or extract production methods verbatim, with deterministic platform
 boundaries. See each script for the exact boundary being replaced.
 
+- `test_touchpad_gestures.py`: the production `TouchpadGate` and `TrackpadGestureDetector`
+  against scripted touchpad contacts, keys and a recording connection: typing pause and
+  edge rejection, the Ctrl+Shift+M toggle, 3/4-finger swipes and taps as shortcuts, Alt
+  released after an Alt+Tab switch, late and typing-guarded fingers ignored, pinch versus
+  scroll, and reset releasing held modifiers. `test_trackpad_lifecycle.py` also covers the
+  scroll-speed factor, the pointer-momentum setting, the move sink and double-tap jitter.
 - `test_connection_ownership.py`: production connection start/stop; cancelling HTTP
   setup, stale/repeated stops, native-start failure cleanup, and interruption of a
   blocked native start without leaking the process-wide semaphore. Cancellation

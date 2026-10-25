@@ -505,6 +505,27 @@
     <string name="summary_touchscreen_mode">Select between MultiTouch/SingleTouch/Trackpad/Disabled mode.\nPen/Stylus are still usable when Disabled is selected.\nForced to Track Pad(Natural) mode when useing external display.</string>
     <string name="title_checkbox_mouse_local_cursor">Use local mouse cursor</string>
     <string name="summary_checkbox_mouse_local_cursor">Default external physical mouse cursor will be captured, this option can display Android system cursor</string>
+    <string name="title_checkbox_trackpad_pointer_momentum">Touchpad pointer momentum</string>
+    <string name="summary_checkbox_trackpad_pointer_momentum">Keep the pointer gliding after a fast one-finger flick on a captured touchpad. Two-finger scroll momentum is not affected.</string>
+    <string name="title_list_trackpad_scroll_speed">Touchpad scroll speed</string>
+    <!-- A ListPreference summary is run through String.format, so a bare % would crash the settings screen;
+         %s is the selected entry. -->
+    <string name="summary_list_trackpad_scroll_speed">Currently %s. Two-finger scroll speed of a captured touchpad; 100 percent is the default speed.</string>
+    <string name="title_checkbox_desktop_touchpad_mode">Desktop touchpad mode</string>
+    <string name="summary_checkbox_desktop_touchpad_mode">For a captured touchpad with a keyboard. 3- and 4-finger swipes send the matching Windows shortcuts (Task View, show desktop, Alt+Tab, switch virtual desktop), 3- and 4-finger taps send mouse back and forward, and a two-finger pinch sends Ctrl+wheel. Ctrl+Shift+M mutes the touchpad, Ctrl+Shift+I toggles whether keyboard and touchpad go to the PC, Ctrl+Alt+` disconnects. Touchpads that Android presents as a touchscreen (Samsung keyboard covers) are captured when used.</string>
+    <string name="title_list_touchpad_typing_pause">Pause touchpad while typing</string>
+    <string name="summary_list_touchpad_typing_pause">Currently %s. Ignores touchpad touches that start within this time after a key press, so a palm does not move the pointer between keystrokes. A mouse is not affected.</string>
+    <string name="title_list_touchpad_edge_margin">Ignore touchpad edges</string>
+    <string name="summary_list_touchpad_edge_margin">Currently %s. Drops touches that start within this distance of the pad\'s edge, where palms land. A touch that starts inside and moves to the edge is unaffected.</string>
+    <string name="touchpad_option_off">Off</string>
+    <string name="toast_touchpad_off">Touchpad off. Ctrl+Shift+M turns it back on</string>
+    <string name="toast_touchpad_on">Touchpad on</string>
+    <string name="toast_immersive_on">Keyboard and touchpad go to the PC (Ctrl+Shift+I toggles)</string>
+    <string name="toast_immersive_off">Keyboard and touchpad stay on this device (Ctrl+Shift+I toggles)</string>
+    <string name="title_checkbox_local_cursor_overlay">Draw a cursor over the stream</string>
+    <string name="summary_checkbox_local_cursor_overlay">Keeps the touchpad captured (gestures and scrolling keep working) and draws a cursor that follows your finger with no delay. Its position is sent to the PC, so the cursor in the video moves to the same place a moment later.</string>
+    <string name="title_list_local_cursor_speed">Drawn cursor speed</string>
+    <string name="summary_list_local_cursor_speed">Currently %s. Uses the PC\'s own pointer acceleration curve; 100 percent matches the PC mouse.</string>
     <string name="title_checkbox_multi_touch_gestures">Enable multi-touch gestures</string>
     <string name="summary_checkbox_multi_touch_gestures">Enable 3 finger tap for keyboard, 4 finger tap for full keyboard, 5 finger tap for quick menu when using multi-touch mode.</string>
     <string name="title_checkbox_onscreen_style_official">Official Virtual Gamepad Skin</string>
