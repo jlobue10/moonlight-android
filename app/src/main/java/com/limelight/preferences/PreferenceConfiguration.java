@@ -110,6 +110,7 @@ public class PreferenceConfiguration {
     private static final String GAMEPAD_MOTION_SENSORS_PREF_STRING = "checkbox_gamepad_motion_sensors";
     private static final String GAMEPAD_MOTION_FALLBACK_PREF_STRING = "checkbox_gamepad_motion_fallback";
     private static final String FORCE_MOTION_SENSORS_FALLBACK_PREF_STRING = "checkbox_force_device_motion";
+    private static final String DEVICE_MOTION_HANDHELD_PREF_STRING = "checkbox_device_motion_handheld";
     private static final String FULL_SCREEN_PREF_STRING = "checkbox_full_screen";
 
     private static final String ENABLE_RUMBLE_PREF_STRING = "checkbox_enable_rumble";
@@ -123,6 +124,7 @@ public class PreferenceConfiguration {
     private static final String CHECKBOX_RIGHT_ALT_AS_META = "checkbox_right_alt_as_meta";
     private static final String CHECKBOX_IGNORE_SYNTH_EVENTS = "checkbox_ignore_synth_events";
     private static final String CHECKBOX_BACK_AS_GUIDE = "checkbox_back_as_guide";
+    private static final String CHECKBOX_SWAP_SELECT_AND_TOUCHPAD = "checkbox_swap_select_and_touchpad";
     private static final String CHECKBOX_SMART_CLIPBOARD_SYNC = "checkbox_smart_clipboard_sync";
     private static final String CHECKBOX_SMART_CLIPBOARD_SYNC_TOAST = "checkbox_smart_clipboard_sync_toast";
     private static final String CHECKBOX_HIDE_CLIPBOARD_CONTENT = "checkbox_hide_clipboard_content";
@@ -207,6 +209,7 @@ public class PreferenceConfiguration {
     private static final boolean DEFAULT_GAMEPAD_MOTION_SENSORS = true;
     private static final boolean DEFAULT_GAMEPAD_MOTION_FALLBACK = false;
     private static final boolean DEFAULT_FORCE_MOTION_SENSORS_FALLBACK = false;
+    private static final boolean DEFAULT_DEVICE_MOTION_HANDHELD = false;
     private static final boolean DEFAULT_ENABLE_RUMBLE = true;
     private static final boolean DEFAULT_PREVENT_PACKET_LOSS = false;
     private static final boolean DEFAULT_GAMEPAD_ENABLE_BATTERY_REPORT = true;
@@ -216,6 +219,7 @@ public class PreferenceConfiguration {
     private static final boolean DEFAULT_IGNORE_SYNTH_EVENTS = false;
     private static final boolean DEFAULT_ENABLE_FLOATING_BUTTON = false;
     private static final boolean DEFAULT_BACK_AS_GUIDE = false;
+    private static final boolean DEFAULT_SWAP_SELECT_AND_TOUCHPAD = false;
     private static final boolean DEFAULT_SMART_CLIPBOARD_SYNC = false;
     private static final boolean DEFAULT_SMART_CLIPBOARD_SYNC_TOAST = true;
     private static final boolean DEFAULT_HIDE_CLIPBOARD_CONTENT = true;
@@ -294,6 +298,7 @@ public class PreferenceConfiguration {
     public boolean rightAltAsMeta;
     public boolean ignoreSynthEvents;
     public boolean backAsGuide;
+    public boolean swapSelectAndTouchpad;
     public boolean smartClipboardSync;
     public boolean smartClipboardSyncToast;
     public boolean hideClipboardContent;
@@ -416,6 +421,7 @@ public class PreferenceConfiguration {
     public boolean gamepadTouchpadAsMouse;
     public boolean gamepadMotionSensorsFallbackToDevice;
     public boolean forceMotionSensorsFallbackToDevice;
+    public boolean deviceMotionHandheld;
     public boolean enableRumble;
     public boolean preventPacketLoss;
 
@@ -1088,6 +1094,7 @@ private static int getFramePacingValue(Context context) {
         config.rightAltAsMeta = prefs.getBoolean(CHECKBOX_RIGHT_ALT_AS_META, DEFAULT_RIGHT_ALT_AS_META);
         config.ignoreSynthEvents = prefs.getBoolean(CHECKBOX_IGNORE_SYNTH_EVENTS, DEFAULT_IGNORE_SYNTH_EVENTS);
         config.backAsGuide = prefs.getBoolean(CHECKBOX_BACK_AS_GUIDE, DEFAULT_BACK_AS_GUIDE);
+        config.swapSelectAndTouchpad = prefs.getBoolean(CHECKBOX_SWAP_SELECT_AND_TOUCHPAD, DEFAULT_SWAP_SELECT_AND_TOUCHPAD);
         config.smartClipboardSync = prefs.getBoolean(CHECKBOX_SMART_CLIPBOARD_SYNC, DEFAULT_SMART_CLIPBOARD_SYNC);
         config.smartClipboardSyncToast = prefs.getBoolean(CHECKBOX_SMART_CLIPBOARD_SYNC_TOAST, DEFAULT_SMART_CLIPBOARD_SYNC_TOAST);
         config.hideClipboardContent = prefs.getBoolean(CHECKBOX_HIDE_CLIPBOARD_CONTENT, DEFAULT_HIDE_CLIPBOARD_CONTENT);
@@ -1099,6 +1106,7 @@ private static int getFramePacingValue(Context context) {
         config.gamepadMotionSensors = prefs.getBoolean(GAMEPAD_MOTION_SENSORS_PREF_STRING, DEFAULT_GAMEPAD_MOTION_SENSORS);
         config.gamepadMotionSensorsFallbackToDevice = prefs.getBoolean(GAMEPAD_MOTION_FALLBACK_PREF_STRING, DEFAULT_GAMEPAD_MOTION_FALLBACK);
         config.forceMotionSensorsFallbackToDevice = prefs.getBoolean(FORCE_MOTION_SENSORS_FALLBACK_PREF_STRING, DEFAULT_FORCE_MOTION_SENSORS_FALLBACK);
+        config.deviceMotionHandheld = prefs.getBoolean(DEVICE_MOTION_HANDHELD_PREF_STRING, DEFAULT_DEVICE_MOTION_HANDHELD);
         config.enableRumble = prefs.getBoolean(ENABLE_RUMBLE_PREF_STRING, DEFAULT_ENABLE_RUMBLE);
         config.preventPacketLoss = prefs.getBoolean(PREVENT_PACKET_LOSS_PREF_STRING, DEFAULT_PREVENT_PACKET_LOSS);
 
