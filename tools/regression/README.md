@@ -6,6 +6,12 @@ start a stream, or load Android native libraries. They compile production
 sources or extract production methods verbatim, with deterministic platform
 boundaries. See each script for the exact boundary being replaced.
 
+- `test_audio_passthrough.py`: the full `AndroidAudioRenderer` and `PassthroughOutput` with a
+  fake bitstream encoder and scripted AudioTracks: IEC 61937 preferred over raw encodings,
+  the TrueHD/DTS/AC-3 fallback chain, buffer sizing, frame-sized writes, partial-write
+  retry, dead-output recreation keeping the encoder, PCM fallback, no effect session for
+  a bitstream, and single release on cleanup. `test_passthrough_iec61937.py`: the C burst
+  packer (preamble words, byte order, odd lengths, padding, bsmod, rejection).
 - `test_connection_ownership.py`: production connection start/stop; cancelling HTTP
   setup, stale/repeated stops, native-start failure cleanup, and interruption of a
   blocked native start without leaking the process-wide semaphore. Cancellation

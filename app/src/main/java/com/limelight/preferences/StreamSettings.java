@@ -57,6 +57,7 @@ import com.limelight.LimeLog;
 import com.limelight.PcView;
 import com.limelight.R;
 import com.limelight.binding.input.virtual_controller.keyboard.KeyBoardControllerConfigurationLoader;
+import com.limelight.binding.audio.PassthroughEncoder;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.input.driver.ble.SteamControllerBleManager;
 import com.limelight.utils.DepthModel;
@@ -573,6 +574,14 @@ public class StreamSettings extends AppCompatActivity {
                 PreferenceCategory category =
                         (PreferenceCategory) findPreference("category_ui_settings");
                 category.removePreference(findPreference("checkbox_enable_pip"));
+            }
+
+            // Hide surround passthrough if this build doesn't include the encoders
+            if (!PassthroughEncoder.isAvailable()) {
+                PreferenceCategory category =
+                        (PreferenceCategory) findPreference("category_audio_settings");
+                category.removePreference(findPreference("list_passthrough_format"));
+                category.removePreference(findPreference("list_passthrough_buffer"));
             }
 
             // Fire TV apps are not allowed to use WebViews or browsers, so hide the Help category

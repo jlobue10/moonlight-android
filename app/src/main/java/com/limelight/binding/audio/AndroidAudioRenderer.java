@@ -19,6 +19,14 @@ public class AndroidAudioRenderer implements AudioRenderer {
     private final Context context;
     private final boolean enableAudioFx;
 
+    // Surround passthrough: encode 5.1 PCM to a bitstream the TV or receiver decodes.
+    // Null codec or factory means plain PCM output.
+    private final PassthroughCodec passthroughCodec;
+    private final int passthroughBufferFrames;
+    private final PassthroughOutput.EncoderFactory encoderFactory;
+    private PassthroughOutput passthrough;
+    private boolean loggedEncodeError;
+
     private static final long TRACK_RETRY_DELAY_MS = 1000;
     private final Object trackLock = new Object();
     private AudioTrack track;
@@ -32,8 +40,22 @@ public class AndroidAudioRenderer implements AudioRenderer {
     private long nextTrackRetryTime;
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
+        this(context, enableAudioFx, null, 0, null);
+    }
+
+    /**
+     * @param passthroughCodec bitstream format to encode 5.1 audio to, or null for PCM
+     * @param passthroughBufferFrames passthrough AudioTrack buffer size in encoded write units,
+     *                                or 0 to use the platform minimum (at least 2 units)
+     * @param encoderFactory where the bitstream encoders come from; null disables passthrough
+     */
+    public AndroidAudioRenderer(Context context, boolean enableAudioFx, PassthroughCodec passthroughCodec,
+                                int passthroughBufferFrames, PassthroughOutput.EncoderFactory encoderFactory) {
         this.context = context;
         this.enableAudioFx = enableAudioFx;
+        this.passthroughCodec = passthroughCodec;
+        this.passthroughBufferFrames = passthroughBufferFrames;
+        this.encoderFactory = encoderFactory;
     }
 
     private AudioTrack createAudioTrack(int channelConfig, int sampleRate, int bufferSize, boolean lowLatency) {
@@ -81,6 +103,23 @@ public class AndroidAudioRenderer implements AudioRenderer {
         nextTrackRetryTime = 0;
         int channelConfig;
         int bytesPerFrame;
+
+        // Passthrough is only worth it for multichannel audio; stereo PCM works everywhere
+        if (passthroughCodec != null && encoderFactory != null && audioConfiguration.channelCount == 6) {
+            PassthroughOutput output = PassthroughOutput.open(passthroughCodec, passthroughBufferFrames,
+                    sampleRate, audioConfiguration.channelCount, encoderFactory);
+            if (output != null) {
+                synchronized (trackLock) {
+                    passthrough = output;
+                    track = output.takeInitialTrack();
+                    playbackSampleRate = sampleRate;
+                    playbackBufferSize = output.getBufferSize();
+                }
+                LimeLog.info("Audio passthrough configuration: " + output.describe());
+                return 0;
+            }
+            LimeLog.warning("Passthrough unavailable, falling back to PCM");
+        }
 
         switch (audioConfiguration.channelCount)
         {
@@ -206,7 +245,8 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     // Call with trackLock held. Session broadcasts must follow track replacement.
     private void setEffectSessionOpen(boolean open) {
-        if (!enableAudioFx || effectSessionOpen == open || track == null) {
+        // Audio effects can't process a compressed bitstream
+        if (!enableAudioFx || passthrough != null || effectSessionOpen == open || track == null) {
             return;
         }
         Intent i = new Intent(open ? AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION :
@@ -242,9 +282,16 @@ public class AndroidAudioRenderer implements AudioRenderer {
                 // Rate limit both failed creation and replacements that immediately die.
                 nextTrackRetryTime = SystemClock.uptimeMillis() + TRACK_RETRY_DELAY_MS;
                 try {
-                    track = createAudioTrack(playbackChannelConfig, playbackSampleRate,
-                            playbackBufferSize, playbackLowLatency);
-                    track.play();
+                    if (passthrough != null) {
+                        // The output went away (HDMI/eARC renegotiation, soundbar reconnect...).
+                        // Build an identical bitstream track so audio comes back instead of staying silent.
+                        track = passthrough.createTrack();
+                    }
+                    else {
+                        track = createAudioTrack(playbackChannelConfig, playbackSampleRate,
+                                playbackBufferSize, playbackLowLatency);
+                        track.play();
+                    }
                     setEffectSessionOpen(started);
                 } catch (Exception e) {
                     LimeLog.warning("Unable to recreate audio track: " + e);
@@ -260,6 +307,11 @@ public class AndroidAudioRenderer implements AudioRenderer {
         // Only queue up to 40 ms of pending audio data in addition to AudioTrack's buffer.
         if (MoonBridge.getPendingAudioDuration() >= 40) {
             LimeLog.info("Too much pending audio data: " + MoonBridge.getPendingAudioDuration() + " ms");
+            return;
+        }
+
+        if (passthrough != null) {
+            playEncodedAudio(audioData);
             return;
         }
 
@@ -284,6 +336,49 @@ public class AndroidAudioRenderer implements AudioRenderer {
                 // interval is retired but cannot cause an unbounded recreation loop.
             } else {
                 // Zero progress, shutdown and other errors must not spin the decoder.
+                return;
+            }
+        }
+    }
+
+    // Passthrough: the encoder accumulates PCM and returns complete frames, which are written
+    // to the bitstream track with the same retry, dead-output and shutdown rules as PCM.
+    private void playEncodedAudio(short[] audioData) {
+        PassthroughOutput.Encoder encoder = passthrough.getEncoder();
+        if (encoder == null) {
+            return;
+        }
+
+        int length = encoder.encode(audioData);
+        if (length < 0) {
+            if (!loggedEncodeError) {
+                LimeLog.warning("Passthrough encode failed: " + length);
+                loggedEncodeError = true;
+            }
+            return;
+        }
+        if (length == 0) {
+            // No complete frame yet
+            return;
+        }
+
+        byte[] bitstream = encoder.getOutput();
+        int offset = 0;
+        while (offset < length && !stopped) {
+            AudioTrack currentTrack = getPlaybackTrack();
+            if (currentTrack == null || stopped) {
+                return;
+            }
+            int written = currentTrack.write(bitstream, offset, length - offset);
+            if (written > 0) {
+                offset += written;
+            } else if (written == AudioTrack.ERROR_DEAD_OBJECT) {
+                synchronized (trackLock) {
+                    if (track == currentTrack) {
+                        releaseTrack();
+                    }
+                }
+            } else {
                 return;
             }
         }
@@ -327,6 +422,10 @@ public class AndroidAudioRenderer implements AudioRenderer {
         stop();
         synchronized (trackLock) {
             releaseTrack();
+            if (passthrough != null) {
+                passthrough.releaseEncoder();
+                passthrough = null;
+            }
         }
     }
 }

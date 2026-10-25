@@ -3,82 +3,19 @@
 
 No sound is played. --baseline reads HEAD to reproduce dropped partial writes,
 a dead track that never recovers, and stop waiting on a blocked decoder write.
+The android.media stand-ins live in audio_stubs.py (shared with test_audio_passthrough.py).
 """
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[2]
-PATH = 'app/src/main/java/com/limelight/binding/audio/AndroidAudioRenderer.java'
-source = (subprocess.check_output(['git', 'show', 'HEAD:' + PATH], cwd=ROOT, text=True)
-          if '--baseline' in sys.argv else (ROOT/PATH).read_text())
-files = {
-'com/limelight/binding/audio/AndroidAudioRenderer.java': source,
-'android/content/Intent.java': '''package android.content;
-import java.util.*; public class Intent {public String action;public Map<String,Object> extras=new HashMap<>();
-public Intent(String a){action=a;} public Intent putExtra(String k,int v){extras.put(k,v);return this;}
-public Intent putExtra(String k,String v){extras.put(k,v);return this;}}''',
-'android/content/Context.java': '''package android.content;
-import java.util.*; public class Context {public List<Intent> broadcasts=new ArrayList<>();
-public String getPackageName(){return "test";}public void sendBroadcast(Intent i){broadcasts.add(i);}}''',
-'android/media/AudioAttributes.java': '''package android.media; public class AudioAttributes {
-public static final int USAGE_GAME=1,FLAG_LOW_LATENCY=2;
-public static class Builder {public Builder setUsage(int i){return this;}public Builder setFlags(int i){return this;}
-public AudioAttributes build(){return new AudioAttributes();}}}''',
-'android/media/AudioFormat.java': '''package android.media;public class AudioFormat {
-public static final int ENCODING_PCM_16BIT=2,CHANNEL_OUT_STEREO=12,CHANNEL_OUT_QUAD=204,CHANNEL_OUT_5POINT1=252;
-public int rate,mask;public static class Builder {AudioFormat f=new AudioFormat();
-public Builder setEncoding(int i){return this;}public Builder setSampleRate(int i){f.rate=i;return this;}
-public Builder setChannelMask(int i){f.mask=i;return this;}public AudioFormat build(){return f;}}}''',
-'android/media/AudioManager.java': '''package android.media;public class AudioManager {
-public static final int STREAM_MUSIC=3,AUDIO_SESSION_ID_GENERATE=0;}''',
-'android/media/audiofx/AudioEffect.java': '''package android.media.audiofx;public class AudioEffect {
-public static final String ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION="open",ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION="close",
-EXTRA_AUDIO_SESSION="session",EXTRA_PACKAGE_NAME="package",EXTRA_CONTENT_TYPE="content";
-public static final int CONTENT_TYPE_GAME=1;}''',
-'android/os/Build.java': '''package android.os;public class Build {
-public static class VERSION {public static int SDK_INT=35;}public static class VERSION_CODES {public static final int O=26;}}''',
-'android/os/SystemClock.java': '''package android.os;public class SystemClock {
-public static long now;public static long uptimeMillis(){return now;}public static long elapsedRealtime(){return now;}}''',
-'com/limelight/LimeLog.java': '''package com.limelight;public class LimeLog {
-public static void info(String s){}public static void warning(String s){}public static void severe(String s){}}''',
-'com/limelight/nvstream/av/audio/AudioRenderer.java': '''package com.limelight.nvstream.av.audio;
-import com.limelight.nvstream.jni.MoonBridge;public interface AudioRenderer {
-int setup(MoonBridge.AudioConfiguration c,int r,int n);void playDecodedAudio(short[] d);void start();void stop();void cleanup();}''',
-'com/limelight/nvstream/jni/MoonBridge.java': '''package com.limelight.nvstream.jni;public class MoonBridge {
-public static int pending;public static int getPendingAudioDuration(){return pending;}
-public static class AudioConfiguration {public int channelCount;public AudioConfiguration(int n){channelCount=n;}}}''',
-'android/media/AudioTrack.java': r'''package android.media;
-import java.util.*;import java.util.concurrent.*;
-public class AudioTrack {
- public static final int MODE_STREAM=1,PERFORMANCE_MODE_LOW_LATENCY=1,ERROR_DEAD_OBJECT=-6,ERROR_INVALID_OPERATION=-3;
- public static final Deque<AudioTrack> plans=new ArrayDeque<>();public static final List<AudioTrack> built=new ArrayList<>();
- public static final List<Short> accepted=new ArrayList<>();public static int builds;
- public final Deque<Integer> results=new ArrayDeque<>();public final List<String> writes=new ArrayList<>();
- public int id,releases,pauses,plays,flushes,bufferSize;public boolean lowLatency,failBuild,failPlay,block;
- public AudioFormat format;public final CountDownLatch entered=new CountDownLatch(1),unblock=new CountDownLatch(1);
- public AudioTrack(int... returns){for(int n:returns)results.add(n);}
- public AudioTrack(AudioAttributes a,AudioFormat f,int b,int m,int s){id=++builds;format=f;bufferSize=b;built.add(this);}
- public static class Builder {AudioFormat format;int buffer;boolean low;
-  public Builder setAudioFormat(AudioFormat f){format=f;return this;}public Builder setAudioAttributes(AudioAttributes a){return this;}
-  public Builder setTransferMode(int i){return this;}public Builder setBufferSizeInBytes(int n){buffer=n;return this;}
-  public Builder setPerformanceMode(int i){low=true;return this;}
-  public AudioTrack build(){AudioTrack t=plans.isEmpty()?new AudioTrack():plans.remove();++builds;
-   if(t.failBuild)throw new IllegalStateException("scripted unavailable output");
-   t.id=builds;t.format=format;t.bufferSize=buffer;t.lowLatency=low;built.add(t);return t;}}
- public static int getMinBufferSize(int r,int c,int e){return 8192;}
- public static int getNativeOutputSampleRate(int s){return 48000;}
- public int getAudioSessionId(){return id;}
- public void play(){++plays;if(failPlay)throw new IllegalStateException("scripted play failure");}
- public void pause(){++pauses;unblock.countDown();}public void flush(){++flushes;}public void release(){++releases;}
- public int write(short[] data,int offset,int count){writes.add(offset+":"+count);
-  if(block){entered.countDown();try{unblock.await();}catch(InterruptedException e){throw new RuntimeException(e);}return 0;}
-  int n=results.isEmpty()?count:results.remove();if(n>0)for(int i=0;i<n;i++)accepted.add(data[offset+i]);return n;}
- public static void reset(){plans.clear();built.clear();accepted.clear();builds=0;android.os.SystemClock.now=0;}
-}
-''',
-'AudioRecovery.java': r'''
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audio_stubs  # noqa: E402
+
+files = audio_stubs.stubs()
+files.update(audio_stubs.production_files('AndroidAudioRenderer', 'PassthroughCodec', 'PassthroughOutput'))
+files['AudioRecovery.java'] = r'''
 import android.content.*;import android.media.*;import android.os.*;
 import com.limelight.binding.audio.AndroidAudioRenderer;import com.limelight.nvstream.jni.MoonBridge;
 import java.util.*;import java.util.concurrent.*;
@@ -131,10 +68,13 @@ public class AudioRecovery {
   System.out.println(checks+" checks, "+failures+" failures");System.exit(failures==0?0:1);
  }
 }
-'''}
+'''
 with tempfile.TemporaryDirectory(prefix='audio-track-recovery-') as temp:
-    work=Path(temp)
-    for name,content in files.items():
-        path=work/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content)
-    subprocess.run(['java','com.sun.tools.javac.Main','-d',str(work)]+[str(work/name) for name in files],check=True)
-    raise SystemExit(subprocess.run(['java','-cp',str(work),'AudioRecovery'],timeout=15).returncode)
+    work = Path(temp)
+    for name, content in files.items():
+        path = work / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8')
+    subprocess.run(['java', 'com.sun.tools.javac.Main', '-encoding', 'UTF-8', '-d', str(work)]
+                   + [str(work / name) for name in files], check=True)
+    raise SystemExit(subprocess.run(['java', '-cp', str(work), 'AudioRecovery'], timeout=15).returncode)

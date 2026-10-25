@@ -48,6 +48,26 @@ jobs:
             "$SDKMANAGER" --install "$PLATFORM"
           fi
           "$SDKMANAGER" --install "build-tools;36.0.0" "ndk;${NDK_VERSION}"
+      - name: Restore the surround passthrough encoder libraries (FFmpeg) from the cache
+        id: ptenc-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/jni/ptenc/ffmpeg
+          # The script pins the FFmpeg commit and the build flags; app/build.gradle carries the NDK version
+          key: ptenc-ffmpeg-${{ runner.os }}-${{ hashFiles('app/src/main/jni/ptenc/build-ffmpeg.sh', 'app/build.gradle') }}
+
+      - name: Build the surround passthrough encoder libraries (FFmpeg, every ABI)
+        if: steps.ptenc-ffmpeg.outputs.cache-hit != 'true'
+        run: bash app/src/main/jni/ptenc/build-ffmpeg.sh
+
+      - name: Check the passthrough encoder libraries exist for every ABI
+        run: |
+          set -euo pipefail
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            test -f "app/src/main/jni/ptenc/ffmpeg/$abi/lib/libavcodec.a" || { echo "::error::missing FFmpeg passthrough library for $abi"; exit 1; }
+            test -f "app/src/main/jni/ptenc/ffmpeg/$abi/lib/libavutil.a" || { echo "::error::missing FFmpeg passthrough library for $abi"; exit 1; }
+          done
+
       - name: Build unsigned release APKs (all supported ABIs, NDK and R8)
         run: ./gradlew --no-daemon --stacktrace assembleNonRoot_gameRelease
       - name: Run Android unit tests
