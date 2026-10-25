@@ -10,6 +10,7 @@ import static com.limelight.utils.ServerHelper.getSecondaryDisplay;
 
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.audio.AndroidAudioRenderer;
+import com.limelight.binding.audio.PassthroughEncoder;
 import com.limelight.binding.input.ControllerHandler;
 import com.limelight.binding.input.GameInputDevice;
 import com.limelight.binding.input.KeyboardTranslator;
@@ -1045,7 +1046,9 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                 connecting = true;
 
                 // Starten Sie die NvConnection
-                conn.start(new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio),
+                conn.start(new AndroidAudioRenderer(Game.this, prefConfig.playHostAudio,
+                                prefConfig.passthroughCodec, prefConfig.passthroughBufferFrames,
+                                PassthroughEncoder.FACTORY),
                         decoderRenderer, Game.this);
             }
         });

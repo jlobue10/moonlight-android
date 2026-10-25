@@ -48,3 +48,6 @@
 # the callbacks that implement its interfaces. Only the legacy android.extensions.xr names that one
 # SceneCore dependency still references have no stub.
 -dontwarn android.extensions.xr.**
+
+# Surround passthrough encoder (JNI): the native library binds these by name
+-keep class com.limelight.binding.audio.PassthroughEncoder { native <methods>; }

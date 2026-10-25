@@ -50,3 +50,6 @@ AGENTS.md
 # Release signing keystores must never be committed (see docs/RELEASING.md)
 *.jks
 *.keystore
+
+# Python harness bytecode
+__pycache__/
