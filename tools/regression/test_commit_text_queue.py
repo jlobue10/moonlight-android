@@ -78,6 +78,8 @@ public class CommitTextRegression {
     static class View {}
     static class MotionEvent {}
     boolean touchInputStopped, grabbedInput = true;
+    // The Steam Controller lizard-mode filter sits behind the grab check; a retired fixture never reaches it.
+    boolean isSteamControllerLizardInput(MotionEvent event) { return false; }
     static class StreamLog { static void stop() {} }
     static CommitTextRegression instance;
     final TouchContext[] touchContextMap = {new TouchContext(), null};

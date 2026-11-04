@@ -1136,6 +1136,9 @@ manager_methods=[manager_block('    private void startDriver('), manager_block('
                  manager_block('    public synchronized void stop()'), manager_block('    public static boolean looksLikeSteamController(')]
 if '    private void enumerateBonded()' in manager:
     manager_methods.append(manager_block('    private void enumerateBonded()'))
+if '    public static boolean looksLikeSteamControllerName(' in manager:
+    # fork.125: the device-name test looksLikeSteamController() delegates to
+    manager_methods.append(manager_block('    public static boolean looksLikeSteamControllerName('))
 STUBS['com/limelight/binding/input/driver/ble/ManagerHarness.java'] = """package com.limelight.binding.input.driver.ble;
 import java.util.*;import android.bluetooth.*;import android.content.*;import android.os.Build;import com.limelight.LimeLog;import com.limelight.binding.input.driver.*;
 public class ManagerHarness {

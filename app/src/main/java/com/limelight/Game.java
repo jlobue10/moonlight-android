@@ -3270,13 +3270,13 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     public boolean handleMotionEvent(View view, MotionEvent event) {
-        if (isSteamControllerLizardInput(event)) {
-            return true;
-        }
-
         // Pass through mouse/touch/joystick input if we're not grabbing
         if (touchInputStopped || !grabbedInput) {
             return false;
+        }
+
+        if (isSteamControllerLizardInput(event)) {
+            return true;
         }
 
         int deviceId = event.getDeviceId();
