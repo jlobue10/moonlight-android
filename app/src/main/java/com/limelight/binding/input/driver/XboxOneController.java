@@ -46,8 +46,10 @@ public class XboxOneController extends AbstractXboxController {
             new InitPacket(0x0f0d, 0x0067, HORI_INIT),
             new InitPacket(0x0000, 0x0000, FW2015_INIT),
             new InitPacket(0x045e, 0x02ea, ONE_S_INIT),//Xbox Wireless Controller, HWID Model 1708
+            new InitPacket(0x045e, 0x02fe, ONE_S_INIT),
             new InitPacket(0x045e, 0x0b00, ONE_S_INIT),
             new InitPacket(0x045e, 0x0b05, SERIES_S_INIT),
+            new InitPacket(0x045e, 0x0b12, SERIES_S_INIT),
             new InitPacket(0x045e, 0x0b13, SERIES_S_INIT),
             new InitPacket(0x0e6f, 0x0000, PDP_INIT1),
             new InitPacket(0x0e6f, 0x0000, PDP_INIT2),

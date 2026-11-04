@@ -234,6 +234,13 @@ tasks.configureEach { t ->
     testOptions {
         unitTests.includeAndroidResources = true
     }
+
+    packaging {
+        resources {
+            // BouncyCastle includes duplicate LICENSE.md files
+            excludes += '/META-INF/*.md'
+        }
+    }
 }
 
 dependencies {
