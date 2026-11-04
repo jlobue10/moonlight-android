@@ -126,17 +126,22 @@ public final class SteamControllerBleManager {
     @SuppressLint("MissingPermission")
     public static boolean looksLikeSteamController(BluetoothDevice device) {
         try {
-            String name = device.getName();
-            if (name == null) {
-                return false;
-            }
-            String lower = name.toLowerCase(Locale.ROOT);
-            for (String hint : NAME_HINTS) {
-                if (lower.contains(hint)) {
-                    return true;
-                }
-            }
+            return looksLikeSteamControllerName(device.getName());
         } catch (SecurityException ignored) {
+        }
+        return false;
+    }
+
+    /** The name test alone, for an {@code InputDevice} name (the controller's own keyboard/mouse half). */
+    public static boolean looksLikeSteamControllerName(String name) {
+        if (name == null) {
+            return false;
+        }
+        String lower = name.toLowerCase(Locale.ROOT);
+        for (String hint : NAME_HINTS) {
+            if (lower.contains(hint)) {
+                return true;
+            }
         }
         return false;
     }
@@ -229,6 +234,16 @@ public final class SteamControllerBleManager {
             drivers.remove(address);
             driver.stop();
         }
+    }
+
+    /** Whether any watched controller currently has a set-up link through this driver. */
+    public synchronized boolean hasLiveLink() {
+        for (SteamControllerBle driver : drivers.values()) {
+            if (driver.isLinkReady()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public synchronized void stop() {

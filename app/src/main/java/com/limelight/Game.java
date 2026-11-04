@@ -96,6 +96,7 @@ import android.util.Rational;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.InputDevice;
+import android.view.InputEvent;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -267,6 +268,20 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private boolean connectedToUsbDriverService = false;
     private SteamControllerBleManager steamControllerBle;
     private static final int REQUEST_STEAM_CONTROLLER_BLUETOOTH = 0x5C;
+    // The 2026 Steam Controller's own HID half. In the firmware's "lizard mode" the controller is a
+    // keyboard and a mouse (the right pad moves the pointer), and Android pairs it as exactly that.
+    // While the in-app driver owns the controller, its pads and buttons already reach the host through
+    // the controller path, so anything this device still sends would arrive at the host a second time:
+    // the pad as relative mouse motion on top of Steam Input's trackpad mouse, which reads as a pointer
+    // that is far too fast or accelerated. The firmware re-arms lizard mode over Bluetooth LE between the
+    // driver's keep-alives, so the leak is real even with the setup write accepted.
+    private static final int STEAM_CONTROLLER_VENDOR_ID = 0x28DE;
+    private static final int STEAM_CONTROLLER_PID_WIRED = 0x1302;
+    private static final int STEAM_CONTROLLER_PID_BLE = 0x1303;
+    private static final int STEAM_CONTROLLER_PID_PUCK = 0x1304;
+    private static final int STEAM_CONTROLLER_LIZARD_LOG_EVERY = 500;
+    private final HashSet<Integer> steamControllerLizardDevicesSeen = new HashSet<>();
+    private int steamControllerLizardEventsDropped;
     // Set when bindService() was issued, so onDestroy unbinds even if onServiceConnected never ran.
     private boolean usbDriverBindRequested;
     // Kept so onDestroy can detach both listeners before unbinding: the service's own
@@ -1986,6 +2001,53 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     /**
+     * Whether an input event comes from the Steam Controller's own keyboard/mouse device while the
+     * in-app driver (Bluetooth LE or USB) owns that controller. Such events are dropped by the
+     * callers: the controller's input already travels on the controller path, and forwarding the
+     * lizard-mode mouse as well doubles the pointer motion on the host. Logged once per device and
+     * then every {@link #STEAM_CONTROLLER_LIZARD_LOG_EVERY} dropped events, so a log shows whether
+     * the firmware's keyboard/mouse emulation came back during a stream.
+     */
+    private boolean isSteamControllerLizardInput(InputEvent event) {
+        // Only while a link is actually set up: without one the controller is the device's
+        // keyboard/mouse by design (the driver restores lizard mode when it lets go).
+        boolean bleDriver = steamControllerBle != null && steamControllerBle.hasLiveLink();
+        boolean usbDriver = connectedToUsbDriverService;
+        if (!bleDriver && !usbDriver) {
+            return false;
+        }
+        InputDevice device = event.getDevice();
+        if (device == null) {
+            return false;
+        }
+        boolean match;
+        if (device.getVendorId() == STEAM_CONTROLLER_VENDOR_ID) {
+            int pid = device.getProductId();
+            match = (pid == STEAM_CONTROLLER_PID_BLE && bleDriver)
+                    || ((pid == STEAM_CONTROLLER_PID_WIRED || pid == STEAM_CONTROLLER_PID_PUCK) && usbDriver);
+        } else {
+            // A Bluetooth HID device without a PnP ID reports vendor 0; the name is what the BLE
+            // manager pairs on, so it decides here too.
+            match = bleDriver && device.getVendorId() == 0
+                    && SteamControllerBleManager.looksLikeSteamControllerName(device.getName());
+        }
+        if (!match) {
+            return false;
+        }
+        steamControllerLizardEventsDropped++;
+        if (steamControllerLizardDevicesSeen.add(device.getId())) {
+            LimeLog.warning("Steam Controller: dropping keyboard/mouse input from the controller's own HID device '"
+                    + device.getName() + "' (" + Integer.toHexString(device.getVendorId()) + ":"
+                    + Integer.toHexString(device.getProductId()) + ", sources 0x" + Integer.toHexString(device.getSources())
+                    + ") while the in-app driver owns it: the firmware's lizard mode is on");
+        } else if (steamControllerLizardEventsDropped % STEAM_CONTROLLER_LIZARD_LOG_EVERY == 0) {
+            LimeLog.info("Steam Controller: " + steamControllerLizardEventsDropped
+                    + " keyboard/mouse events from the controller's own HID device dropped so far");
+        }
+        return true;
+    }
+
+    /**
      * The 2026 Steam Controller is not a gamepad to Android; our driver talks to it over GATT, which
      * needs BLUETOOTH_CONNECT on Android 12+. Ask once per stream start when it is missing.
      */
@@ -2375,6 +2437,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyDown(KeyEvent event) {
+        if (isSteamControllerLizardInput(event)) {
+            return true;
+        }
+
         // Typing guard for the touchpad gestures (desktop touchpad mode only)
         if (trackpadGestures != null) {
             trackpadGestures.onKeyDown(event);
@@ -2524,6 +2590,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyUp(KeyEvent event) {
+        if (isSteamControllerLizardInput(event)) {
+            return true;
+        }
+
         // Swallow the release of the disconnect, grab-toggle and touchpad-toggle combos
         if (disconnectComboDown && event.getKeyCode() == KeyEvent.KEYCODE_GRAVE) {
             disconnectComboDown = false;
@@ -2611,6 +2681,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     public boolean handleKeyMultiple(KeyEvent event) {
+        if (isSteamControllerLizardInput(event)) {
+            return true;
+        }
+
         // We can receive keys from a software keyboard that don't correspond to any existing
         // KEYCODE value. Android will give those to us as an ACTION_MULTIPLE KeyEvent.
         //
@@ -3196,6 +3270,10 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     public boolean handleMotionEvent(View view, MotionEvent event) {
+        if (isSteamControllerLizardInput(event)) {
+            return true;
+        }
+
         // Pass through mouse/touch/joystick input if we're not grabbing
         if (touchInputStopped || !grabbedInput) {
             return false;

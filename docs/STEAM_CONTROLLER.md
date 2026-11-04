@@ -133,8 +133,10 @@ original; these were used as documentation.
 
 - That the Galaxy XR's Bluetooth stack exposes the vendor service to apps (it does on phones).
 - Lizard-mode disable via 0x81 + settings (the Android project sends 0x85 instead; the kernel and
-  SDL use the sequence implemented here). If keyboard/mouse events keep arriving while streaming,
-  try adding a 0x85 write to the keep-alive.
+  SDL use the sequence implemented here). A user report of a right pad that moved the host pointer
+  far too fast over Bluetooth LE fits keyboard/mouse events still arriving while streaming; since
+  fork.125 the keep-alive re-sends 0x81 and the stream drops the controller's own keyboard/mouse
+  events (see below), and the log says when any arrive.
 - Battery charge-state values on a real unit (byte 0 of the battery characteristic is mapped per
   the firmware's EChargeState: 1 discharging, 2/3 charging, 4 full, 0 unknown; not yet observed
   on battery).
@@ -344,6 +346,39 @@ The link logs its configuration at setup (`haptics: 0x82 gain boost +6 dB (ceili
 pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts the rewritten
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
+
+### fork.125: the controller's own keyboard/mouse is dropped while the driver owns it
+
+A user streaming with the controller on Bluetooth LE reported the right pad moving the host
+pointer "way too fast", as if mouse acceleration were on. The pad coordinates themselves
+travel unchanged: the client sends `raw / 65536 + 0.5`, the host scales that to 0..65535 and
+the virtual controller's driver subtracts 32768 back to the same int16 the pad reported, and
+Steam Input on the host does all pad-to-mouse conversion, so no scale in the chain can make
+the pointer faster. What can is a second mouse: Android pairs the controller as the keyboard
+and mouse that the firmware's lizard mode emulates, the right pad moves the device's pointer
+whenever that mode is on, and the stream forwards every mouse device's deltas to the host.
+The host then adds the forwarded pointer motion to Steam Input's own trackpad mouse. The
+firmware re-arms lizard mode over Bluetooth LE between the driver's one-second keep-alives
+(the reason the keep-alive exists), and Steam and SDL repeat their lizard-off write every 3 s
+for the same reason, so the leak is intermittent and reads as acceleration.
+
+Two changes:
+
+- `Game` drops key and motion events whose `InputDevice` is the controller's own HID half while
+  the in-app driver owns the controller: Valve vendor `0x28DE` with product `0x1303` while the
+  BLE driver has a set-up link, `0x1302`/`0x1304` while the USB driver service is bound, or (a Bluetooth HID
+  device without a PnP ID reports vendor 0) a device name the BLE manager would pair on. The
+  first such event per device logs a warning naming the device, its ids and sources, and every
+  500 dropped events an info line gives the running count, so a log shows whether lizard mode
+  came back during the stream. Without the driver nothing is dropped: the controller stays a
+  keyboard/mouse for the stream, as before.
+- The BLE keep-alive sends `0x81` (CLEAR_DIGITAL_MAPPINGS) ahead of the settings triple each
+  second, so a re-armed lizard mode loses its keyboard mappings again as well. The write queue
+  keeps at most one waiting keep-alive of each kind, as it already did for the settings write.
+
+Not yet confirmed on hardware: the warning line above is what a stream log should show on a
+device where the pointer ran away. If it never appears while the pad still feels too fast, the
+cause is elsewhere (the host's Steam layout, or Steam running on a client PC).
 
 ### fork.124: feedback drained before stream shutdown (ChatGPT audit 62)
 
