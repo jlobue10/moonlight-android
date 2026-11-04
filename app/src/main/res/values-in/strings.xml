@@ -57,9 +57,7 @@
     <string name="conn_terminated_title">Koneksi dihentikan</string>
     <string name="conn_terminated_msg">Koneksi telah terputus.</string>
     <string name="ip_hint">Alamat IP komputer host</string>
-    <string name="searching_pc">Mencari komputer yang menjalankan GameStream...
-\n
-\nPastikan GameStream diaktifkan pada pengaturan SHIELD GeForce Experience.</string>
+    <string name="searching_pc">Mencari host PC di jaringan lokal Anda...\n\nPastikan Sunshine berjalan di PC host Anda atau GameStream diaktifkan dalam pengaturan SHIELD Pengalaman GeForce.</string>
     <string name="yes">Ya</string>
     <string name="no">Tidak</string>
     <string name="lost_connection">Koneksi dengan komputer hilang</string>
@@ -83,7 +81,7 @@
     <string name="pair_pc_ingame">Komputer sedang ada di game. Anda harus menutupnya terlebih dahulu.</string>
     <string name="wol_fail">Gagal mengirim paket Wake-On-LAN</string>
     <string name="unpair_error">Perangkat tidak terpasang</string>
-    <string name="error_manager_not_running">Servis ComputerManager tidak berjalan. Mohon tunggu beberapa detik atau mulai ulang aplikasi.</string>
+    <string name="error_manager_not_running">Layanan KomputerManager tidak berjalan. Silakan tunggu beberapa detik atau restart aplikasi.</string>
     <string name="error_404">GFE memberikan eror HTTP 404. Pastikan komputer anda menggunakan kartu grafis yang didukung. Penggunaan aplikasi remote desktop juga dapat menyebabakan eror ini. Coba mulai ulang perangkat Anda atau install ulang GFE.</string>
     <string name="unable_to_pin_shortcut">Peluncur Anda tidak memperbolehkan pembuatan shortcut yang disematkan.</string>
     <string name="video_decoder_init_failed">Gagal memulai dekoder video. Perangkat Anda mungkin tidak mendukung resolusi atau kecepatan bingkai yang dipilih.</string>
@@ -193,13 +191,7 @@
     <string name="applist_quit_success">Berhasil keluar</string>
     <string name="addpc_unknown_host">Tidak dapat menyelesaikan alamat PC. Pastikan Anda tidak salah ketik di alamat.</string>
     <string name="title_native_res_dialog">Peringatan Resolusi Asli</string>
-    <string name="text_native_res_dialog">Mode resolusi asli tidak didukung secara resmi oleh GeForce Experience, sehingga tidak akan mengatur sendiri resolusi tampilan host. Anda harus mengaturnya secara manual saat bermain.
-\n
-\nJika Anda memilih untuk membuat resolusi khusus di Panel Kontrol NVIDIA agar sesuai dengan resolusi perangkat Anda, pastikan Anda telah membaca dan memahami peringatan NVIDIA terkait kemungkinan kerusakan monitor, ketidakstabilan PC, dan potensi masalah lainnya.
-\n
-\nKami tidak bertanggung jawab atas masalah apa pun yang diakibatkan oleh pembuatan resolusi khusus pada PC Anda.
-\n
-\nTerakhir, perangkat atau PC host Anda mungkin tidak mendukung streaming pada resolusi asli. Jika tidak berfungsi pada perangkat Anda, sayangnya Anda kurang beruntung.</string>
+    <string name="text_native_res_dialog">Mode resolusi asli dan/atau FPS mungkin tidak didukung oleh server streaming, Anda mungkin perlu untuk mengatur custom display mode yang tempat untuk host PC secara manual.\n\nJika Anda memilih untuk membuat resolusi khusus di Panel Kontrol NVIDIA agar sesuai dengan resolusi perangkat Anda, pastikan Anda telah membaca dan memahami peringatan NVIDIA terkait kemungkinan kerusakan monitor, ketidakstabilan PC, dan potensi masalah lainnya.\n\nKami tidak bertanggung jawab atas masalah apa pun yang diakibatkan oleh pembuatan resolusi khusus pada PC Anda.\n\nTerakhir, perangkat atau PC host Anda mungkin tidak mendukung streaming pada resolusi asli. Jika tidak berfungsi pada perangkat Anda, sayangnya Anda kurang beruntung.</string>
     <string name="summary_audio_config_list">Aktifkan suara surround 5.1 atau 7.1 untuk sistem home theater</string>
     <string name="summary_seekbar_deadzone">Catatan: Beberapa game dapat menerapkan zona mati yang lebih besar daripada yang dikonfigurasi untuk digunakan oleh Moonlight.</string>
     <string name="title_checkbox_mouse_emulation">Emulasi mouse melalui gamepad</string>
@@ -210,6 +202,23 @@
     <string name="summary_language_list">Bahasa yang digunakan untuk Moonlight</string>
     <string name="summary_checkbox_enable_sops">Izinkan GFE mengubah setelan game untuk streaming yang optimal</string>
     <string name="error_code_prefix">Kode galat:</string>
+    <string name="category_gamepad_settings">Setelan Gamepad</string>
+    <string name="title_checkbox_gamepad_touchpad_as_mouse">Selalu kendalikan mouse dengan touchpad</string>
+    <string name="title_checkbox_gamepad_motion_sensors">Perbolehkan penggunaan sensor motion gamepad</string>
+    <string name="summary_checkbox_gamepad_motion_fallback">Menggunakan motion sensor bawaan perangkat anda jika sensor gamepad tidak disupport oleh gamepad yang sedang terkoneksi atau versi Android ponsel anda.\nCatatan: mengaktifkan opsi ini dapat membuat gamepad anda muncul Sebagai PlayStation controller di pc host.</string>
+    <string name="summary_disable_frame_drop">Dapat mengurangi micro-stuttering di sebagian perangkat, tapi bisa menaikkan latency</string>
+    <string name="title_video_format">Ganti setelan codec</string>
+    <string name="title_enable_hdr">Aktifkan HDR (Experimental)</string>
+    <string name="title_full_range">Paksa full range video (Experimental)</string>
+    <string name="perf_overlay_hostprocessinglatency">Pengolahan host latency min / maks / rata-rata: %1$.1f / %2$.1f / %3$.1f ms</string>
+    <string name="fps_suffix_fps">FPS</string>
+    <string name="title_native_fps_dialog">Peringatan FPS Asli</string>
+    <string name="title_seekbar_vibrate_fallback_strength">Atur kekuatan getaran emulasi</string>
+    <string name="summary_seekbar_vibrate_fallback_strength">Menaikkan atau menurunkan kekuatan getaran di perangkat anda</string>
+    <string name="suffix_seekbar_vibrate_fallback_strength">%</string>
+    <string name="summary_checkbox_gamepad_touchpad_as_mouse">Paksa input dari touchpad gamepad untuk mengendalikan mouse di pc host, bahkan saat mengemulasi gamepad dengan touchpad.</string>
+    <string name="title_checkbox_gamepad_motion_fallback">Emulasikan dukungan sensor motion gamepad</string>
+    <string name="title_disable_frame_drop">Jangan turunkan FPS</string>
     <string name="title_enable_commit_text">Aktifkan input commit-text (geser/suara)</string>
     <string name="summary_enable_commit_text">Meneruskan teks multi-karakter dari papan ketik lunak (gestur geser, prediksi, dikte suara). Mungkin menyebabkan masalah pada gim yang bergantung pada input per tombol.</string>
 </resources>

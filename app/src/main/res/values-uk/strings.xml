@@ -77,6 +77,7 @@
     <string name="summary_resolution_list">Вибір надто високого значення для свого пристрою може викликати сповільнення на нешвидких мережах, або вильоти на менш потужних пристроях.</string>
     <string name="title_seekbar_bitrate">Швидкість потоку відео</string>
     <string name="summary_seekbar_bitrate">Збільшіть для якіснішої картинки. Зменшіть задля кращої продуктивності на повільних мережах.</string>
+    <string name="title_checkbox_stretch_video">Розтягнути відео на весь екран</string>
     <string name="title_checkbox_disable_warnings">Вимкнути попередження</string>
     <string name="summary_checkbox_disable_warnings">Вимкнути мережні попередження під час трансляції</string>
     <string name="category_audio_settings">Налаштування авдіо</string>
@@ -107,10 +108,10 @@
     <string name="title_only_l3r3">Показувати тільки L3 та R3</string>
     <string name="summary_only_l3r3">Приховувати всі віртуальні ґудзики окрім L3 та R3</string>
     <string name="scut_deleted_pc">Пристрій видалено</string>
-    <string name="scut_not_paired">Пристрій не сполучений</string>
+    <string name="scut_not_paired">Пристрій не парований</string>
     <string name="help_loading_title">Перегляд допомоги</string>
     <string name="help_loading_msg">Завантаження сторінки допомоги…</string>
-    <string name="pair_already_in_progress">Сполучення вже в процесі</string>
+    <string name="pair_already_in_progress">Створення пари вже в процесі</string>
     <string name="help">Допомога</string>
     <string name="applist_connect_msg">Підключення до пристрою…</string>
     <string name="title_decoding_error">Збій відео розцифрувача</string>
