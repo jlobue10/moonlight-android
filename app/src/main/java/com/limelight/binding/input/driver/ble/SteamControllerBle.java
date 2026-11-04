@@ -484,15 +484,25 @@ public class SteamControllerBle extends SteamControllerInput {
         }
     }
 
+    /** Whether this link is set up and feeding input (the controller is ours, not the system's keyboard/mouse). */
+    public synchronized boolean isLinkReady() {
+        return linkReady && !stopped;
+    }
+
     private final Runnable keepAlive = new Runnable() {
         @Override
         public void run() {
             if (stopped || gatt == null || writeChar == null) {
                 return;
             }
-            // The whole setup triple (11 bytes a second): a settings write lost at
-            // connect time (the stack refuses a write while one is outstanding) would
-            // otherwise leave the watchdog armed or the IMU off for the session.
+            // The whole setup (a two-byte 0x81 and the settings triple, 13 bytes a second): a
+            // write lost at connect time (the stack refuses a write while one is outstanding)
+            // would otherwise leave the watchdog armed or the IMU off for the session. The
+            // firmware re-arms lizard mode on its own over Bluetooth LE, and with it the
+            // keyboard mappings; re-clearing them here follows Steam and SDL, which repeat
+            // their lizard-off write every 3 s, and keeps the right pad from moving the
+            // device's pointer (which the stream would forward as a second mouse).
+            enqueueWrite(new byte[]{ID_CLEAR_DIGITAL_MAPPINGS, 0});
             enqueueWrite(linkSettings());
             handler.postDelayed(this, KEEPALIVE_INTERVAL_MS);
         }
@@ -1533,12 +1543,13 @@ public class SteamControllerBle extends SteamControllerInput {
                 // Latest rumble state wins; an older queued 0x80, stop or not, is obsolete.
                 writeQueue.removeIf(queued -> queued.output && queued.id() == 0x80);
             }
-            if (!p.output && !p.hostSettings && p.bytes[0] == ID_SET_SETTINGS_VALUES) {
-                // One keep-alive waiting is enough; a stalled link must not fill up with them.
-                // Host writes and their post-reset setup are ordered commands. An earlier
-                // keep-alive cannot replace them, so they neither count here nor get dropped.
+            if (!p.output && !p.hostSettings
+                    && (p.bytes[0] == ID_SET_SETTINGS_VALUES || p.bytes[0] == ID_CLEAR_DIGITAL_MAPPINGS)) {
+                // One keep-alive of each kind waiting is enough; a stalled link must not fill
+                // up with them. Host writes and their post-reset setup are ordered commands. An
+                // earlier keep-alive cannot replace them, so they neither count here nor get dropped.
                 for (Pending queued : writeQueue) {
-                    if (!queued.output && !queued.hostSettings && queued.bytes[0] == ID_SET_SETTINGS_VALUES) {
+                    if (!queued.output && !queued.hostSettings && queued.bytes[0] == p.bytes[0]) {
                         return;
                     }
                 }
