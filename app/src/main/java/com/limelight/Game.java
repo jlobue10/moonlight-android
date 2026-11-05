@@ -282,6 +282,12 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     private static final int STEAM_CONTROLLER_LIZARD_LOG_EVERY = 500;
     private final HashSet<Integer> steamControllerLizardDevicesSeen = new HashSet<>();
     private int steamControllerLizardEventsDropped;
+    // Every input device whose pointer motion this stream has forwarded to the host, logged once
+    // with its identity and the path it took (20.5.4). A host pointer that moves more than the
+    // Steam Controller's pad accounts for has a second source; this line names it, whether that
+    // is the controller's own keyboard/mouse with ids the filter above did not expect, a
+    // headset's gaze pointer, or a cover touchpad.
+    private final HashSet<Integer> pointerSourcesLogged = new HashSet<>();
     // Set when bindService() was issued, so onDestroy unbinds even if onServiceConnected never ran.
     private boolean usbDriverBindRequested;
     // Kept so onDestroy can detach both listeners before unbinding: the service's own
@@ -2048,6 +2054,25 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
     }
 
     /**
+     * Logs, once per input device, that this stream forwards the device's pointer motion to the
+     * host, with the device's identity and the path the motion takes. See pointerSourcesLogged.
+     */
+    private void logPointerSourceOnce(MotionEvent event, String path) {
+        InputDevice device = event.getDevice();
+        int key = device != null ? device.getId() : event.getDeviceId();
+        if (!pointerSourcesLogged.add(key)) {
+            return;
+        }
+        String identity = device == null ? "no InputDevice (id " + event.getDeviceId() + ")"
+                : "'" + device.getName() + "' (" + Integer.toHexString(device.getVendorId()) + ":"
+                + Integer.toHexString(device.getProductId()) + ", sources 0x" + Integer.toHexString(device.getSources()) + ")";
+        LimeLog.info("Pointer motion forwarded to the host from " + identity + " as " + path
+                + "; event source 0x" + Integer.toHexString(event.getSource()) + ", tool " + event.getToolType(0)
+                + "; Steam Controller driver link: BLE " + (steamControllerBle != null && steamControllerBle.hasLiveLink())
+                + ", USB " + connectedToUsbDriverService);
+    }
+
+    /**
      * The 2026 Steam Controller is not a gamepad to Android; our driver talks to it over GATT, which
      * needs BLUETOOTH_CONNECT on Android 12+. Ask once per stream start when it is missing.
      */
@@ -3366,14 +3391,17 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
                     if (deltaX != 0 || deltaY != 0) {
                         if (localCursor != null) {
                             // The drawn cursor owns the position and sends it as an absolute position
+                            logPointerSourceOnce(event, "drawn cursor (absolute position)");
                             localCursor.move(deltaX, deltaY);
                         }
                         else if (prefConfig.absoluteMouseMode) {
                             // NB: view may be null, but we can unconditionally use streamView because we don't need to adjust
                             // relative axis deltas for the position of the streamView within the parent's coordinate system.
+                            logPointerSourceOnce(event, "relative deltas as an absolute position");
                             conn.sendMouseMoveAsMousePosition(deltaX, deltaY, (short) streamContainer.getWidth(), (short) streamContainer.getHeight());
                         }
                         else {
+                            logPointerSourceOnce(event, "relative mouse deltas");
                             conn.sendMouseMove(deltaX, deltaY);
                         }
                     }
@@ -3398,6 +3426,7 @@ public class Game extends AppCompatActivity implements SurfaceHolder.Callback,
 
                             // Touchpads must be smaller than (65535, 65535)
                             if (xMax <= Short.MAX_VALUE && yMax <= Short.MAX_VALUE) {
+                                logPointerSourceOnce(event, "touchpad coordinates as an absolute position");
                                 conn.sendMousePosition((short)event.getX(), (short)event.getY(),
                                         (short)xMax, (short)yMax);
                             }
