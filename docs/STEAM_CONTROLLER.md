@@ -347,6 +347,41 @@ pulse on-time x2.0, master gain setting 76=+6 dB`) and the 10 s summary counts t
 reports (`boosted x52`). Suggested order on the headset: master gain +12 alone (if it works,
 done); otherwise boost +6 with pulse 2x, then adjust each to taste.
 
+### 20.5.4: pad and pointer-source diagnostics for the "right pad too fast" report
+
+The right pad still felt too fast on a 20.5.3 stream with the host's trackpad sensitivity at its
+minimum, acceleration off and gyro off (recording of 2026-11-04). The host pointer in that
+recording moves smoothly within each swipe (bell-shaped speed, no back-and-forth steps, no
+jumps), so two sources moving the pointer in turn is not what it shows; what it cannot show is
+whether a second source moves it in the same direction, or whether each pad step is simply
+large. Two log lines now separate those:
+
+- `Pointer motion forwarded to the host from '<name>' (vid:pid, sources 0x..) as <path>; event
+  source 0x.., tool N; Steam Controller driver link: BLE true/false, USB true/false`, once per
+  input device whose motion `Game` forwards, on the relative-delta, absolute-position, drawn-cursor
+  and legacy-touchpad paths. With the controller on the in-app driver, no such line should name
+  the controller; one that does carries the ids the fork.125 filter did not expect. A line naming
+  anything else (a headset's gaze pointer, a cover touchpad) is a second pointer source of its own.
+- `Steam Controller BLE: pads over 10.0 s: 650 state reports (65/s); left pad: untouched; right
+  pad: 2 down, 2 up, 180 moves sent (18/s), 0 unchanged skipped, step mean 412 max 2100 raw
+  (0.6% / 3.2% of the pad), path 1.13 pad widths`, every 10 s in which a pad was touched. The
+  state-report rate is the link's cadence (a BLE connection interval of about 15 ms gives 60-70/s,
+  the wired unit 250/s). The host writes each MOVE's absolute position into the next virtual
+  controller report and Steam turns the change between reports into one mouse move, so the step
+  per MOVE is what Steam's sensitivity and then Windows' pointer ballistics ("Enhance pointer
+  precision", on by default) act on. At the same finger speed a 15 ms cadence makes every step
+  3-4 times the wired unit's, and Windows' curve is strongly superlinear (measured for the drawn
+  cursor: 8 units move the pointer 22 px, 32 units 182 px), so the stream's pointer runs faster
+  than the same controller on a cable even with every scale in the chain at 1:1. `down`/`up`
+  counts far above the number of real touches mean the touch bit flaps and Steam sees new
+  contacts instead of motion.
+
+What to try against the second line: "Enhance pointer precision" off on the host (Settings >
+Bluetooth & devices > Mouse > Additional mouse settings > Pointer Options) makes the pointer
+speed independent of the step size; if that alone fixes the feel, the remedy belongs in the host
+driver (interpolating the pad between stream updates at the 4 ms report cadence) rather than in
+Steam's sensitivity.
+
 ### fork.125: the controller's own keyboard/mouse is dropped while the driver owns it
 
 A user streaming with the controller on Bluetooth LE reported the right pad moving the host

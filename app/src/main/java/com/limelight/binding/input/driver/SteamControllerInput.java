@@ -80,6 +80,21 @@ public abstract class SteamControllerInput extends AbstractController {
     private int imuLogReports, imuLogRepeated, imuLogPeakGyro;
     private boolean imuSeen;
     private short imuLastAx, imuLastAy, imuLastAz, imuLastGx, imuLastGy, imuLastGz;
+    // Pad diagnostics (stream log, every 10 s in which a pad was touched): how many state
+    // reports the firmware delivered, and per pad the touch packets sent to the host and the
+    // size of the step each MOVE carried, in raw pad units (the int16 the pad reports; 65536
+    // is the pad's full width). The host writes these absolute positions into the virtual
+    // controller's reports and Steam turns each report's change into one mouse move, so the
+    // step per packet, not the packet rate, decides how far the host pointer travels per mouse
+    // event and how much of Windows' pointer acceleration applies to it. A BLE link delivers a
+    // state every connection interval (about 15 ms), the wired unit every 4 ms, so the same
+    // finger speed gives steps 3-4 times larger over Bluetooth (20.5.4).
+    private long padLogDueMs;
+    private int padLogStateReports;
+    private final int[] padLogDowns = new int[2], padLogUps = new int[2], padLogMoves = new int[2], padLogRepeats = new int[2];
+    private final double[] padLogPath = new double[2];
+    private final double[] padLogMaxStep = new double[2];
+    private final short[] padLastRawX = new short[2], padLastRawY = new short[2];
     // Stick stretch (off by default since fork.23): each axis is divided by the largest
     // deflection seen on it and the result is clamped to the unit circle. Extents start at a
     // floor and only grow, and persist per controller. Added in fork.21 because the BLE stick
@@ -300,6 +315,7 @@ public abstract class SteamControllerInput extends AbstractController {
         boolean rTouch = bit(buttons, BTN_RPAD_TOUCH);
         leftPadTouched = updatePad((byte) 0, leftPadTouched, lTouch, s16(p, offset + 17 + (timestampedPads ? 2 : 0)), s16(p, offset + 19 + (timestampedPads ? 2 : 0)), u16(p, offset + 21 + (timestampedPads ? 2 : 0)));
         rightPadTouched = updatePad((byte) 1, rightPadTouched, rTouch, s16(p, offset + 23 + (timestampedPads ? 2 : 0)), s16(p, offset + 25 + (timestampedPads ? 2 : 0)), u16(p, offset + 27 + (timestampedPads ? 2 : 0)));
+        trackPads();
 
         if (motionEnabled) {
             // Raw IMU: gyro full scale 2000 deg/s, accel 2 g. Axis order follows SDL's Triton driver.
@@ -368,16 +384,68 @@ public abstract class SteamControllerInput extends AbstractController {
             float pressure = clamp01(rawPressure / 32768f);
             if (wasTouched && x == lastTouchX[pad] && y == lastTouchY[pad] && pressure == lastTouchPressure[pad]) {
                 // A resting finger produced 250 identical MOVE packets per second per pad.
+                padLogRepeats[pad]++;
                 return true;
             }
+            if (wasTouched) {
+                double step = Math.hypot(rawX - padLastRawX[pad], rawY - padLastRawY[pad]);
+                padLogMoves[pad]++;
+                padLogPath[pad] += step;
+                if (step > padLogMaxStep[pad]) padLogMaxStep[pad] = step;
+            } else {
+                padLogDowns[pad]++;
+            }
+            padLastRawX[pad] = rawX;
+            padLastRawY[pad] = rawY;
             lastTouchX[pad] = x;
             lastTouchY[pad] = y;
             lastTouchPressure[pad] = pressure;
             reportTouch(touchpadIndex, wasTouched ? MoonBridge.LI_TOUCH_EVENT_MOVE : MoonBridge.LI_TOUCH_EVENT_DOWN, pointerId, x, y, pressure);
         } else if (wasTouched) {
+            padLogUps[pad]++;
             reportTouch(touchpadIndex, MoonBridge.LI_TOUCH_EVENT_UP, pointerId, 0, 0, 0);
         }
         return touched;
+    }
+
+    /** Pad diagnostics: see the field comment on padLogDueMs. Called once per state report. */
+    private void trackPads() {
+        padLogStateReports++;
+        long now = SystemClock.uptimeMillis();
+        if (now < padLogDueMs) {
+            return;
+        }
+        long windowMs = padLogDueMs == 0 ? 0 : 10_000 + (now - padLogDueMs);
+        boolean touched = false;
+        for (int pad = 0; pad < 2; pad++) {
+            touched |= padLogDowns[pad] + padLogMoves[pad] + padLogUps[pad] + padLogRepeats[pad] > 0;
+        }
+        if (touched && windowMs > 0) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format(Locale.ROOT, "Steam Controller %s: pads over %.1f s: %d state reports (%.0f/s)",
+                    transportName, windowMs / 1000f, padLogStateReports, padLogStateReports * 1000f / windowMs));
+            for (int pad = 0; pad < 2; pad++) {
+                sb.append(pad == 0 ? "; left pad: " : "; right pad: ");
+                if (padLogDowns[pad] + padLogMoves[pad] + padLogUps[pad] + padLogRepeats[pad] == 0) {
+                    sb.append("untouched");
+                    continue;
+                }
+                // 65536 raw units = the pad's full width, so path / 65536 is the distance in pad widths.
+                sb.append(String.format(Locale.ROOT,
+                        "%d down, %d up, %d moves sent (%.0f/s), %d unchanged skipped, step mean %.0f max %.0f raw (%.1f%% / %.1f%% of the pad), path %.2f pad widths",
+                        padLogDowns[pad], padLogUps[pad], padLogMoves[pad], padLogMoves[pad] * 1000f / windowMs, padLogRepeats[pad],
+                        padLogMoves[pad] > 0 ? padLogPath[pad] / padLogMoves[pad] : 0d, padLogMaxStep[pad],
+                        padLogMoves[pad] > 0 ? padLogPath[pad] / padLogMoves[pad] / 655.36 : 0d, padLogMaxStep[pad] / 655.36,
+                        padLogPath[pad] / 65536d));
+            }
+            LimeLog.info(sb.toString());
+        }
+        padLogDueMs = now + 10_000;
+        padLogStateReports = 0;
+        for (int pad = 0; pad < 2; pad++) {
+            padLogDowns[pad] = padLogUps[pad] = padLogMoves[pad] = padLogRepeats[pad] = 0;
+            padLogPath[pad] = padLogMaxStep[pad] = 0;
+        }
     }
 
     /**
